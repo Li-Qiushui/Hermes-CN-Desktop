@@ -181,6 +181,16 @@ pnpm exec tauri build --bundles nsis
 
 结论：这条路要通，必须给 CN 的 `LocalBackend` 加一个 token header（改 Rust 重编译），或改官方 dashboard 放行 loopback 无 token 请求。两者都不是配置层面能解决的。
 
-### 5.3 一句话
+### 5.3 官方内核报告 `version: "unknown"`
+
+用 `venv\Scripts\hermes.exe` 起的内核，`/api/status` 返回：
+
+```json
+{"version":"unknown","release_date":"2026.9.24","config_version":34,...}
+```
+
+venv 安装没有 PyInstaller 的 build 元数据，所以版本号解析不出来。即使 `/api/version` 的 404 被放过，`verifyBackendVersion` 还会拿 `unknown` 跟期望版本比，走 `mismatch` 分支，同样致命。要接官方内核，版本校验这一关必须整体改成「后端自带版本则比、不自带则放行」。
+
+### 5.4 一句话
 
 CN 的内核不是「可以顺手替换的组件」，它是这个壳的运行时契约（端口、token、home、web_dist、插件目录全套绑死）。想用官方内核，正确做法是用官方 desktop，而不是给 CN 壳换心脏。
