@@ -2,7 +2,9 @@ import { useNavigate, useLocation } from "react-router-dom";
 import { Moon, Search, Sun } from "lucide-react";
 import { useTheme } from "@hermes/shared-ui";
 import { useCommandPalette } from "@/components/command-palette";
-import { ProfileSelector } from "@/components/sidebar/profile-selector";
+import { HermesLogoMark } from "@/components/brand/hermes-logo-mark";
+import { ConnectionChip } from "./connection-chip";
+import { ModelChip } from "./model-chip";
 import { TOP_TABS } from "./use-active-top-tab";
 import s from "./app-top-bar.module.css";
 
@@ -21,9 +23,12 @@ export function AppTopBar() {
     <header className={s.topbar} data-window-drag data-tauri-drag-region="deep">
       <div className={s.brand} data-no-drag>
         <span className={s.brandText}>
-          <span className={s.wordmark}>Hermes Agent</span>
+          <HermesLogoMark size={20} />
+          <span className={s.wordmark}>Hermes</span>
         </span>
       </div>
+
+      <span className={s.brandDivider} aria-hidden="true" />
 
       <nav className={s.nav} aria-label="主导航">
         {TOP_TABS.map((tab) => (
@@ -55,7 +60,8 @@ export function AppTopBar() {
       </button>
 
       <div className={s.actions}>
-        <ProfileSelector variant="topbar" />
+        <ConnectionChip />
+        <ModelChip />
         <button
           type="button"
           className={s.iconBtn}

@@ -46,7 +46,7 @@ describe("flattenModelChoices", () => {
   it("不同 provider 的同名 model 各自保留（key 含 provider 不冲突）", () => {
     const choices = flattenModelChoices([
       { slug: "deepseek", name: "DeepSeek", models: ["deepseek-v4-flash"] },
-      { slug: "modelverse", name: "优云智算", models: ["deepseek-v4-flash"] },
+      { slug: "sensenova", name: "商汤日日新", models: ["deepseek-v4-flash"] },
     ]);
 
     expect(choices).toHaveLength(2);

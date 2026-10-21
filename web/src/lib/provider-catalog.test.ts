@@ -1,5 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fetchExternalJSON } from "./transport";
+import { describe, expect, it } from "vitest";
 import {
   BUILTIN_PROVIDER_CATALOG,
   BUILTIN_PROVIDER_CATALOG_VERSION,
@@ -13,8 +12,6 @@ import {
   chatEndpointPreviewUrl,
   customProviderPresetsFromConfig,
   detectCustomApiModeFromUrl,
-  fetchRemoteProviderCatalog,
-  mergeProviderCatalog,
   getProviderCredentialPreview,
   getProviderEntry,
   getProviderOrder,
@@ -28,16 +25,6 @@ import {
   TOP5_PROVIDER_IDS,
   type ProviderPreset,
 } from "./provider-catalog";
-
-vi.mock("./transport", () => ({
-  fetchExternalJSON: vi.fn(),
-}));
-
-const mockedFetchExternalJSON = vi.mocked(fetchExternalJSON);
-
-beforeEach(() => {
-  mockedFetchExternalJSON.mockReset();
-});
 
 describe("builtin provider catalog", () => {
   it("ships the current Kimi and SiliconFlow coding models", () => {
@@ -198,7 +185,7 @@ describe("provider catalog config updates", () => {
   });
 
   it("writes catalog providers as canonical providers instead of custom slugs", () => {
-    const preset = BUILTIN_PROVIDER_CATALOG.providers.find((provider) => provider.id === "cp.compshare.cn");
+    const preset = BUILTIN_PROVIDER_CATALOG.providers.find((provider) => provider.id === "zai");
     expect(preset).toBeTruthy();
 
     const config = buildProviderConfigUpdate(
@@ -206,19 +193,19 @@ describe("provider catalog config updates", () => {
       preset!,
       {
         apiKey: "test-key",
-        baseUrl: "https://cp.compshare.cn/v1",
+        baseUrl: "https://open.bigmodel.cn/api/paas/v4",
         model: "glm-5.1",
       },
     );
 
     expect(config.model).toMatchObject({
-      provider: "cp.compshare.cn",
+      provider: "zai",
       default: "glm-5.1",
-      base_url: "https://cp.compshare.cn/v1",
+      base_url: "https://open.bigmodel.cn/api/paas/v4",
       api_mode: "chat_completions",
     });
-    expect(config.providers["cp.compshare.cn"]).toMatchObject({
-      name: "优云智算 · Agent Plan",
+    expect(config.providers["zai"]).toMatchObject({
+      name: "智谱 GLM · API 按量付费",
       api_key: "test-key",
       model: "glm-5.1",
     });
@@ -398,7 +385,6 @@ describe("provider catalog config updates", () => {
     ["gemini", "https://generativelanguage.googleapis.com/v1beta", "chat_completions", "openai_chat", "GEMINI_API_KEY", "gemini-3.5-flash", "gemini"],
     ["openai-api", "https://api.openai.com/v1", "codex_responses", "codex_responses", "OPENAI_API_KEY", "gpt-5.6-sol", "openai"],
     ["anthropic", "https://api.anthropic.com", "anthropic_messages", "anthropic_messages", "ANTHROPIC_API_KEY", "claude-opus-4-8", "anthropic"],
-    ["agnes", "https://apihub.agnes-ai.com/v1", "chat_completions", "openai_chat", "AGNES_API_KEY", "agnes-2.0-flash", "agnes"],
     ["xai", "https://api.x.ai/v1", "codex_responses", "codex_responses", "XAI_API_KEY", "grok-build-0.1", "xai"],
   ])("ships global first-party provider %s with Core-compatible wire settings", (
     id,
@@ -447,27 +433,10 @@ describe("provider catalog config updates", () => {
     ]);
     expect(byId.get("gemini")!.supportsModelListing).toBe(false);
     expect(byId.get("anthropic")!.supportsModelListing).toBe(true);
-    expect(byId.get("agnes")).toMatchObject({
-      supportsModelListing: false,
-      models: [
-        expect.objectContaining({ id: "agnes-2.0-flash" }),
-        expect.objectContaining({ id: "agnes-1.5-flash" }),
-      ],
-    });
   });
 
   it("keeps plan-specific endpoints separate from pay-as-you-go endpoints", () => {
     const byId = new Map(BUILTIN_PROVIDER_CATALOG.providers.map((provider) => [provider.id, provider]));
-
-    expect(byId.get("modelverse")).toMatchObject({
-      name: "优云智算 · API 按量付费",
-      baseUrl: "https://api.modelverse.cn/v1",
-    });
-    expect(byId.get("cp.compshare.cn")).toMatchObject({
-      name: "优云智算 · Agent Plan",
-      baseUrl: "https://cp.compshare.cn/v1",
-      supportsModelListing: false,
-    });
 
     expect(byId.get("alibaba")).toMatchObject({
       name: "阿里云百炼 · API 按量付费",
@@ -860,136 +829,6 @@ describe("provider catalog config updates", () => {
     );
 
     expect(preview).toBe("xiao...tail");
-  });
-
-  it("loads remote catalog through fetchExternalJSON timeout path", async () => {
-    mockedFetchExternalJSON.mockResolvedValue({
-      version: "remote-v1",
-      providers: [
-        {
-          id: "remote-provider",
-          name: "Remote Provider",
-          vendor: "Remote",
-          region: "global",
-          baseUrl: "https://api.example.com/v1",
-          apiMode: "chat_completions",
-          transport: "openai_chat",
-          apiKeyLabel: "REMOTE_API_KEY",
-          apiKeyAliases: ["REMOTE_LEGACY_KEY", "REMOTE_LEGACY_KEY", ""],
-          defaultModel: "remote-model",
-          models: [{ id: "remote-model" }],
-        },
-      ],
-    });
-
-    const catalog = await fetchRemoteProviderCatalog("https://cdn.example.com/catalog.json");
-
-    expect(mockedFetchExternalJSON).toHaveBeenCalledWith(
-      "https://cdn.example.com/catalog.json",
-      { headers: { Accept: "application/json" } },
-    );
-    expect(catalog).toMatchObject({
-      version: "remote-v1",
-      providers: [
-        {
-          id: "remote-provider",
-          apiKeyAliases: ["REMOTE_LEGACY_KEY"],
-          defaultModel: "remote-model",
-        },
-      ],
-    });
-  });
-
-  it("keeps promotion fields from the remote catalog and drops malformed ones", async () => {
-    mockedFetchExternalJSON.mockResolvedValue({
-      version: "remote-v2",
-      providers: [
-        {
-          id: "packycode",
-          name: "PackyCode",
-          baseUrl: "https://www.packyapi.com",
-          defaultModel: "claude-opus-4-8",
-          websiteUrl: "https://www.packyapi.com",
-          icon: " packycode ",
-          promotion: {
-            url: "https://www.packyapi.com/register?aff=our-code",
-            badge: "partner",
-          },
-        },
-        {
-          id: "bad-promo",
-          name: "Bad Promo",
-          baseUrl: "https://bad.example/v1",
-          defaultModel: "m",
-          websiteUrl: "http://insecure.example",
-          promotion: {
-            url: "javascript:alert(1)",
-            badge: "sponsor",
-          },
-        },
-      ],
-    });
-
-    const catalog = await fetchRemoteProviderCatalog("https://cdn.example.com/catalog.json");
-    const packy = catalog.providers.find((provider) => provider.id === "packycode");
-    expect(packy).toMatchObject({
-      icon: "packycode",
-      websiteUrl: "https://www.packyapi.com",
-      promotion: {
-        url: "https://www.packyapi.com/register?aff=our-code",
-        badge: "partner",
-      },
-    });
-
-    const bad = catalog.providers.find((provider) => provider.id === "bad-promo");
-    expect(bad?.promotion).toBeUndefined();
-    expect(bad?.websiteUrl).toBeUndefined();
-  });
-
-  it("never lets a remote entry override wire settings of a built-in provider", () => {
-    const builtin = BUILTIN_PROVIDER_CATALOG.providers.find((provider) => provider.id === "deepseek")!;
-    const merged = mergeProviderCatalog(BUILTIN_PROVIDER_CATALOG, {
-      version: "remote-v3",
-      providers: [
-        {
-          ...builtin,
-          baseUrl: "https://evil.example/v1",
-          apiMode: "anthropic_messages",
-          transport: "anthropic_messages",
-          apiKeyLabel: "EVIL_KEY",
-          promotion: {
-            url: "https://platform.deepseek.com/",
-          },
-        },
-        {
-          id: "new-remote-provider",
-          name: "New Remote",
-          vendor: "Remote",
-          region: "cn",
-          baseUrl: "https://api.new-remote.example/v1",
-          apiMode: "chat_completions",
-          transport: "openai_chat",
-          apiKeyLabel: "NEW_REMOTE_API_KEY",
-          defaultModel: "m1",
-          models: [{ id: "m1" }],
-        },
-      ],
-    });
-
-    const deepseek = merged.providers.find((provider) => provider.id === "deepseek");
-    expect(deepseek).toMatchObject({
-      baseUrl: builtin.baseUrl,
-      apiMode: builtin.apiMode,
-      transport: builtin.transport,
-      apiKeyLabel: builtin.apiKeyLabel,
-      promotion: { url: "https://platform.deepseek.com/" },
-    });
-
-    // Brand-new remote providers keep their own wire settings.
-    expect(merged.providers.find((provider) => provider.id === "new-remote-provider")).toMatchObject({
-      baseUrl: "https://api.new-remote.example/v1",
-    });
-    expect(merged.version).toBe("remote-v3");
   });
 });
 

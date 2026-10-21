@@ -49,8 +49,17 @@
 .brandText {
   min-width: 0;
   flex: 1;
-  display: grid;
-  gap: 4px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.brandDivider {
+  flex: 0 0 auto;
+  width: 1px;
+  height: 18px;
+  background: var(--h-line);
 }
 
 .wordmark {
@@ -229,7 +238,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 0;
+  border-radius: 8px;
   color: var(--h-topbar-control-color);
   border: 1px solid var(--h-topbar-control-border);
   background: var(--h-topbar-control-bg);
@@ -254,4 +263,156 @@
 .iconBtn[data-theme-mode="dracula"],
 .iconBtn[data-theme-mode="catppuccin-mocha"] {
   color: var(--h-text);
+}
+
+/* ── 右上状态 chip：连接卡 / 模型卡，与主题按钮同一套尺寸 ────────────── */
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  box-sizing: border-box;
+  padding: 0 9px;
+  border: 1px solid var(--h-line);
+  border-radius: 8px;
+  background: var(--h-bg-soft);
+  color: var(--h-text-2);
+  font-family: var(--h-font-cn);
+  font-size: 13px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+  transition: color 0.12s, background 0.12s, border-color 0.12s;
+}
+
+.chip:hover,
+.chip[data-state="open"] {
+  color: var(--h-text);
+  background: var(--h-bg-chip);
+}
+
+.chip:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.chipValue {
+  color: var(--h-text);
+  font-weight: 500;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chipMeta {
+  color: var(--h-text-3);
+  font-family: var(--h-font-mono);
+  font-size: 12px;
+}
+
+.chipChevron {
+  flex: 0 0 auto;
+  color: var(--h-text-3);
+}
+
+/* 连接卡弹层 */
+
+.connectionPopover {
+  width: 288px;
+  padding: 10px;
+  border-radius: 8px;
+}
+
+.popRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 5px 2px;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.popLabel {
+  flex: 0 0 auto;
+  color: var(--h-text-3);
+}
+
+.popValue,
+.popValueMono {
+  min-width: 0;
+  color: var(--h-text);
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.popValueMono {
+  font-family: var(--h-font-mono);
+  font-size: 11.5px;
+}
+
+.popValue[data-tone="danger"] {
+  color: var(--h-color-danger-fg);
+}
+
+.popDivider {
+  border: 0;
+  border-top: 1px solid var(--h-line);
+  margin: 8px 0;
+}
+
+.popActions {
+  display: flex;
+  gap: 6px;
+}
+
+.popButton {
+  flex: 1 1 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 28px;
+  box-sizing: border-box;
+  padding: 0 8px;
+  border: 1px solid var(--h-line);
+  border-radius: 8px;
+  background: var(--h-bg-soft);
+  color: var(--h-text);
+  font-family: var(--h-font-cn);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.12s, background 0.12s, border-color 0.12s;
+}
+
+.popButton:hover:not(:disabled) {
+  background: var(--h-bg-chip);
+}
+
+.popButton[data-tone="primary"] {
+  border-color: var(--h-accent-border);
+  background: var(--h-accent-soft);
+  color: var(--h-text);
+}
+
+.popButton:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.popMessage {
+  margin-top: 8px;
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: var(--h-text-3);
+}
+
+.popMessage[data-tone="danger"] {
+  color: var(--h-color-danger-fg);
 }

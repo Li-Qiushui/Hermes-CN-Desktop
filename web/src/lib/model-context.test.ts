@@ -6,7 +6,7 @@ describe("resolveModelContextWindow", () => {
     const config = {
       custom_providers: [
         {
-          name: "Cp.compshare.cn",
+          name: "Zai",
           models: {
             "glm-5.1": { context_length: 200_000 },
             "deepseek-v4-flash": { context_length: 1_000_000 },
@@ -17,8 +17,8 @@ describe("resolveModelContextWindow", () => {
     };
 
     expect(resolveModelContextWindow(config, {
-      provider: "custom:cp.compshare.cn",
-      providerName: "Cp.compshare.cn",
+      provider: "custom:zai",
+      providerName: "Zai",
       model: "glm-5.1",
     })).toBe(200_000);
   });
@@ -33,7 +33,7 @@ describe("resolveModelContextWindow", () => {
   it("matches configured providers by canonical provider id", () => {
     const config = {
       providers: {
-        "cp.compshare.cn": {
+        "zai": {
           models: {
             "deepseek-ai/DeepSeek-V3.2": { context_length: 128_000 },
           },
@@ -42,7 +42,7 @@ describe("resolveModelContextWindow", () => {
     };
 
     expect(resolveModelContextWindow(config, {
-      provider: "cp.compshare.cn",
+      provider: "zai",
       model: "deepseek-ai/DeepSeek-V3.2",
     })).toBe(128_000);
   });

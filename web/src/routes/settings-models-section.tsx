@@ -50,7 +50,6 @@ import {
   probeGeminiProvider,
 } from "@/lib/provider-probe";
 import { getProviderIconUrl } from "@/lib/provider-icons";
-import { useProviderCatalog } from "@/hooks/use-provider-catalog";
 import { useOAuthProviders } from "@/hooks/use-oauth-providers";
 import { ModelCombobox } from "@/components/settings/model-combobox";
 import { translateEnvCategory, translateEnvVar } from "@/lib/env-translations";
@@ -621,7 +620,6 @@ export function ModelsSection() {
   const revealEnv = useRevealEnv();
   const { probeProvider, listProviderModels, setRuntimeModel } = useGateway();
   const navigate = useNavigate();
-  const { catalog, message: catalogMessage, refresh: refreshCatalog } = useProviderCatalog();
   const resolvedEnvVars = envVars ?? EMPTY_ENV_VARS;
   const [activeModelTab, setActiveModelTab] = useState<ModelSettingsTab>("main");
   const [probeState, setProbeState] = useState<{
@@ -736,16 +734,16 @@ export function ModelsSection() {
       ? String((config.model as Record<string, unknown>).provider ?? "")
       : "");
   const customProviders = useMemo(
-    () => customProviderPresetsFromConfig(config, catalog.providers, {
+    () => customProviderPresetsFromConfig(config, BUILTIN_PROVIDER_CATALOG.providers, {
       provider: currentProviderId,
       model: modelInfo?.model,
     }),
-    [catalog.providers, config, currentProviderId, modelInfo?.model],
+    [config, currentProviderId, modelInfo?.model],
   );
 
   const allProviders = useMemo(
-    () => [...catalog.providers, ...customProviders],
-    [catalog.providers, customProviders],
+    () => [...BUILTIN_PROVIDER_CATALOG.providers, ...customProviders],
+    [customProviders],
   );
   const auxiliaryProviderOptions = useMemo(() => {
     const options = new Map<string, { id: string; name: string; hint: string }>();
@@ -1094,10 +1092,6 @@ export function ModelsSection() {
     setEnv.mutate({ key, value: editVal });
     setEditKey(null);
     setEditVal("");
-  };
-
-  const handleCatalogRefresh = () => {
-    void refreshCatalog();
   };
 
   useEffect(() => () => {
@@ -1611,10 +1605,6 @@ export function ModelsSection() {
                 {" · "}已配置 {configuredCount} 个，自定义 {customProviders.length} 个
               </p>
             </div>
-            <div className={s.catalogMeta}>
-              <span>提供商目录 {catalog.version}</span>
-              {catalogMessage && <span className={s.catalogMessage}>{catalogMessage}</span>}
-            </div>
           </div>
 
           <div className={s.providerPresetLayout}>
@@ -1628,7 +1618,6 @@ export function ModelsSection() {
                     onChange={(event) => setProviderSearch(event.target.value)}
                     placeholder="搜索模型平台..."
                   />
-                  <Button variant="outline" onClick={handleCatalogRefresh}>刷新预设</Button>
                 </div>
               </div>
               <div className={s.providerPresetGrid}>

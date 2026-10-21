@@ -17,7 +17,6 @@ import {
   Sparkles,
 } from "lucide-react";
 import { StatusDot, usePlatform } from "@hermes/shared-ui";
-import { HermesLogoMark } from "@/components/brand/hermes-logo-mark";
 import { useStatus } from "@/hooks/use-status";
 import { useModelInfo } from "@/hooks/use-config";
 import {
@@ -261,13 +260,6 @@ export function Sidebar() {
           )}
         </NavGroup>
       </nav>
-
-      <div className={s.brandStrip}>
-        <HermesLogoMark className={s.brandMark} size={24} />
-        <div className={s.brandText}>
-          <div className={s.brandName}>Hermes Agent</div>
-        </div>
-      </div>
 
       <div className={s.statusBar}>
         <div className={s.statusRow}>
