@@ -81,8 +81,21 @@ interface FetchSessionsOptions extends UseSessionsOptions {
   signal?: AbortSignal;
 }
 
+/**
+ * Machine-run session sources hidden from the workbench recents list, mirroring
+ * the official Hermes Desktop sidebar (`SIDEBAR_EXCLUDED_SOURCES`): editor-driven
+ * ACP rows, cron/kanban/oneshot/subagent/tool runs are not conversations. Filter
+ * server-side so a burst of newest-first runs cannot starve real chats out of the
+ * page (the kernel accepts `exclude_sources`).
+ *
+ * Messaging platforms (weixin/api_server/…) stay in the list: this shell has no
+ * separate messaging section, unlike the official desktop.
+ */
+const RECENTS_EXCLUDED_SOURCES = ["acp", "cron", "kanban", "oneshot", "subagent", "tool"];
+
 function sessionsPath(limit: number, offset: number, includeArchived: boolean): string {
-  return `/api/sessions?limit=${limit}&offset=${offset}${includeArchived ? "&include_archived=true" : ""}`;
+  const excluded = RECENTS_EXCLUDED_SOURCES.map(encodeURIComponent).join(",");
+  return `/api/sessions?limit=${limit}&offset=${offset}${includeArchived ? "&include_archived=true" : ""}&exclude_sources=${excluded}`;
 }
 
 function normalizePageNumber(value: number, fallback: number): number {

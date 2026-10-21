@@ -168,13 +168,29 @@ export async function verifyBackendVersion(
     return state;
   } catch (error) {
     // A reachable backend that does not implement /api/version (official
-    // upstream kernels have no such endpoint) must not be fatal: treat it as
-    // deferred so the UI can still load and talk to the dashboard.
+    // upstream kernels have no such endpoint) is perfectly usable — the
+    // version gate simply cannot judge it. Returning "deferred" here made the
+    // bridge treat the backend as not-ready and fall back to the offline shell,
+    // so report it as ok with an unknown version instead.
     if (error instanceof BackendVersionHttpError && error.status === 404) {
-      state = { kind: "deferred", reason: "external-backend-unreachable" };
+      // Attached kernels (local CLI dashboard / remote shell) have no
+      // /api/version endpoint at all — they are usable, the version gate just
+      // cannot judge them. Reporting "deferred" here made the bridge mark the
+      // backend as not-ready and fall back to the offline shell. A managed
+      // runtime, by contrast, ships the endpoint, so a 404 there is a real fault.
+      if (isExternalConnection(options.connectionMode)) {
+        state = { kind: "ok", backendVersion: "unknown" };
+        return state;
+      }
+      state = {
+        kind: "unavailable",
+        reason: "HTTP 404: /api/version missing on the managed runtime",
+      };
       return state;
     }
     if (isExternalConnection(options.connectionMode)) {
+      // A 401 here means the kernel answered — it just wants credentials we
+      // never sent for this probe. Still an auth prompt, not a dead backend.
       if (error instanceof BackendVersionHttpError && (error.status === 401 || error.status === 403)) {
         state = { kind: "deferred", reason: "external-backend-auth-required" };
         return state;
@@ -222,7 +238,7 @@ export function assertCompatible(): void {
       `前端与后端版本不兼容。\n` +
       `前端期望后端版本：${state.expectedVersion}\n` +
       `后端实际版本：${state.backendVersion}\n\n` +
-      `请升级 Hermes Agent CN Desktop 到与后端匹配的版本，或重新安装内置内核。`;
+      `请升级 Hermes Agent CN Desktop 到与后端匹配的版本。`;
     void fatalErrorAndExit("版本不匹配", message);
     throw new Error(`backend version mismatch: expected ${state.expectedVersion}, got ${state.backendVersion}`);
   }

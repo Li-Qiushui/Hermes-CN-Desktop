@@ -150,12 +150,14 @@ describe("version-check", () => {
       });
     });
 
-    it("keeps a reachable external backend without /api/version fatal", async () => {
+    it("treats a reachable external backend without /api/version as usable", async () => {
       stubDesktopRequest({ detail: "not found" }, 404);
 
       const state = await verifyBackendVersion(undefined, { connectionMode: "remote" });
 
-      expect(state).toMatchObject({ kind: "unavailable", reason: expect.stringContaining("HTTP 404") });
+      // Attached kernels (official Hermes) expose no /api/version; the backend
+      // is alive, so the gate must not fail closed and strand the UI offline.
+      expect(state).toMatchObject({ kind: "ok", backendVersion: "unknown" });
     });
 
     it("preserves external recovery semantics when an unchecked request triggers revalidation", async () => {
