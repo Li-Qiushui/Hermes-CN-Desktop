@@ -16,26 +16,20 @@
 - 去掉设置页联系方式卡、社群二维码、赞助致谢、中转站测评横幅
 - `/api/version` 返回 404 时按 `deferred` 放行，便于对接非本壳内核
 
-其余功能（聊天、Skills、Memory、Kanban、MCP、定时任务、多平台接入、runtime 管理）与上游一致。
+其余功能（聊天、Skills、Memory、Kanban、MCP、定时任务、多平台接入、模型配置）与上游一致。
 
 ## 构建
 
-前置：Rust stable、Node 20+、pnpm 9+，以及 [Hermes-CN-Core](https://github.com/Eynzof/Hermes-CN-Core) 源码。
+前置：Rust stable、Node 20+、pnpm 9+。
 
 ```bash
 pnpm install --frozen-lockfile
 
-# 打包脚本要从内核仓读 skills/ 与 plugins/
-export HERMES_AGENT_CN_SOURCE=/path/to/Hermes-CN-Core
-
 # rustup 若用 --no-modify-path 安装，PATH 里没有 cargo
 export PATH="$HOME/.cargo/bin:$PATH"
 
-# 含内置 runtime 的完整包（会 stage runtime，需联网或本地已有 zip）
-pnpm run tauri:build:bundled-windows
-
-# runtime 已 stage 过时的增量包
-pnpm exec tauri build --bundles nsis
+# 纯壳 NSIS 安装包
+pnpm run tauri:build
 ```
 
 产物：`target/release/bundle/nsis/Hermes Agent CN Desktop_<version>_x64-setup.exe`
@@ -51,7 +45,7 @@ cargo run         # 外壳
 pnpm tauri:dev
 ```
 
-外壳需要后端 dashboard 在 `127.0.0.1:9120` 上，或自行配置连接模式（managed / local / remote）。
+外壳只做客户端，需要连接一个已在运行的外部 Hermes（默认 `http://127.0.0.1:9119`，也可填远端地址 + Token）。
 
 ## 仓库结构
 

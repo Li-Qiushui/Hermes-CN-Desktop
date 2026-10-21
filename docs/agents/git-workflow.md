@@ -53,6 +53,6 @@ cd /path/to/Hermes-CN-Core && git rev-parse --short HEAD
 
 ## 5. 发版 / Landing 同步（release 流程用）
 
-- 打 tag、push tag 触发 `release-desktop.yml` / `release-runtime.yml`（例如 `git tag runtime-v0.16.0-cn.5; git push origin runtime-v0.16.0-cn.5`；桌面端 `git tag v0.8.0-rc4; git push origin v0.8.0-rc4`）。
+- 打 tag 只做版本标记；桌面端发布构建在本地跑 `pnpm tauri:build`（纯壳 NSIS，不再内置 runtime）。
 - stable/正式公开版本发完后同步 landing 仓库：为 `Eynzof/hermes-agent-cn-desktop-landing` 开独立分支（例如 `codex/update-desktop-latest-json`）→ 更新官网版本与 `https://desktop.hermesagent.org.cn/latest.json` 清单 → commit → 为 Desktop 与 Landing 两个仓库分别开 PR，并在 Desktop release PR 中提及 landing PR（或明确说明 landing 无需变更）。
 - RC / beta / alpha / canary 等预发布或内测版本**禁止**创建 landing 分支 / worktree、禁止更新官网、禁止让 `latest.json` 指向预发布版本。

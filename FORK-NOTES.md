@@ -120,37 +120,24 @@ pnpm run web:build:desktop          # 期望 "✓ built in ...s"，无 error
 
 ## 三、构建完整安装包（Windows）
 
-前置二选一，缺一不可：
-
-**A. 内核源码仓**（`bundle:stage-windows` 要用它取 skills / plugins / dashboard）：
-
-```bash
-git clone --depth 1 https://github.com/Eynzof/Hermes-CN-Core.git D:/OpenSource/Hermes-CN-Core
-# dashboard 的 web_dist 不必 npm build：runtime zip 里自带
-#   _internal/hermes_cli/web_dist/  → 解压到 <core>/hermes_cli/web_dist/ 即可
-export HERMES_AGENT_CN_SOURCE=D:/OpenSource/Hermes-CN-Core
-```
-
-**B. 工具链**：Rust（MSVC 工具链）+ Visual Studio Build Tools（C++ 桌面开发 + Windows SDK 10）。
+前置：Rust（MSVC 工具链）+ Visual Studio Build Tools（C++ 桌面开发 + Windows SDK 10）+ Node/pnpm。
 
 > 本机 rustup 是 `--no-modify-path` 装的，PATH 里没有 `~/.cargo/bin`。每次构建前先 `export PATH="$HOME/.cargo/bin:$PATH"`，否则 `pnpm exec tauri build` 找不到 cargo。
 
 ```bash
 pnpm install --frozen-lockfile
-pnpm run tauri:build:bundled-windows
-# 只改了 Rust/前端、静态资源没动时的增量包：
-pnpm exec tauri build --bundles nsis
+pnpm run tauri:build
 ```
 
-产物：`target/release/bundle/nsis/Hermes Agent CN Desktop_<ver>_x64-setup.exe`（本机实测 183,540,681 字节，NotSigned）。
+产物：`target/release/bundle/nsis/Hermes Agent CN Desktop_<ver>_x64-setup.exe`（纯壳，不含内置 runtime）。
 主程序：`target/release/hermes-agent-cn-desktop.exe`（35,708,416 字节）。
 
 ---
 
 ## 四、明确**没有**改动的东西
 
-- 后端 Rust 代码（`src/`）、`tauri.conf.json`、端口占用、连接模式（managed/local/remote）
-- 打包与 runtime staging 脚本（`scripts/`）
+- 后端 Rust 代码（`src/`）、`tauri.conf.json`、端口占用、连接模式（local/remote）
+- 版本/许可证同步脚本（`scripts/`）
 - 任何 provider 的 `baseUrl` / `apiKeyLabel` / 模型列表
 - 飞书、微信网关接入功能（`IM_ITEMS` 只有 2 项，没有 16 个入口可删）
 - 主题系统、命令面板、Kanban、Skills 等功能页

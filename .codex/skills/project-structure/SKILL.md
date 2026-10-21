@@ -295,7 +295,6 @@ Shared UI primitives:
 | `rust-test.yml` | PR / push to main | `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test` |
 | `web-test.yml` | PR / push to main | TypeScript typecheck + vitest unit tests |
 | `web-e2e.yml` | PR / push to main | Playwright E2E (checkout Hermes-CN-Core + fake model) |
-| `release-desktop.yml` | Tag push | Release build & publish |
 
 ---
 
@@ -306,10 +305,8 @@ Shared UI primitives:
 | `agents/` | Coding-agent policy + human git workflow（编码代理不执行 git 写操作；人工双仓同步/worktree/commit/push/PR/tag/Landing 同步见 `git-workflow.md`） |
 | `desktop-prd/` | Product Requirements Document (6 docs: feature inventory, PRD, IA, specs, backend contract, parity gap) |
 | `gateway-connection-overhaul.md` | Gateway connection architecture |
-| `managed-runtime.md` | Managed runtime design |
 | `hot-update.md` | Hot update design（统一自更新 + UI 热更 + 开发热更 + 使用/验证） |
 | `macos-signing-and-notarization.md` | macOS code signing |
-| `portable-mode.md` | Portable mode |
 | `yolo-mode.md` | YOLO mode |
 | `custom-model-context-window.md` | Custom model context window |
 
