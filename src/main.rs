@@ -1,4 +1,4 @@
-// Hermes Agent 中文社区桌面版 — Tauri v2 entry point.
+// Hermes Agent — Tauri v2 entry point.
 //
 // Equivalent of hermes-cn-ui-v1/apps/desktop/src/main/bootstrap.ts + main.ts.
 // Resolves HERMES_HOME, reads sticky profile, ensures dashboard subprocess,
@@ -301,7 +301,7 @@ fn main() {
                 ),
             };
             let window_builder = tauri::WebviewWindowBuilder::new(app, tray::MAIN_WINDOW_LABEL, window_url)
-                .title("Hermes Agent 中文社区桌面版")
+                .title("Hermes Agent")
                 .inner_size(1240.0, 820.0)
                 .min_inner_size(960.0, 680.0);
             #[cfg(target_os = "macos")]
@@ -517,7 +517,7 @@ fn main() {
                     }
                 });
 
-                log::info!("Hermes Agent 中文社区桌面版 bootstrapping in background");
+                log::info!("Hermes Agent bootstrapping in background");
                 return Ok(());
             }
 
@@ -612,7 +612,7 @@ fn main() {
                     .await;
                 });
 
-                log::info!("Hermes Agent 中文社区桌面版 bootstrapping in background");
+                log::info!("Hermes Agent bootstrapping in background");
                 return Ok(());
             }
 
@@ -767,7 +767,7 @@ fn main() {
             _ => {}
         })
         .build(tauri::generate_context!())
-        .expect("error while building Hermes Agent 中文社区桌面版");
+        .expect("error while building Hermes Agent");
 
     app.run(move |app_handle, event| match event {
         tauri::RunEvent::ExitRequested { .. } => {

@@ -832,7 +832,7 @@ function showBootstrapOverlay(initialMessage: string): {
     "style",
     "font-size:16px;font-weight:700;letter-spacing:0.02em;color:#fbfaf6;",
   );
-  title.textContent = "Hermes Agent 中文社区桌面版";
+  title.textContent = "Hermes Agent";
   panel.appendChild(title);
 
   const brand = document.createElement("div");
@@ -841,7 +841,7 @@ function showBootstrapOverlay(initialMessage: string): {
     "margin-top:-12px;font-size:12px;font-weight:600;color:rgba(251,250,246,0.54);" +
       "letter-spacing:0.08em;text-transform:uppercase;",
   );
-  brand.textContent = "Hermes Agent 中文社区 · hermesagent.org.cn";
+  brand.textContent = "Hermes Agent";
   panel.appendChild(brand);
 
   const message = document.createElement("div");
@@ -931,7 +931,7 @@ function showBootstrapOverlay(initialMessage: string): {
     "font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;" +
       "color:rgba(255,255,255,0.45);letter-spacing:0.06em;text-transform:uppercase;",
   );
-  sub.textContent = "Hermes Agent 中文社区桌面版 · 启动中";
+  sub.textContent = "Hermes Agent · 启动中";
   panel.appendChild(sub);
 
   root.appendChild(panel);

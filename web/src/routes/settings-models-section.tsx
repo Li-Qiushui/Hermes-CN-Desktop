@@ -1683,21 +1683,6 @@ export function ModelsSection() {
                   ? "正在搜索结果中浏览；清空搜索后可拖拽排序。"
                   : "拖拽卡片可调整常用服务商顺序，排序保存到当前 Profile。"}
               </div>
-              <div className={s.providerReviewBanner}>
-                想知道哪家中转站或者提供商性价比更好更稳定？
-                <a
-                  href="https://hermesagent.org.cn/transit"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className={s.link}
-                  onClick={(event) => {
-                    event.preventDefault();
-                    void openExternalUrl("https://hermesagent.org.cn/transit");
-                  }}
-                >
-                  点击此处查看测评
-                </a>
-              </div>
             </div>
 
             {selectedProvider && (

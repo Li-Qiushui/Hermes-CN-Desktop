@@ -1276,7 +1276,7 @@ export function KernelSection({ showHeading = true }: SettingsSectionProps) {
       <SettingsHero
         ok={isAttachedConnection || isolationOk}
         icon={isRemote ? <Globe2 size={24} /> : isLocalConnection ? <Cable size={24} /> : isolationOk ? <ShieldCheck size={24} /> : <Bug size={24} />}
-        eyebrow="Hermes Agent 中文社区桌面版内核"
+        eyebrow="Hermes Agent 内核"
         title={isAttachedConnection ? `已连接${attachedConnectionLabel}` : isolationOk ? (process?.ownsProcess ? "本机内核正在运行" : "已连接到本机内核") : "正在读取内核状态"}
         description={
           isAttachedConnection
@@ -1556,47 +1556,6 @@ export function AboutSection({ showHeading = true }: SettingsSectionProps) {
     <div className={s.aboutSection}>
       {showHeading && <h2 className={s.heading}>关于</h2>}
       <div className={s.aboutDebugGrid}>
-        <DebugCard icon={<Download size={16} />} title="桌面端更新" sub="检查新版本并前往官网下载覆盖安装" wide>
-          <div className={s.runtimeGrid}>
-            <RuntimeField label="当前版本" value={versionLabel(DESKTOP_VERSION)} />
-            <RuntimeField
-              label="最新版本"
-              value={desktopUpdateResult?.latestVersion ? versionLabel(desktopUpdateResult.latestVersion) : "—"}
-            />
-            <RuntimeField
-              label="检查时间"
-              value={formatDesktopUpdateCheckedAt(desktopUpdateResult?.checkedAtMs)}
-            />
-            <RuntimeField
-              label="清单地址"
-              value={desktopUpdateResult?.manifestUrl ?? "https://desktop.hermesagent.org.cn/latest.json"}
-              mono
-              wide
-            />
-          </div>
-          <div
-            className={s.runtimeMessage}
-            data-tone={desktopUpdateResult && !desktopUpdateResult.ok ? "error" : "normal"}
-          >
-            {formatDesktopUpdateMessage(desktopUpdateResult, desktopUpdateChecking, hasDesktopUpdateBridge)}
-          </div>
-          <div className={s.providerActions}>
-            <Button
-              variant="outline"
-              type="button"
-              onClick={() => void handleCheckDesktopUpdate()}
-              loading={desktopUpdateChecking}
-              disabled={!hasDesktopUpdateBridge}
-              leadingIcon={<RefreshCw size={12} />}
-            >
-              检查更新
-            </Button>
-            <Button variant="solid" tone="accent" type="button" onClick={handleOpenDesktopDownload}>
-              <ExternalLinkIcon size={12} />
-              去官网下载
-            </Button>
-          </div>
-        </DebugCard>
 
         <DebugCard icon={<Bug size={16} />} title="开发者工具" sub="默认开启开发者模式，可用快捷键打开 DevTools">
           <div className={s.runtimeGrid}>
@@ -1614,15 +1573,9 @@ export function AboutSection({ showHeading = true }: SettingsSectionProps) {
             <p>
               感谢 Hermes Agent 官方
               <ExternalTextLink href="https://nousresearch.com/">Nous Research</ExternalTextLink>
-              的支持，以及参与测试、反馈、共建的中文社区朋友。
-            </p>
-            <p>
-              感谢
-              <ExternalTextLink href="https://github.com/MaxwellGengYF">MaxwellGeng</ExternalTextLink>
-              的代码贡献，及
-              <ExternalTextLink href="https://www.compshare.cn/">优云智算</ExternalTextLink>
               的支持。
             </p>
+
             <p>
               界面内置并使用华为 HarmonyOS Sans（SC，© 2021 Huawei Device Co., Ltd.），依据
               <ExternalTextLink href="https://github.com/ajacocks/harmonyos-sans-font/blob/main/LICENSE">
@@ -1633,36 +1586,7 @@ export function AboutSection({ showHeading = true }: SettingsSectionProps) {
           </div>
         </DebugCard>
 
-        <DebugCard icon={<MessageCircle size={16} />} title="联系方式" sub="社区入口和反馈渠道" wide>
-          <div className={s.contactLayout}>
-            <div className={s.runtimeGrid}>
-              <ExternalLinkField label="官网" href="https://hermesagent.org.cn" text="hermesagent.org.cn" />
-              <ContactField label="反馈">
-                <ExternalTextLink href="https://github.com/Eynzof/hermes-agent-cn-desktop/issues">
-                  到桌面端仓库 UI 层提交 issue 或建议
-                </ExternalTextLink>
-                <ExternalTextLink href="https://github.com/Eynzof/hermes-agent-cn/issues">
-                  到桌面端内核仓库提交 issue 或建议
-                </ExternalTextLink>
-              </ContactField>
-              <ContactField label="商务合作、企业服务" className={s.businessContactField}>
-                <div className={s.businessContactLines}>
-                  <ContactCopyLine label="电子邮箱" value="hello@wanderminds.ai" />
-                </div>
-              </ContactField>
-            </div>
-            <div className={s.contactQrGroup}>
-              <div className={s.wechatQrPanel}>
-                <img src={wechatCommunityQr} alt="Hermes Agent 中文社区微信群二维码" />
-                <p>微信扫码加入 Hermes Agent 中文社区</p>
-              </div>
-              <div className={s.wechatQrPanel}>
-                <img src={feishuCommunityQr} alt="Hermes Agent 中文社区飞书群二维码" />
-                <p>飞书扫码加入 Hermes Agent 中文社区</p>
-              </div>
-            </div>
-          </div>
-        </DebugCard>
+
 
         <DebugCard icon={<GitFork size={16} />} title="项目链接" sub="桌面端与内核仓库" wide>
           <div className={s.runtimeGrid}>

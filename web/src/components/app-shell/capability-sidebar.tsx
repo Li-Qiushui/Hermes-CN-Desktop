@@ -67,9 +67,9 @@ export const CAPABILITY_SECTIONS: readonly {
   label: string;
   items: readonly CapabilityItem[];
 }[] = [
-  { label: "§021 · 配置", items: CONFIG_ITEMS },
-  { label: "§022 · 自动化", items: AUTOMATION_ITEMS },
-  { label: "§023 · 备份与恢复", items: BACKUP_ITEMS },
+  { label: "配置", items: CONFIG_ITEMS },
+  { label: "自动化", items: AUTOMATION_ITEMS },
+  { label: "备份与恢复", items: BACKUP_ITEMS },
 ];
 
 export function CapabilitySidebar() {
@@ -87,7 +87,7 @@ export function CapabilitySidebar() {
           <section key={section.label} className={s.section}>
             <div className={s.label}>
               <span>{section.label}</span>
-              <span className={s.labelNum}>✕✕</span>
+  
             </div>
             {section.items.map((item) => {
               const Icon = item.icon;

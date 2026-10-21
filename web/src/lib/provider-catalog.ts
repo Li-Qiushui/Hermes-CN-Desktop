@@ -342,10 +342,6 @@ export const BUILTIN_PROVIDER_CATALOG: ProviderCatalog = {
       icon: "compshare",
       docsUrl: "https://www.compshare.cn/",
       websiteUrl: "https://www.compshare.cn/",
-      promotion: {
-        url: "https://passport.compshare.cn/register?referral_code=K50gMvv85OmEJ5T9ZDUtDE&ytag=GPU_YY_YX_hermesagent.org.cn",
-        badge: "partner",
-      },
       defaultModel: "deepseek-v4-flash",
       models: [
         { id: "deepseek-v4-flash", supportsTools: true },
@@ -364,10 +360,6 @@ export const BUILTIN_PROVIDER_CATALOG: ProviderCatalog = {
       icon: "compshare",
       docsUrl: "https://www.compshare.cn/",
       websiteUrl: "https://www.compshare.cn/",
-      promotion: {
-        url: "https://passport.compshare.cn/register?referral_code=K50gMvv85OmEJ5T9ZDUtDE&ytag=GPU_YY_YX_hermesagent.org.cn",
-        badge: "partner",
-      },
       defaultModel: "deepseek-v4-flash",
       models: [
         { id: "deepseek-v4-flash", supportsTools: true },
@@ -974,10 +966,6 @@ export const BUILTIN_PROVIDER_CATALOG: ProviderCatalog = {
       apiKeyLabel: "PACKYCODE_API_KEY",
       icon: "packycode",
       websiteUrl: "https://www.packyapi.com",
-      promotion: {
-        url: "https://www.packyapi.com/register?aff=3lj3",
-        badge: "partner",
-      },
       defaultModel: "claude-opus-4-8",
       models: [
         { id: "claude-opus-4-8", label: "Claude Opus 4.8", supportsTools: true, supportsVision: true },
@@ -997,10 +985,6 @@ export const BUILTIN_PROVIDER_CATALOG: ProviderCatalog = {
       apiKeyLabel: "CCSUB_API_KEY",
       icon: "ccsub",
       websiteUrl: "https://www.ccsub.net",
-      promotion: {
-        url: "https://www.ccsub.net/register?ref=2QRN9EJ8",
-        badge: "partner",
-      },
       defaultModel: "gpt-5.5",
       models: [
         { id: "gpt-5.5", label: "GPT-5.5", contextWindow: 400000, supportsTools: true },
@@ -1017,10 +1001,6 @@ export const BUILTIN_PROVIDER_CATALOG: ProviderCatalog = {
       apiKeyLabel: "APIKEYFUN_API_KEY",
       icon: "apikeyfun",
       websiteUrl: "https://apikey.fun",
-      promotion: {
-        url: "https://apikey.fun/register?aff=38U8BP5JSMDX",
-        badge: "partner",
-      },
       defaultModel: "claude-opus-4-8",
       models: [
         { id: "claude-opus-4-8", label: "Claude Opus 4.8", contextWindow: 1000000, supportsTools: true, supportsVision: true },
@@ -1042,10 +1022,6 @@ export const BUILTIN_PROVIDER_CATALOG: ProviderCatalog = {
       apiKeyLabel: "AIGOCODE_API_KEY",
       icon: "aigocode",
       websiteUrl: "https://aigocode.app",
-      promotion: {
-        url: "https://aigocode.app/invite/VJE7ZWQA",
-        badge: "partner",
-      },
       defaultModel: "claude-opus-4-8",
       models: [
         { id: "claude-opus-4-8", label: "Claude Opus 4.8", supportsTools: true, supportsVision: true },
@@ -1065,10 +1041,6 @@ export const BUILTIN_PROVIDER_CATALOG: ProviderCatalog = {
       apiKeyLabel: "RIGHTCODE_API_KEY",
       icon: "rightcode",
       websiteUrl: "https://www.right.codes",
-      promotion: {
-        url: "https://right.codes/register?aff=e4158139",
-        badge: "partner",
-      },
       defaultModel: "claude-opus-4-8",
       models: [
         { id: "claude-opus-4-8", label: "Claude Opus 4.8", supportsTools: true, supportsVision: true },
@@ -1088,10 +1060,6 @@ export const BUILTIN_PROVIDER_CATALOG: ProviderCatalog = {
       apiKeyLabel: "AICODEMIRROR_API_KEY",
       icon: "aicodemirror",
       websiteUrl: "https://www.aicodemirror.com",
-      promotion: {
-        url: "https://www.aicodemirror.com/register?invitecode=JPDYK7",
-        badge: "partner",
-      },
       defaultModel: "claude-opus-4-8",
       models: [
         { id: "claude-opus-4-8", label: "Claude Opus 4.8", supportsTools: true, supportsVision: true },
@@ -1113,10 +1081,6 @@ export const BUILTIN_PROVIDER_CATALOG: ProviderCatalog = {
       apiKeyLabel: "SSSAICODE_API_KEY",
       icon: "sssaicode",
       websiteUrl: "https://sssaicode.com",
-      promotion: {
-        url: "https://sssaicode.com/register?ref=Y687IE",
-        badge: "partner",
-      },
       defaultModel: "claude-opus-4-8",
       models: [
         { id: "claude-opus-4-8", label: "Claude Opus 4.8", supportsTools: true, supportsVision: true },
@@ -1136,10 +1100,6 @@ export const BUILTIN_PROVIDER_CATALOG: ProviderCatalog = {
       apiKeyLabel: "MICU_API_KEY",
       icon: "micu",
       websiteUrl: "https://www.micuapi.ai",
-      promotion: {
-        url: "https://www.micuapi.ai/register?aff=9v98",
-        badge: "partner",
-      },
       defaultModel: "claude-opus-4-8",
       models: [
         { id: "claude-opus-4-8", label: "Claude Opus 4.8", supportsTools: true, supportsVision: true },
@@ -1159,10 +1119,6 @@ export const BUILTIN_PROVIDER_CATALOG: ProviderCatalog = {
       apiKeyLabel: "NEKOCODE_API_KEY",
       icon: "nekocode",
       websiteUrl: "https://nekocode.ai",
-      promotion: {
-        url: "https://nekocode.ai?aff=WX7PPCLT",
-        badge: "partner",
-      },
       defaultModel: "gpt-5.5",
       models: [
         { id: "gpt-5.5", label: "GPT-5.5", supportsTools: true },
@@ -1179,10 +1135,6 @@ export const BUILTIN_PROVIDER_CATALOG: ProviderCatalog = {
       apiKeyLabel: "CUBENCE_API_KEY",
       icon: "cubence",
       websiteUrl: "https://cubence.com",
-      promotion: {
-        url: "https://cubence.com/signup?code=SCGAKBEG",
-        badge: "partner",
-      },
       defaultModel: "claude-opus-4-8",
       models: [
         { id: "claude-opus-4-8", label: "Claude Opus 4.8", supportsTools: true, supportsVision: true },
@@ -1582,7 +1534,7 @@ export function mergeProviderCatalog(base: ProviderCatalog, remote: ProviderCata
   };
 }
 
-const PROMOTION_BADGES = new Set(["partner", "prime"]);
+
 
 function isHttpsUrl(value: unknown): value is string {
   if (typeof value !== "string") return false;
@@ -1591,19 +1543,6 @@ function isHttpsUrl(value: unknown): value is string {
   } catch {
     return false;
   }
-}
-
-function normalizeRemotePromotion(promotion: unknown): ProviderPromotion | undefined {
-  if (!promotion || typeof promotion !== "object" || Array.isArray(promotion)) return undefined;
-  const record = promotion as Record<string, unknown>;
-  if (!isHttpsUrl(record.url)) return undefined;
-  const badge = typeof record.badge === "string" && PROMOTION_BADGES.has(record.badge)
-    ? record.badge as ProviderPromotion["badge"]
-    : undefined;
-  return {
-    url: record.url,
-    ...(badge ? { badge } : {}),
-  };
 }
 
 function normalizeRemoteProvider(provider: Partial<ProviderPreset> | undefined): ProviderPreset | null {
@@ -1621,6 +1560,7 @@ function normalizeRemoteProvider(provider: Partial<ProviderPreset> | undefined):
   const models = Array.isArray(provider.models) && provider.models.length > 0
     ? provider.models.filter((model): model is ProviderCatalogModel => Boolean(model?.id))
     : [{ id: provider.defaultModel }];
+
   const apiKeyAliases = Array.isArray(provider.apiKeyAliases)
     ? Array.from(new Set(
       provider.apiKeyAliases
@@ -1629,8 +1569,6 @@ function normalizeRemoteProvider(provider: Partial<ProviderPreset> | undefined):
         .filter(Boolean),
     ))
     : [];
-
-  const promotion = normalizeRemotePromotion(provider.promotion);
 
   return {
     id: provider.id,
@@ -1645,7 +1583,6 @@ function normalizeRemoteProvider(provider: Partial<ProviderPreset> | undefined):
     docsUrl: provider.docsUrl,
     ...(isHttpsUrl(provider.websiteUrl) ? { websiteUrl: provider.websiteUrl } : {}),
     ...(typeof provider.icon === "string" && provider.icon.trim() ? { icon: provider.icon.trim() } : {}),
-    ...(promotion ? { promotion } : {}),
     defaultModel: provider.defaultModel,
     models,
     supportsModelListing: typeof provider.supportsModelListing === "boolean" ? provider.supportsModelListing : undefined,

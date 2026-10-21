@@ -19,10 +19,10 @@
   user-select: none;
 }
 
-/* Section heading — grid with left num column + title + right meta. */
+/* Section heading — single column (junk the 64px num column). */
 .section {
   display: grid;
-  grid-template-columns: 64px 1fr;
+  grid-template-columns: 1fr;
   gap: 16px;
   align-items: start;
   padding: 24px 0 12px;

@@ -167,6 +167,13 @@ export async function verifyBackendVersion(
     state = { kind: "ok", backendVersion: info.version };
     return state;
   } catch (error) {
+    // A reachable backend that does not implement /api/version (official
+    // upstream kernels have no such endpoint) must not be fatal: treat it as
+    // deferred so the UI can still load and talk to the dashboard.
+    if (error instanceof BackendVersionHttpError && error.status === 404) {
+      state = { kind: "deferred", reason: "external-backend-unreachable" };
+      return state;
+    }
     if (isExternalConnection(options.connectionMode)) {
       if (error instanceof BackendVersionHttpError && (error.status === 401 || error.status === 403)) {
         state = { kind: "deferred", reason: "external-backend-auth-required" };

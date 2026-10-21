@@ -288,7 +288,7 @@ fn build_debug_bundle(
 
     bundle.add_text(
         "README.txt",
-        "Hermes Agent 中文社区桌面版 debug 包。\n\n这个压缩包包含桌面端运行态、内核 runtime 信息、前端 Debug 面板快照、已脱敏配置摘要，以及 HERMES_HOME / gateway runtime 下的日志文件。\n请直接把整个 zip 发给开发者用于排查问题。\n",
+        "Hermes Agent debug 包。\n\n这个压缩包包含桌面端运行态、内核 runtime 信息、前端 Debug 面板快照、已脱敏配置摘要，以及 HERMES_HOME / gateway runtime 下的日志文件。\n请直接把整个 zip 发给开发者用于排查问题。\n",
     )?;
 
     bundle.add_json(

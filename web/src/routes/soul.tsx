@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Pencil, RefreshCw, Sparkles, Store, UserRound } from "lucide-react";
+import { Pencil, RefreshCw, Sparkles } from "lucide-react";
 import { Button, LoadingState } from "@hermes/shared-ui";
-import { PersonaMarketPanel } from "@/components/persona/persona-market-panel";
+
 import { useActiveProfileName } from "@/hooks/use-profiles";
 import { SOUL_CHAR_LIMIT, useSaveSoul, useSoul } from "@/hooks/use-soul";
 import { SectionShell } from "./section-shell";
@@ -88,7 +88,6 @@ export function SoulRoute() {
 
   const [text, setText] = useState("");
   const [dirty, setDirty] = useState(false);
-  const [page, setPage] = useState<"market" | "custom">("market");
   const [savedFlash, setSavedFlash] = useState(false);
 
   const data = soulQuery.data;
@@ -116,14 +115,6 @@ export function SoulRoute() {
         window.setTimeout(() => setSavedFlash(false), 1600);
       },
     });
-  };
-
-  const handleApplyPersona = async (prompt: string) => {
-    await saveSoul.mutateAsync(prompt);
-    setText(prompt);
-    setDirty(false);
-    setSavedFlash(true);
-    window.setTimeout(() => setSavedFlash(false), 2200);
   };
 
   const right = (
@@ -168,36 +159,6 @@ export function SoulRoute() {
         <div className={s.soulPage}>
           {errorMessage && <div className={s.errorState}>{errorMessage}</div>}
 
-          <div className={s.pageTabs} role="tablist" aria-label="人格市场或自定义人格">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={page === "market"}
-              data-active={page === "market" ? "true" : undefined}
-              onClick={() => setPage("market")}
-            >
-              <Store size={16} /> 人格市场
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={page === "custom"}
-              data-active={page === "custom" ? "true" : undefined}
-              onClick={() => setPage("custom")}
-            >
-              <UserRound size={16} /> {HERMES_PERSONA_TAB_LABEL}
-            </button>
-          </div>
-
-          {page === "market" ? (
-            <PersonaMarketPanel
-              profile={profile}
-              currentSoul={text}
-              dirty={dirty}
-              applying={saveSoul.isPending}
-              onApply={handleApplyPersona}
-            />
-          ) : (
             <HermesPersonaEditor
               exists={data?.exists ?? false}
               text={text}
@@ -211,7 +172,6 @@ export function SoulRoute() {
               }}
               onSave={handleSave}
             />
-          )}
         </div>
       )}
     </SectionShell>

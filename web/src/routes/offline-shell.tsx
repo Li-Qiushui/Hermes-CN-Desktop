@@ -66,7 +66,7 @@ function OfflineAbout() {
   return (
     <OfflinePage title="关于与帮助" sub="离线时也可以访问社区和使用文档。">
       <div className={s.cards}>
-        <article><Globe2 size={20} /><h2>中文社区官网</h2><p>查看最新文档、安装说明和社区联系方式。</p><Button variant="outline" onClick={() => void openExternalUrl("https://hermesagent.org.cn")}><ExternalLink size={12} />打开官网</Button></article>
+
         <article><Compass size={20} /><h2>重新选择开始方式</h2><p>选择开箱即用，或连接你已经部署好的 Hermes。</p><Button variant="outline" onClick={() => { window.location.hash = "#/guide"; }}>打开引导</Button></article>
       </div>
     </OfflinePage>

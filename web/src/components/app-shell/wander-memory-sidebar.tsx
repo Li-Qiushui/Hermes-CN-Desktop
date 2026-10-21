@@ -74,8 +74,8 @@ export function WanderMemorySidebar() {
       <div className={s.scrollY}>
         <section className={s.section}>
           <div className={s.label}>
-            <span>§041 · Wander 记忆</span>
-            <span className={s.labelNum}>✕✕</span>
+            <span>Wander 记忆</span>
+
           </div>
           {WANDER_MEMORY_ITEMS.map((item) => {
             const Icon = item.icon;

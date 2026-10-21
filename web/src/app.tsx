@@ -4,11 +4,11 @@ import { lazy, Suspense, useEffect, type ReactNode } from "react";
 import { useSetAtom } from "jotai";
 import { useBootstrapActiveProfile } from "@/hooks/use-profiles";
 import { readUiValue } from "@/lib/ui-store";
-import { sendTelemetryPingIfDue, sendTokenUsageTelemetryIfDue } from "@/lib/telemetry";
+
 import { ErrorBoundary } from "@/components/error-boundary";
 import { ProfileSwitchOverlay } from "@/components/profile-switch-overlay";
 import { RuntimeUpdateOverlay } from "@/components/runtime-update-overlay";
-import { DesktopUpdateNotifier } from "@/components/desktop-update-notifier";
+
 import { ConnectionAuthBanner } from "@/components/connection-auth-banner";
 import { WanderMemoryRouteLifecycle } from "@/components/wander-memory/route-lifecycle";
 import { AppShell } from "@/components/app-shell/app-shell";
@@ -152,7 +152,7 @@ function BackendApp() {
       </AppShell>
       <ProfileSwitchOverlay />
       <RuntimeUpdateOverlay />
-      <DesktopUpdateNotifier />
+
       <ConnectionAuthBanner />
       <CommandPalette />
     </>
@@ -166,10 +166,6 @@ export function App() {
   useEffect(() => {
     hydrateTheme(readUiValue<Partial<ThemeConfig>>("hermes-theme", DEFAULT_THEME_CONFIG));
   }, [hydrateTheme]);
-  useEffect(() => {
-    void sendTelemetryPingIfDue();
-    if (runtime.isBackendReady()) void sendTokenUsageTelemetryIfDue();
-  }, []);
 
   const isGuide = location.pathname === "/guide";
   let content: ReactNode;

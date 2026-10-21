@@ -69,7 +69,7 @@ pub fn finalize_offline_bootstrap(app: &tauri::AppHandle) {
         inner.last_runtime_error = None;
     }
     emit_runtime_status(app, "ready-offline", "内核未启动，已进入桌面引导");
-    log::info!("Hermes Agent 中文社区桌面版 ready (managed runtime offline)");
+    log::info!("Hermes Agent ready (managed runtime offline)");
 }
 
 pub async fn install_bundled_runtime_for_bootstrap(
@@ -405,5 +405,5 @@ pub async fn finalize_bootstrap(
     }
 
     emit_runtime_status(app, "ready", "");
-    log::info!("Hermes Agent 中文社区桌面版 ready");
+    log::info!("Hermes Agent ready");
 }

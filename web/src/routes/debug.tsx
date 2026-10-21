@@ -92,7 +92,7 @@ export function DebugRoute() {
       <div className={s.aboutHero}>
         <div className={s.aboutHeroMark}><Bug size={24} /></div>
         <div className={s.aboutHeroBody}>
-          <div className={s.aboutEyebrow}>Hermes Agent 中文社区桌面版排障包</div>
+          <div className={s.aboutEyebrow}>Hermes Agent 排障包</div>
           <h3>一键导出 debug 包</h3>
           <p>{exportSubText}</p>
           {exportState && (

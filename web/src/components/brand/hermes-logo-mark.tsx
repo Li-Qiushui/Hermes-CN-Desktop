@@ -8,7 +8,7 @@ interface HermesLogoMarkProps {
   tone?: "light" | "dark";
 }
 
-/** Hermes 中文社区桌面版统一使用的黑白灰品牌标。 */
+/** Hermes 统一使用的黑白灰品牌标。 */
 export function HermesLogoMark({ size = 22, className, title }: HermesLogoMarkProps) {
   return (
     <img

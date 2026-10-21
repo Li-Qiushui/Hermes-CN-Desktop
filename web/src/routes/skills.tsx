@@ -770,7 +770,7 @@ function SkillDetail({
             <div className={s.secHeadRight}>
               {isTranslated && (
                 <>
-                  <span>由 Hermes 中文社区维护翻译</span>
+                  <span>已提供中文翻译</span>
                   <div className={s.langSeg}>
                     <button
                       type="button"

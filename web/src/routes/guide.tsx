@@ -95,7 +95,7 @@ export function GuideRoute() {
           }
         />
         <div>
-          <p>Hermes Agent 中文社区桌面版</p>
+          <p>Hermes Agent</p>
           <h1>你想怎么开始使用 Hermes？</h1>
           <span>不确定怎么选？直接选择“开箱即用”，适合绝大多数用户。</span>
         </div>
@@ -190,17 +190,7 @@ export function GuideRoute() {
           </section>
         )}
 
-        <aside className={s.support}>
-          <img src={wechatCommunityQr} alt="Hermes Agent 中文社区微信群二维码" />
-          <HeartHandshake size={24} />
-          <div>
-            <strong>不确定怎么选，也可以来中文社区问我们</strong>
-            <span>扫码加入微信群；二维码失效时可从官网获取最新联系方式。</span>
-          </div>
-          <button type="button" onClick={() => void openExternalUrl("https://hermesagent.org.cn")}>
-            <ExternalLink size={12} /> 打开官网
-          </button>
-        </aside>
+
       </div>
     </main>
   );

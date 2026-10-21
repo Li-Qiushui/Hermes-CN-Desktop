@@ -1,9 +1,8 @@
-/* Hero — left ".num" gutter + right large Harmony title + greet meta row.
-   Mirrors prototypes/.hero */
+/* Hero — single column large title + greet meta row. */
 
 .hero {
   display: grid;
-  grid-template-columns: 64px 1fr;
+  grid-template-columns: 1fr;
   gap: 16px;
   align-items: end;
   padding: 32px 0 24px;

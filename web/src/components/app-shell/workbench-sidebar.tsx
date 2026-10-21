@@ -74,7 +74,8 @@ function modelShort(model: string | null | undefined) {
 }
 
 function sectionLabel(index: number, label: string): string {
-  return `§${index.toString().padStart(2, "0")} · ${label}`;
+  void index;
+  return label;
 }
 
 function KanbanQuickIcon() {
@@ -385,7 +386,7 @@ export function WorkbenchSidebar() {
         <section className={s.section}>
           <div className={s.label}>
             <span>{activeSectionLabel}</span>
-            <span className={s.labelNum}>✕✕</span>
+
           </div>
           {active.length === 0 ? (
             <div className={s.empty}>暂无运行任务</div>
@@ -414,7 +415,7 @@ export function WorkbenchSidebar() {
           <section className={s.section}>
             <div className={s.label}>
               <span>{pinnedSessionSectionLabel}</span>
-              <span className={s.labelNum}>✕✕</span>
+  
             </div>
             {pinned.map((sess) => {
               const running = isSessionRunning(sess, runtimeBySession);
@@ -449,7 +450,7 @@ export function WorkbenchSidebar() {
         <section className={s.section}>
           <div className={s.label}>
             <span>{pinnedProjectSectionLabel}</span>
-            <span className={s.labelNum}>✕✕</span>
+
           </div>
           {pinnedProjects.length === 0 ? (
             <button
@@ -487,7 +488,7 @@ export function WorkbenchSidebar() {
         <section className={s.section}>
           <div className={s.label}>
             <span>{recentSectionLabel}</span>
-            <span className={s.labelNum}>✕✕</span>
+
           </div>
           {recent.length === 0 ? (
             <div className={s.empty}>暂无最近会话</div>

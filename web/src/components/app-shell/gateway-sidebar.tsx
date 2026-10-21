@@ -10,15 +10,15 @@ interface GatewayItem {
 }
 
 export const IM_ITEMS: readonly GatewayItem[] = [
-  { label: "飞书接入", path: "/im/feishu", icon: MessageCircle, title: "将飞书消息平台接入中文社区桌面版" },
-  { label: "微信接入", path: "/im/weixin", icon: MessageSquareText, title: "将微信消息平台接入中文社区桌面版" },
+  { label: "飞书接入", path: "/im/feishu", icon: MessageCircle, title: "将飞书消息平台接入 Hermes Agent" },
+  { label: "微信接入", path: "/im/weixin", icon: MessageSquareText, title: "将微信消息平台接入 Hermes Agent" },
 ];
 
 export const GATEWAY_SECTIONS: readonly {
   label: string;
   items: readonly GatewayItem[];
 }[] = [
-  { label: "§031 · 消息平台接入", items: IM_ITEMS },
+  { label: "消息平台接入", items: IM_ITEMS },
 ];
 
 export function GatewaySidebar() {
@@ -33,7 +33,7 @@ export function GatewaySidebar() {
           <section key={section.label} className={s.section}>
             <div className={s.label}>
               <span>{section.label}</span>
-              <span className={s.labelNum}>✕✕</span>
+  
             </div>
             {section.items.map((item) => {
               const Icon = item.icon;

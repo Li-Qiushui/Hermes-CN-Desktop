@@ -36,7 +36,6 @@ interface SectionProps {
 function Section({ num, tag, title, meta, children }: SectionProps) {
   return (
     <section className={s.section}>
-      <div className={s.sectionNum}>§ {num}</div>
       <div className={s.sectionBody}>
         <div className={s.sectionHead}>
           <div className={s.sectionLh}>

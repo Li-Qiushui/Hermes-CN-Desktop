@@ -266,7 +266,6 @@ export function Sidebar() {
         <HermesLogoMark className={s.brandMark} size={24} />
         <div className={s.brandText}>
           <div className={s.brandName}>Hermes Agent</div>
-          <div className={s.brandSub}>中文社区桌面版</div>
         </div>
       </div>
 

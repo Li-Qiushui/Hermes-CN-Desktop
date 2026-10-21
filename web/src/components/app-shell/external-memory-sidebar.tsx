@@ -50,8 +50,8 @@ export function ExternalMemorySidebar() {
       <div className={s.scrollY}>
         <section className={s.section}>
           <div className={s.label}>
-            <span>§051 · Hermes 记忆</span>
-            <span className={s.labelNum}>✕✕</span>
+            <span>Hermes 记忆</span>
+
           </div>
           {EXTERNAL_MEMORY_ITEMS.map((item) => {
             const Icon = item.icon;

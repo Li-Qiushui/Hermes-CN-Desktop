@@ -12,8 +12,8 @@ export function AutomationSidebar() {
       <div className={s.scrollY}>
         <section className={s.section}>
           <div className={s.label}>
-            <span>§04 · 自动化</span>
-            <span className={s.labelNum}>✕✕</span>
+            <span>自动化</span>
+
           </div>
           <button
             type="button"
@@ -25,7 +25,7 @@ export function AutomationSidebar() {
             <span className={s.itemIcon}>
               <Clock size={16} />
             </span>
-            <span className={s.itemLabel}>定时任务</span>
+
             <span className={s.itemPath}>/cron</span>
           </button>
         </section>
