@@ -1,7 +1,6 @@
 # Rust backend test suite for hermes-agent-cn-desktop.
 #
-# Runs on every PR and push to main. Separate workflow from
-# release-desktop.yml so a flaky test does not block tagged releases.
+# Runs on every PR and push to main.
 #
 # Linux-only matrix: the test suite is platform-independent except for
 # prevent_sleep.rs (macOS only, gated behind cfg). Running on ubuntu

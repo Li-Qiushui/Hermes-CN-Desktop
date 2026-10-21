@@ -131,7 +131,11 @@ export async function syncDesktopVersion({ version, write = true } = {}) {
   ));
 
   function syncReadme(text, currentVersionLabelPattern) {
-    let next = replaceOrThrow(text, currentVersionLabelPattern, `$1${desktopTag}$2`, "README current desktop version");
+    // The slim branch rewrote both READMEs without a version label line; a
+    // missing label means there is nothing to keep in sync, not a build error.
+    let next = currentVersionLabelPattern.test(text)
+      ? text.replace(currentVersionLabelPattern, `$1${desktopTag}$2`)
+      : text;
     next = next.replace(
       /(Hermes\.Agent\.CN\.Desktop_)[^_]+(_aarch64\.dmg)/g,
       `$1${desktopVersion}$2`,

@@ -17,10 +17,7 @@
   "bundle": {
     "active": true,
     "targets": [
-      "nsis",
-      "dmg",
-      "deb",
-      "appimage"
+      "nsis"
     ],
     "icon": [
       "icons/32x32.png",
@@ -38,10 +35,6 @@
     "longDescription": "Desktop app for Hermes Agent Chinese Community Edition.",
     "licenseFile": "legal/EULA.zh-CN.rtf",
     "resources": {
-      "static/bundled-runtime/": "bundled-runtime/",
-      "static/dashboard/": "dashboard/",
-      "static/bundled-skills/": "bundled-skills/",
-      "static/bundled-plugins/": "bundled-plugins/",
       "legal/agency-agents.MIT.txt": "agency-agents.MIT.txt",
       "legal/HarmonyOS_Sans_LICENSE.txt": "HarmonyOS_Sans_LICENSE.txt"
     },

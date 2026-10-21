@@ -1,4 +1,4 @@
-# Hermes-CN 桌面端热更新（统一自更新 + UI 热更 + 开发热更）
+# Hermes-CN 桌面端热更新（统一自更新 + UI 热更）
 
 > 本文是热更新的**唯一权威文档**（合并自旧 `hot-update-plan.md` / `hot-update-impl-plan.md` 两篇方案，原文件已归档删除），
 > 以**当前代码**为准，描述已落地机制 + **使用方法**（含无公网版本时的本地 dummy server 验证步骤）。
@@ -6,14 +6,13 @@
 
 ---
 
-## 1. 总览：四条更新路径（现状）
+## 1. 总览：三条更新路径（现状）
 
 | 路径 | 更新对象 | 状态 | 入口 |
 |---|---|---|---|
 | **A 内核 runtime 热更** | Python 后端（PyInstaller onedir） | ✅ 早已具备，本次**收口**（可配置下载源 + 与外壳统一版本） | `check_runtime_update` / `install_runtime_update` / `rollback_runtime`（`src/process/runtime.rs`），Ed25519 12 字段签名 + sha256 + 原子 `fs::rename` + 单步回滚 |
 | **B UI 层热更** | 用户看到的 React 应用（`web/dist`），**不重启内核** | ✅ **本次新建完成** | `hermesui:` 自定义协议 + `ui/versions/<v>/` 可写树 + 10 字段 Ed25519 签名 + `appVersionFloor` 闸门 + 单步回滚（`src/process/ui_update.rs`、`src/commands/ui_update.rs`） |
 | **C 外壳整包自更新（统一一键更新）** | 桌面端二进制 + 内嵌 UI + 内核，**同一版本**一起换 | ✅ **本次新建完成** | 统一 manifest（`latest.json`，`src/unified_manifest.rs`）+ `app_update_check` / `app_update_install`（`src/commands/app_update.rs`）+ 分离式 `scripts/apply-desktop-update.mjs` |
-| **D 开发期后端热更** | 本地源码安装（local-source）的 dev-runtime 内核 | ✅ **本次新建完成（dev-only）** | `hot_update_backend` 命令（`src/commands/hot_update.rs`）+ `scripts/hot-update-backend.mjs`，git pull 后重装 + 重启 dashboard |
 
 下载源可统一由用户可编辑的 `update-config.json` 配置（`src/update_config.rs`），级联：**文件 > `HERMES_UPDATE_*` 环境变量 > 编译期 bake > 硬编码 fallback**。
 
@@ -159,7 +158,7 @@ artifactUrl, sha256, sourceRepo, sourceCommit
 - 级联（高 → 低）：文件 → `HERMES_UPDATE_*` env → 编译期 bake → 硬编码 fallback。
 - 校验：channel 白名单、URL 必须 https（或空）、timeout 范围；写盘走临时文件 + 原子 rename。
 - 文件缺失/损坏 → 回退默认值，`configError` 经 `get_update_config` 上报 UI，**不阻塞启动**。
-- 命令：`get_update_config` / `set_update_config`；前端“更新源设置”面板（`web/src/routes/managed-runtime-panel.tsx`）编辑并“测试连接”。
+- 命令：`get_update_config` / `set_update_config`；前端“更新源设置”面板（设置 → 应用更新）编辑并“测试连接”。
 
 环境变量速查（`HERMES_UPDATE_*` 覆盖文件）：
 
@@ -168,21 +167,6 @@ HERMES_UPDATE_CHANNEL / HERMES_UPDATE_RELEASE_MANIFEST_URL / HERMES_UPDATE_RUNTI
 HERMES_UPDATE_RUNTIME_MANIFEST_URL / HERMES_UPDATE_RUNTIME_PUBLIC_KEY_PEM
 HERMES_UPDATE_TIMEOUT_SECONDS / HERMES_UPDATE_VERIFY_SHA256 / HERMES_UPDATE_VERIFY_SIGNATURE
 ```
-
----
-
-## 6. 开发期后端热更（路径 D，dev-only）
-
-一键把 `Hermes-CN-Core` 源码仓库的最新提交重装进桌面 dev-runtime 并重启内核（外壳/UI 不动）：
-
-```bash
-node scripts/hot-update-backend.mjs [--source D:/hermes-agent-cn] \
-    [--skip-git] [--skip-frontend-deps] [--build-frontend] [--dry-run]
-```
-
-- 步骤：校验源码树（`pyproject.toml`）→ 工作区干净守卫 + `git pull --ff-only`（**脏树/非快进直接中止**，绝不 stash/reset）→ 可选前端构建 → `scripts/install-local-runtime.mjs --source <src> --force` → 命令层重启 dashboard。
-- UI 按钮仅对 `local-source` dev-runtime 显示；Rust 命令双重守卫（managed 模式 + local-source 记录 + 无并发重启）。
-- 源码路径优先级：输入参数 > 当前记录的 `sourceRepo`（local-source 时）> `HERMES_AGENT_CN_SOURCE` env > `../Hermes-CN-Core` / `../hermes-agent-cn`。
 
 ---
 
@@ -197,7 +181,7 @@ node scripts/sync-release-version.mjs 0.8.0 --core D:/hermes-agent-cn --dry-run 
 node scripts/sync-release-version.mjs --check --core D:/hermes-agent-cn           # CI 门，失配 exit 1
 ```
 
-桌面侧（复用 `sync-desktop-version.mjs`）：`package.json`、`web/`、`packages/`、`tauri.conf.json`、`Cargo.toml`、`Cargo.lock`、README/docs、`release-desktop.yml`。`EXPECTED_BACKEND_VERSION` 不跟随桌面版本改写；托管模式从当前 runtime 记录读取内核版本。Core 侧：`pyproject.toml [project].version` + `hermes_cli/__init__.py __version__`。
+桌面侧（复用 `sync-desktop-version.mjs`）：`package.json`、`web/`、`packages/`、`tauri.conf.json`、`Cargo.toml`、`Cargo.lock`、README/docs。`EXPECTED_BACKEND_VERSION` 不跟随桌面版本改写；桌面端只连外部内核，版本从外部 `/api/version` 读取。Core 侧：`pyproject.toml [project].version` + `hermes_cli/__init__.py __version__`。
 
 ### 7.2 产物与签名
 
@@ -210,14 +194,13 @@ node scripts/sync-release-version.mjs --check --core D:/hermes-agent-cn         
 
 ## 8. 使用（用户 / 开发者）
 
-### 8.1 桌面端 UI（设置 → 内核管理面板，`web/src/routes/managed-runtime-panel.tsx`）
+### 8.1 桌面端 UI（设置 → 应用更新）
 
 | 按钮 | 作用 | 前置 |
 |---|---|---|
-| **检查更新 / 一键更新** | 统一更新（外壳+内核同版本，自动重启） | managed 模式 + `app_update` 桥可用 |
+| **检查更新 / 一键更新** | 统一更新（外壳+内核同版本，自动重启） | `app_update` 桥可用 |
 | **更新源设置** | 编辑 `update-config.json`（含测试连接） | 同上 |
 | **检查界面更新 / 安装 / 回退** | UI 层热更（不重启内核） | `ui_*` 桥可用 |
-| **热更新后端（dev）** | 本地源码后端热更 | 仅 `local-source` dev-runtime |
 
 另有桌面更新通知组件（`web/src/components/desktop-update-notifier.tsx`）：检测到新版本时，若桥可用显示 **“立即更新”**（走统一流程），否则保留 **“去官网下载”**。
 
@@ -286,13 +269,12 @@ set HERMES_RUNTIME_UPDATE_PUBLIC_KEY_PEM=<测试公钥 PEM>
 set HERMES_UI_UPDATE_ALLOW_HTTP_ARTIFACT=1
 ```
 
-启动应用 → 设置 → 内核管理面板 → “检查界面更新 / 安装 / 回退”。
+启动应用 → 设置 → 应用更新 → “检查界面更新 / 安装 / 回退”。
 
 **Step 6 — 脚本 dry-run 自检**：
 
 ```bash
 node scripts/apply-desktop-update.mjs <pending-app-update.json> --dry-run   # 打印将执行的安装/重启命令
-node scripts/hot-update-backend.mjs --source D:/hermes-agent-cn --dry-run   # 预览 dev 热更流程
 node scripts/sync-release-version.mjs --check --core D:/hermes-agent-cn     # 版本一致性门
 ```
 
@@ -315,9 +297,8 @@ node scripts/sync-release-version.mjs --check --core D:/hermes-agent-cn     # �
 - 统一更新：`src/commands/app_update.rs`、`src/unified_manifest.rs`、`src/update_config.rs`、`scripts/apply-desktop-update.mjs`、`scripts/update-config.example.json`
 - UI 热更：`src/process/ui_update.rs`、`src/commands/ui_update.rs`、`src/main.rs`（`hermesui:` 协议 + 窗口创建）、`tauri.conf.json`（CSP）
 - 内核热更（既有）：`src/process/runtime.rs`（`install_runtime_update` / `verify_payload_signature` / `configured_manifest_url` / `configured_public_key`）
-- dev 热更：`src/commands/hot_update.rs`、`scripts/hot-update-backend.mjs`、`scripts/install-local-runtime.mjs`
 - 版本同步：`scripts/sync-release-version.mjs`、`scripts/sync-desktop-version.mjs`
-- 前端：`web/src/hooks/use-app-update.ts`、`use-ui-update.ts`、`use-hot-update-backend.ts`、`web/src/lib/app-update.ts`、`update-config.ts`、`web/src/routes/managed-runtime-panel.tsx`、`web/src/components/desktop-update-notifier.tsx`、`packages/protocol/src/channels.ts`（IPC 类型）
+- 前端：`web/src/hooks/use-app-update.ts`、`use-ui-update.ts`、`web/src/lib/app-update.ts`、`update-config.ts`、`web/src/components/desktop-update-notifier.tsx`、`packages/protocol/src/channels.ts`（IPC 类型）
 - 验证：`tests/hot_update_dummy_server.rs`（dummy server 集成测试）、`src/process/ui_update.rs` / `src/commands/app_update.rs` / `src/update_config.rs` / `src/unified_manifest.rs` 内嵌单测
 
-相关文档：`docs/managed-runtime.md`（内核 runtime 详解）、`docs/macos-signing-and-notarization.md`、`.codex/skills/desktop-release-preflight/SKILL.md`（发版安全闸门）、`.codex/skills/desktop-release-sync-landing/SKILL.md`（官网版本同步）。
+相关文档：`.codex/skills/desktop-release-sync-landing/SKILL.md`（官网版本同步）。
