@@ -1,7 +1,7 @@
 //! User-configurable update download source (`update-config.json`).
 //!
 //! One JSON file in the desktop data directory (`runtime_root()`, i.e. the
-//! same anchor as the managed runtime tree) controls where the unified
+//! same anchor as the desktop state tree) controls where the unified
 //! self-update flow downloads from:
 //!
 //! ```json
@@ -120,7 +120,7 @@ impl UpdateConfigLoad {
 /// it travels with the runtime tree (portable mode included) and is easy to
 /// override in tests via `HERMES_DESKTOP_RUNTIME_ROOT`.
 pub fn update_config_path() -> PathBuf {
-    crate::process::runtime::runtime_root().join(UPDATE_CONFIG_FILE)
+    crate::process::data_dir::data_dir().join(UPDATE_CONFIG_FILE)
 }
 
 fn read_env_trimmed(name: &str) -> Option<String> {

@@ -554,7 +554,7 @@ pub fn kv_value(hermes_home: &str, key: &str) -> AppResult<Option<Value>> {
 }
 
 /// UI-store KV key holding the desktop "YOLO mode" preference, scoped to the
-/// active profile's HERMES_HOME. When truthy, the desktop launches the managed
+/// active profile's HERMES_HOME. When truthy, the kernel should start with
 /// runtime with `HERMES_YOLO_MODE=1`, which makes the backend auto-approve
 /// dangerous-command prompts (equivalent to the `--yolo` CLI flag).
 pub const YOLO_MODE_KEY: &str = "desktop.yoloMode";

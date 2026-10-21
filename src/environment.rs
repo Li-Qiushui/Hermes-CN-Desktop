@@ -1,9 +1,9 @@
 //! Desktop environment diagnostics.
 //!
-//! The desktop uses an isolated managed runtime, so these checks are deliberately
-//! read-only from the user's perspective: they report whether the runtime tree,
-//! dashboard, and optional helper tools are available, but they do not install or
-//! repair anything automatically.
+//! The desktop attaches to an external Hermes kernel, so these checks are
+//! deliberately read-only from the user's perspective: they report whether the
+//! desktop data tree and the attached dashboard are reachable, but they never
+//! install or repair anything automatically.
 
 use serde::Serialize;
 use std::ffi::OsString;
@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::process::{dashboard, runtime};
+use crate::process::{dashboard, data_dir};
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -169,11 +169,11 @@ impl EnvironmentCheckItem {
     }
 }
 
-/// Fast startup preflight used by `main.rs` before downloading/spawning the
-/// managed runtime. This checks only directories that the boot path must write
+/// Fast startup preflight used by `main.rs` before attaching to the external
+/// kernel. This checks only directories that the boot path must write
 /// to and intentionally skips optional tools.
 pub fn check_bootstrap_environment(hermes_home: &str) -> Result<(), String> {
-    let runtime_root = runtime::runtime_root();
+    let runtime_root = data_dir::data_dir();
     check_writable_dir(&runtime_root).map_err(|e| {
         format!(
             "runtime 目录不可写: {}。请检查磁盘权限，或设置 HERMES_DESKTOP_RUNTIME_ROOT 指向可写目录。错误: {}",
@@ -191,7 +191,7 @@ pub fn check_bootstrap_environment(hermes_home: &str) -> Result<(), String> {
         )
     })?;
 
-    let gateway_dir = runtime::gateway_runtime_dir();
+    let gateway_dir = data_dir::gateway_runtime_dir();
     check_writable_dir(&gateway_dir).map_err(|e| {
         format!(
             "gateway runtime 目录不可写: {}。请检查磁盘权限后重试。错误: {}",
@@ -204,13 +204,12 @@ pub fn check_bootstrap_environment(hermes_home: &str) -> Result<(), String> {
 }
 
 pub async fn collect_environment_check(input: EnvironmentCheckInput) -> EnvironmentCheckResult {
-    let runtime_root = runtime::runtime_root();
+    let runtime_root = data_dir::data_dir();
     let hermes_home = if input.hermes_home.trim().is_empty() {
-        runtime::hermes_home_dir().to_string_lossy().to_string()
+        data_dir::hermes_home_dir().to_string_lossy().to_string()
     } else {
         input.hermes_home.clone()
     };
-    let current = runtime::read_current_record();
     let mut items = Vec::new();
 
     items.push(check_writable_item(WritableCheck {
@@ -220,7 +219,7 @@ pub async fn collect_environment_check(input: EnvironmentCheckInput) -> Environm
         required: true,
         path: &runtime_root,
         ok_summary: "runtime 根目录可写",
-        fail_summary: "runtime 根目录不可写，桌面端无法安装或更新 managed runtime",
+        fail_summary: "runtime 根目录不可写，桌面端无法保存连接配置与本地状态",
         recommendation: Some("检查目录权限，或设置 HERMES_DESKTOP_RUNTIME_ROOT 指向可写目录"),
     }));
 
@@ -240,87 +239,11 @@ pub async fn collect_environment_check(input: EnvironmentCheckInput) -> Environm
         category: EnvironmentCheckCategory::Core,
         label: "Gateway runtime 目录",
         required: true,
-        path: &runtime::gateway_runtime_dir(),
+        path: &data_dir::gateway_runtime_dir(),
         ok_summary: "Gateway runtime 目录可写",
         fail_summary: "Gateway runtime 目录不可写，消息网关锁文件和运行态无法写入",
         recommendation: Some("检查 runtime 目录权限后重启桌面端"),
     }));
-
-    match &current {
-        Some(record) => {
-            items.push(
-                EnvironmentCheckItem::new(
-                    "current-runtime-record",
-                    EnvironmentCheckCategory::Runtime,
-                    "current.json",
-                    EnvironmentCheckStatus::Ok,
-                    true,
-                    format!("已指向 runtime {}", record.runtime_version),
-                )
-                .path(Some(runtime::current_record_path_display())),
-            );
-
-            let executable = PathBuf::from(&record.executable_path);
-            if executable.is_file() {
-                items.push(
-                    EnvironmentCheckItem::new(
-                        "runtime-executable",
-                        EnvironmentCheckCategory::Runtime,
-                        "Runtime 可执行文件",
-                        EnvironmentCheckStatus::Ok,
-                        true,
-                        "runtime 可执行文件存在；版本信息来自 current.json",
-                    )
-                    .path(Some(&executable))
-                    .version(Some(format!(
-                        "{} / {}.{}",
-                        record.kernel_version, record.runtime_flavor, record.runtime_revision
-                    )))
-                    .recommendation(Some(
-                        "如果 dashboard 启动异常，请在高级/内核页重装或回滚 runtime",
-                    )),
-                );
-            } else {
-                items.push(
-                    EnvironmentCheckItem::new(
-                        "runtime-executable",
-                        EnvironmentCheckCategory::Runtime,
-                        "Runtime 可执行文件",
-                        EnvironmentCheckStatus::Error,
-                        true,
-                        "current.json 指向的 runtime 可执行文件不存在",
-                    )
-                    .path(Some(&executable))
-                    .recommendation(Some("在高级/内核页安装 runtime 更新，或重新安装桌面端")),
-                );
-            }
-        }
-        None => {
-            items.push(
-                EnvironmentCheckItem::new(
-                    "current-runtime-record",
-                    EnvironmentCheckCategory::Runtime,
-                    "current.json",
-                    EnvironmentCheckStatus::Error,
-                    true,
-                    "未找到 managed runtime 记录",
-                )
-                .path(Some(runtime::current_record_path_display()))
-                .recommendation(Some("重新启动桌面端，让内置 runtime 安装流程重新执行")),
-            );
-            items.push(
-                EnvironmentCheckItem::new(
-                    "runtime-executable",
-                    EnvironmentCheckCategory::Runtime,
-                    "Runtime 可执行文件",
-                    EnvironmentCheckStatus::Unknown,
-                    true,
-                    "runtime 尚未安装，无法检查可执行文件",
-                )
-                .recommendation(Some("等待首次启动安装完成，或重新安装桌面端")),
-            );
-        }
-    }
 
     if input.api_base_url.trim().is_empty() {
         items.push(
@@ -344,63 +267,6 @@ pub async fn collect_environment_check(input: EnvironmentCheckInput) -> Environm
             true,
             "Dashboard 尚未启动，无法检查 /api/ws",
         ));
-    } else if input.api_base_url == crate::embedded::EMBEDDED_API_BASE_URL {
-        // Embedded Hard FFI — zero HTTP/WS (docs/embedded-python.md): the
-        // dashboard is in-process, so there is no `/api/status` HTTP probe and
-        // no `/api/ws` tungstenite handshake to run. Both entries reflect the
-        // embedded runtime readiness instead of a reqwest/tungstenite scheme
-        // error from the placeholder `embedded://local` URL.
-        let runtime_ready = crate::embedded::ready_runtime();
-        if runtime_ready.is_ok() {
-            items.push(EnvironmentCheckItem::new(
-                "dashboard-api",
-                EnvironmentCheckCategory::Runtime,
-                "Dashboard API",
-                EnvironmentCheckStatus::Ok,
-                true,
-                "嵌入式内核运行中(Hard FFI,无 HTTP)",
-            ));
-            items.push(EnvironmentCheckItem::new(
-                "dashboard-ws",
-                EnvironmentCheckCategory::Runtime,
-                "网关 WebSocket",
-                EnvironmentCheckStatus::Ok,
-                true,
-                "嵌入式网关就绪(内存传输,无 WS)",
-            ));
-        } else {
-            let embedded_msg = match &runtime_ready {
-                Ok(_) => unreachable!("runtime_ready must be Err here"),
-                Err(e) => format!("嵌入式内核未就绪: {}", e),
-            };
-            let recommendation = Some(
-                "检查嵌入式运行时状态；如需回退，可设置 HERMES_DESKTOP_EMBEDDED_PYTHON=0 使用 managed runtime",
-            );
-            items.push(
-                EnvironmentCheckItem::new(
-                    "dashboard-api",
-                    EnvironmentCheckCategory::Runtime,
-                    "Dashboard API",
-                    EnvironmentCheckStatus::Error,
-                    true,
-                    embedded_msg.clone(),
-                )
-                .details(Some(embedded_msg.clone()))
-                .recommendation(recommendation),
-            );
-            items.push(
-                EnvironmentCheckItem::new(
-                    "dashboard-ws",
-                    EnvironmentCheckCategory::Runtime,
-                    "网关 WebSocket",
-                    EnvironmentCheckStatus::Error,
-                    true,
-                    embedded_msg.clone(),
-                )
-                .details(Some(embedded_msg))
-                .recommendation(recommendation),
-            );
-        }
     } else {
         items.push(
             check_dashboard_status(&input.api_base_url, input.session_token.as_deref()).await,
@@ -432,7 +298,7 @@ pub async fn collect_environment_check(input: EnvironmentCheckInput) -> Environm
                 input.api_base_url.trim_end_matches('/')
             )))
             .recommendation((!supports_ws).then_some(
-                "确认 managed runtime 已启动且 session token 有效；必要时在状态栏重启内核",
+                "确认外部 Hermes 已启动且 session token 有效；必要时在状态栏重启网关",
             )),
         );
     }
@@ -531,7 +397,7 @@ pub async fn collect_environment_check(input: EnvironmentCheckInput) -> Environm
         ),
     }));
     items.push(browser_executable_item(Path::new(&hermes_home)));
-    items.push(managed_env_file_item(Path::new(&hermes_home)));
+    items.push(hermes_env_file_item(Path::new(&hermes_home)));
     items.push(effective_path_item(
         &crate::path_resolver::snapshot(),
         crate::path_resolver::runtime_path_stale(),
@@ -774,11 +640,11 @@ fn browser_executable_item(hermes_home: &Path) -> EnvironmentCheckItem {
 /// The desktop's isolated `.env` is a recurring support pitfall: users edit
 /// `~/.hermes/.env` (the CLI's home) and wonder why the desktop never sees
 /// their keys. Surface the real location prominently. (#197)
-fn managed_env_file_item(hermes_home: &Path) -> EnvironmentCheckItem {
+fn hermes_env_file_item(hermes_home: &Path) -> EnvironmentCheckItem {
     let env_file = hermes_home.join(".env");
     let exists = env_file.is_file();
     EnvironmentCheckItem::new(
-        "managed-env-file",
+        "hermes-env-file",
         EnvironmentCheckCategory::Paths,
         "环境变量文件 (.env)",
         if exists {
@@ -1172,9 +1038,9 @@ mod tests {
     }
 
     #[test]
-    fn managed_env_file_item_reports_missing_vs_present() {
+    fn hermes_env_file_item_reports_missing_vs_present() {
         let home = tempfile::tempdir().unwrap();
-        let missing = managed_env_file_item(home.path());
+        let missing = hermes_env_file_item(home.path());
         assert_eq!(missing.status, EnvironmentCheckStatus::Unknown);
         assert_eq!(missing.category, EnvironmentCheckCategory::Paths);
         assert_eq!(
@@ -1183,7 +1049,7 @@ mod tests {
         );
 
         fs::write(home.path().join(".env"), b"TAVILY_API_KEY=x\n").unwrap();
-        let present = managed_env_file_item(home.path());
+        let present = hermes_env_file_item(home.path());
         assert_eq!(present.status, EnvironmentCheckStatus::Ok);
         assert!(present.summary.contains("不是 ~/.hermes/.env"));
     }
@@ -1236,50 +1102,5 @@ mod tests {
         assert!(text.starts_with("安装 ripgrep；"));
         assert!(text.contains("刷新检查"));
         assert!(text.contains("重启内核"));
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn embedded_mode_environment_check_skips_http_ws_probes() {
-        // With EMBEDDED_API_BASE_URL the dashboard entries must reflect the
-        // embedded runtime (ready_runtime) instead of running an HTTP GET
-        // /api/status or a tungstenite /api/ws handshake. In default builds
-        // the runtime is not initialized, so both items are Error — but the
-        // failure text is the embedded-runtime message, never a reqwest or
-        // tungstenite scheme error from the embedded://local placeholder.
-        let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("HERMES_DESKTOP_RUNTIME_ROOT", dir.path());
-        let input = EnvironmentCheckInput {
-            api_base_url: crate::embedded::EMBEDDED_API_BASE_URL.to_string(),
-            hermes_home: dir.path().join("home").to_string_lossy().to_string(),
-            session_token: None,
-            current_profile: "default".to_string(),
-        };
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let result = rt.block_on(collect_environment_check(input));
-        std::env::remove_var("HERMES_DESKTOP_RUNTIME_ROOT");
-
-        let find = |id: &str| {
-            result
-                .items
-                .iter()
-                .find(|item| item.id == id)
-                .unwrap_or_else(|| panic!("expected {id} environment check item"))
-        };
-        let api = find("dashboard-api");
-        let ws = find("dashboard-ws");
-        for (id, item) in [("dashboard-api", api), ("dashboard-ws", ws)] {
-            let text = format!(
-                "{} {}",
-                item.details.as_deref().unwrap_or_default(),
-                item.summary
-            );
-            for bad in ["builder error", "scheme", "reqwest", "tungstenite"] {
-                assert!(
-                    !text.contains(bad),
-                    "{id} must not fall back to an HTTP/WS probe, got: {text}"
-                );
-            }
-        }
     }
 }

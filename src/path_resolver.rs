@@ -6,7 +6,7 @@
 //! the PATH a user's terminal would see, caches it, and exposes it to
 //! (a) tool probing in `environment.rs` and (b) child-process spawn sites
 //! (dashboard / gateway / in-app terminal), which is what makes node/npx/rg
-//! visible to the managed runtime and its MCP subprocesses (#190 #196 #197).
+//! visible to the desktop's child processes and MCP subprocesses (#190 #196 #197).
 //!
 //! Deliberately never calls `std::env::set_var` — mutating the process
 //! environment after threads exist is undefined behavior territory. Consumers
@@ -144,7 +144,7 @@ pub fn effective_pathext() -> Option<String> {
     snapshot().pathext.clone()
 }
 
-/// Record the PATH actually handed to the managed dashboard at spawn time.
+/// Record the PATH actually handed to child processes at spawn time.
 pub fn mark_applied_to_runtime(applied: &OsStr) {
     *applied_to_runtime().write().expect("applied path poisoned") = Some(applied.to_os_string());
 }

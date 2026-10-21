@@ -1,8 +1,8 @@
-//! Desktop-wide bootstrap and managed-runtime intent.
+//! Desktop-side control state (onboarding guide progress).
 //!
 //! This state deliberately lives beside `connection.json`, not inside
 //! HERMES_HOME. It controls the desktop shell itself and must survive profile
-//! switches as well as managed-runtime uninstall/reinstall cycles.
+//! switches.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::connection;
 use crate::error::{AppError, AppResult};
-use crate::process::runtime;
+use crate::process::data_dir;
 
 const CONTROL_FILE: &str = "desktop-control.json";
 const CONTROL_SCHEMA_VERSION: u32 = 1;
@@ -34,59 +34,32 @@ impl GuideState {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ManagedRuntimeDesiredState {
-    Running,
-    Stopped,
-    Uninstalled,
-}
-
-impl ManagedRuntimeDesiredState {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Running => "running",
-            Self::Stopped => "stopped",
-            Self::Uninstalled => "uninstalled",
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DesktopControlState {
     pub schema_version: u32,
     pub guide_state: GuideState,
-    pub managed_runtime_desired_state: ManagedRuntimeDesiredState,
 }
 
 impl DesktopControlState {
     fn fresh_install() -> Self {
         Self {
             schema_version: CONTROL_SCHEMA_VERSION,
-            // The standard desktop opens its managed workspace immediately.
-            // Model onboarding now happens inside AppShell after the backend is
-            // ready, so a clean install must not be diverted into /guide.
+            // Model onboarding happens inside AppShell once the kernel answers,
+            // so a clean install must not be diverted into /guide.
             guide_state: GuideState::Completed,
-            managed_runtime_desired_state: ManagedRuntimeDesiredState::Running,
-        }
-    }
-
-    fn migrated_existing_install() -> Self {
-        Self {
-            schema_version: CONTROL_SCHEMA_VERSION,
-            guide_state: GuideState::Completed,
-            managed_runtime_desired_state: ManagedRuntimeDesiredState::Running,
         }
     }
 }
 
 pub fn control_path() -> PathBuf {
-    runtime::runtime_root().join(CONTROL_FILE)
+    data_dir::data_dir().join(CONTROL_FILE)
 }
 
 fn read_from(path: &Path) -> Option<DesktopControlState> {
     let raw = fs::read_to_string(path).ok()?;
+    // Older files also carried a `managedRuntimeDesiredState` field; unknown
+    // fields are ignored by serde, so they read cleanly.
     let state = serde_json::from_str::<DesktopControlState>(&raw).ok()?;
     (state.schema_version == CONTROL_SCHEMA_VERSION).then_some(state)
 }
@@ -109,48 +82,25 @@ fn write_to(path: &Path, state: &DesktopControlState) -> AppResult<()> {
     Ok(())
 }
 
-/// Initialize the v1 control file without interrupting existing users. Both
-/// clean and established standard installs open the managed workspace; an
-/// existing explicit stop/uninstall/deferred choice is preserved below.
+/// Initialize the control file without interrupting existing users.
 pub fn initialize() -> AppResult<DesktopControlState> {
     let path = control_path();
     if let Some(state) = read_from(&path) {
-        // v1 originally parked a clean install in pending/stopped so the
-        // standalone /guide page could choose a backend. Restore those users
-        // to the managed first-run flow without overriding an explicit
-        // deferred/completed guide or a deliberate stopped/uninstalled state.
-        if state.guide_state == GuideState::Pending
-            && state.managed_runtime_desired_state == ManagedRuntimeDesiredState::Stopped
-        {
-            let migrated = DesktopControlState::fresh_install();
-            write_to(&path, &migrated)?;
-            return Ok(migrated);
-        }
         return Ok(state);
     }
-    let established = runtime::read_current_record().is_some()
-        || connection::config_path().is_file()
-        || connection::env_override_active();
-    let state = if established {
-        DesktopControlState::migrated_existing_install()
-    } else {
-        DesktopControlState::fresh_install()
-    };
+    let state = DesktopControlState::fresh_install();
     write_to(&path, &state)?;
     Ok(state)
 }
 
 pub fn read() -> DesktopControlState {
-    read_from(&control_path()).unwrap_or_else(|| {
-        if runtime::read_current_record().is_some()
-            || connection::config_path().is_file()
-            || connection::env_override_active()
-        {
-            DesktopControlState::migrated_existing_install()
-        } else {
-            DesktopControlState::fresh_install()
-        }
-    })
+    read_from(&control_path()).unwrap_or_else(DesktopControlState::fresh_install)
+}
+
+/// Whether the user has already been through (or dismissed) the onboarding
+/// guide. Used by the renderer through `get_desktop_control_state`.
+pub fn established_install() -> bool {
+    connection::config_path().is_file() || connection::env_override_active()
 }
 
 pub fn write(state: &DesktopControlState) -> AppResult<()> {
@@ -164,126 +114,31 @@ pub fn set_guide_state(guide_state: GuideState) -> AppResult<DesktopControlState
     Ok(state)
 }
 
-pub fn set_managed_runtime_desired_state(
-    desired: ManagedRuntimeDesiredState,
-) -> AppResult<DesktopControlState> {
-    let mut state = read();
-    state.managed_runtime_desired_state = desired;
-    write(&state)?;
-    Ok(state)
-}
-
-/// Decide whether bootstrap may install/start the managed runtime. Clean
-/// installs default to running; explicit stop/uninstall intent still keeps the
-/// recovery shell offline, while dev's external-dashboard escape hatch keeps
-/// its existing behavior.
-pub fn should_start_managed_runtime(
-    state: &DesktopControlState,
-    external_dev_dashboard: bool,
-) -> bool {
-    external_dev_dashboard
-        || state.managed_runtime_desired_state == ManagedRuntimeDesiredState::Running
-}
-
-/// Report the actual managed-runtime lifecycle from files/process state.
-/// Desired state is intent only: when no valid runtime record exists, the
-/// runtime is uninstalled even if a previous control file still says stopped
-/// or running.
-pub fn managed_runtime_lifecycle_state(installed: bool, running: bool) -> &'static str {
-    if running {
-        "running"
-    } else if installed {
-        "stopped"
-    } else {
-        "uninstalled"
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serial_test::serial;
-    use tempfile::TempDir;
 
     #[test]
-    #[serial]
-    fn clean_install_starts_managed_runtime_for_in_app_model_onboarding() {
-        let root = TempDir::new().expect("tempdir");
-        std::env::set_var("HERMES_DESKTOP_RUNTIME_ROOT", root.path());
-        let state = initialize().expect("initialize");
-        assert_eq!(state.guide_state, GuideState::Completed);
-        assert_eq!(
-            state.managed_runtime_desired_state,
-            ManagedRuntimeDesiredState::Running
-        );
-        assert!(control_path().is_file());
-        assert!(should_start_managed_runtime(&state, false));
-        assert!(should_start_managed_runtime(&state, true));
-        std::env::remove_var("HERMES_DESKTOP_RUNTIME_ROOT");
+    fn guide_state_round_trips() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let path = dir.path().join(CONTROL_FILE);
+        let state = DesktopControlState::fresh_install();
+        write_to(&path, &state).expect("write");
+        let read_back = read_from(&path).expect("read");
+        assert_eq!(read_back.guide_state, GuideState::Completed);
     }
 
     #[test]
-    #[serial]
-    fn pending_stopped_first_run_migrates_to_managed_workspace() {
-        let root = TempDir::new().expect("tempdir");
-        std::env::set_var("HERMES_DESKTOP_RUNTIME_ROOT", root.path());
-        write(&DesktopControlState {
-            schema_version: CONTROL_SCHEMA_VERSION,
-            guide_state: GuideState::Pending,
-            managed_runtime_desired_state: ManagedRuntimeDesiredState::Stopped,
-        })
-        .expect("write legacy first-run state");
-
-        let state = initialize().expect("migrate legacy first-run state");
-
-        assert_eq!(state.guide_state, GuideState::Completed);
-        assert_eq!(
-            state.managed_runtime_desired_state,
-            ManagedRuntimeDesiredState::Running
-        );
-        assert!(should_start_managed_runtime(&state, false));
-        std::env::remove_var("HERMES_DESKTOP_RUNTIME_ROOT");
-    }
-
-    #[test]
-    #[serial]
-    fn saved_connection_migrates_existing_user_without_forced_guide() {
-        let root = TempDir::new().expect("tempdir");
-        std::env::set_var("HERMES_DESKTOP_RUNTIME_ROOT", root.path());
-        connection::write_config(&connection::ConnectionConfig::default())
-            .expect("write connection config");
-        let state = initialize().expect("initialize");
-        assert_eq!(state.guide_state, GuideState::Completed);
-        assert_eq!(
-            state.managed_runtime_desired_state,
-            ManagedRuntimeDesiredState::Running
-        );
-        assert!(should_start_managed_runtime(&state, false));
-        std::env::remove_var("HERMES_DESKTOP_RUNTIME_ROOT");
-    }
-
-    #[test]
-    #[serial]
-    fn guide_and_runtime_intent_round_trip() {
-        let root = TempDir::new().expect("tempdir");
-        std::env::set_var("HERMES_DESKTOP_RUNTIME_ROOT", root.path());
-        initialize().expect("initialize");
-        set_guide_state(GuideState::Deferred).expect("defer guide");
-        set_managed_runtime_desired_state(ManagedRuntimeDesiredState::Uninstalled)
-            .expect("set desired state");
-        let state = read();
-        assert_eq!(state.guide_state, GuideState::Deferred);
-        assert_eq!(
-            state.managed_runtime_desired_state,
-            ManagedRuntimeDesiredState::Uninstalled
-        );
-        std::env::remove_var("HERMES_DESKTOP_RUNTIME_ROOT");
-    }
-
-    #[test]
-    fn lifecycle_uses_actual_installation_before_desired_intent() {
-        assert_eq!(managed_runtime_lifecycle_state(false, false), "uninstalled");
-        assert_eq!(managed_runtime_lifecycle_state(true, false), "stopped");
-        assert_eq!(managed_runtime_lifecycle_state(true, true), "running");
+    fn legacy_file_with_runtime_intent_still_reads() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let path = dir.path().join(CONTROL_FILE);
+        fs::write(
+            &path,
+            r#"{ "schemaVersion": 1, "guideState": "deferred",
+                 "managedRuntimeDesiredState": "running" }"#,
+        )
+        .expect("write legacy");
+        let read_back = read_from(&path).expect("read legacy");
+        assert_eq!(read_back.guide_state, GuideState::Deferred);
     }
 }

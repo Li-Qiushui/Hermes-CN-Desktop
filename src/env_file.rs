@@ -1,4 +1,4 @@
-// Per-spawn injection of the user's `$HERMES_HOME/.env` into managed child
+// Injection of the user's `$HERMES_HOME/.env` into child
 // processes (dashboard, IM gateway).
 //
 // The desktop process never loads `.env` into its own environment: mutating

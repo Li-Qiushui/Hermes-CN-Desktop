@@ -3,9 +3,9 @@
 // Replaces the switchProfile IPC handler at
 // hermes-cn-ui-v1/apps/desktop/src/main/main.ts lines 669-794.
 //
-// Stops the current dashboard, spawns a new one pointing at the target
-// profile's HERMES_HOME, and handles failure recovery (fall back to the
-// previous profile if the new one fails to boot).
+// The active profile belongs to the external kernel: switching it is one
+// `POST /api/profiles/active` call, and the desktop only records the sticky
+// choice for the next boot.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -13,7 +13,6 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use crate::commands::restart::{self, RespawnOutcome};
 use crate::error::AppError;
 use crate::profile_name::is_valid_profile_name;
 use crate::state::AppState;
@@ -83,6 +82,7 @@ pub fn read_active_profile_sticky(base: &str) -> String {
 #[tauri::command]
 pub async fn switch_profile(
     input: SwitchProfileInput,
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<SwitchProfileResult, AppError> {
     let name = input.name.trim().to_string();
@@ -95,150 +95,61 @@ pub async fn switch_profile(
         });
     }
 
-    // Check preconditions
-    let (base, current_profile, _owns_process, previous_home) = {
+    let (base, already_active) = {
         let inner = state.inner.lock()?;
-
-        // Profile switching requires a desktop-owned managed dashboard so the
-        // shell can restart it with a different HERMES_HOME. Attached local or
-        // remote agents own their own process/lifecycle.
-        if inner.connection_mode != crate::connection::ConnectionMode::Managed {
-            return Ok(SwitchProfileResult {
-                ok: false,
-                error: Some("当前连接的不是本机内核，不支持在桌面端切换 Profile".to_string()),
-                ..Default::default()
-            });
-        }
-
-        if !inner
-            .dashboard_handle
-            .as_ref()
-            .map(|h| h.owns_process)
-            .unwrap_or(false)
-        {
-            return Ok(SwitchProfileResult {
-                ok: false,
-                error: Some("Desktop is not the dashboard owner".to_string()),
-                ..Default::default()
-            });
-        }
-
-        if name == inner.current_profile {
-            return Ok(SwitchProfileResult {
-                ok: true,
-                profile_name: Some(inner.current_profile.clone()),
-                api_base_url: Some(inner.api_base_url.clone()),
-                gateway_url: Some(inner.gateway_url.clone()),
-                session_token: inner.session_token.clone(),
-                hermes_home: Some(inner.hermes_home.clone()),
-                ..Default::default()
-            });
-        }
-
-        (
-            inner.hermes_home_base.clone(),
-            inner.current_profile.clone(),
-            true,
-            inner.hermes_home.clone(),
-        )
+        (inner.hermes_home_base.clone(), inner.current_profile == name)
     };
 
-    let new_home = profile_hermes_home(&base, &name);
-    if name != "default" && !new_home.exists() {
+    if already_active {
+        let inner = state.inner.lock()?;
         return Ok(SwitchProfileResult {
-            ok: false,
-            error: Some(format!("Profile directory missing: {}", new_home.display())),
+            ok: true,
+            profile_name: Some(inner.current_profile.clone()),
+            api_base_url: Some(inner.api_base_url.clone()),
+            gateway_url: Some(inner.gateway_url.clone()),
+            session_token: inner.session_token.clone(),
+            hermes_home: Some(inner.hermes_home.clone()),
             ..Default::default()
         });
     }
 
-    // Claim the shared dashboard-restart guard (atomic check-and-set) so a
-    // profile switch and a YOLO toggle can't race two restarts.
-    if !restart::try_begin_restart(&state)? {
+    // The profile lives inside the external kernel, so the switch is a plain
+    // API call; the desktop only records the sticky choice.
+    let request = crate::commands::api_proxy::ApiRequestInput {
+        path: "/api/profiles/active".to_string(),
+        method: Some("POST".to_string()),
+        headers: None,
+        body: Some(serde_json::json!({ "name": name }).to_string()),
+    };
+    let response =
+        crate::commands::api_proxy::api_request_from_state(&app, request, &state).await?;
+    if !(200..300).contains(&response.status) {
         return Ok(SwitchProfileResult {
-            ok: false,
-            error: Some("运行时正在切换中，请稍后再试".to_string()),
-            ..Default::default()
-        });
-    }
-
-    let result = do_switch_profile(
-        &state,
-        &name,
-        &new_home.to_string_lossy(),
-        &base,
-        &current_profile,
-        &previous_home,
-    )
-    .await;
-
-    restart::end_restart(&state);
-
-    Ok(result)
-}
-
-async fn do_switch_profile(
-    state: &State<'_, AppState>,
-    name: &str,
-    new_home: &str,
-    base: &str,
-    previous_profile: &str,
-    previous_home: &str,
-) -> SwitchProfileResult {
-    let (host, port) = restart::host_and_port();
-
-    // Stop the current dashboard and respawn against the target profile's home,
-    // falling back to the previous profile's home if the target fails to boot.
-    let respawn =
-        match restart::respawn_managed_dashboard(state, &host, port, new_home, previous_home).await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                return SwitchProfileResult {
-                    ok: false,
-                    error: Some(e.to_string()),
-                    ..Default::default()
-                }
-            }
-        };
-
-    match respawn.outcome {
-        RespawnOutcome::Spawned => {
-            // respawn already adopted the new connection + hermes_home; record
-            // the profile-specific state and persist the sticky default.
-            if let Ok(mut inner) = state.inner.lock() {
-                inner.current_profile = name.to_string();
-            }
-            write_active_profile_sticky(base, name);
-            SwitchProfileResult {
-                ok: true,
-                profile_name: Some(name.to_string()),
-                api_base_url: respawn.api_base_url,
-                gateway_url: respawn.gateway_url,
-                session_token: respawn.session_token,
-                hermes_home: Some(new_home.to_string()),
-                error: None,
-                recovered_previous_profile: None,
-            }
-        }
-        RespawnOutcome::Recovered { error } => SwitchProfileResult {
-            ok: false,
-            error: Some(format!("切换到 {name} 失败：{error}")),
-            recovered_previous_profile: Some(true),
-            ..Default::default()
-        },
-        RespawnOutcome::Down {
-            error,
-            recovery_error,
-        } => SwitchProfileResult {
             ok: false,
             error: Some(format!(
-                "切换失败 ({error})；恢复 {previous_profile} 也失败 ({recovery_error})。重启桌面端。"
+                "切换到 {name} 失败（HTTP {}）：{}",
+                response.status,
+                response.body.chars().take(300).collect::<String>()
             )),
-            recovered_previous_profile: Some(false),
             ..Default::default()
-        },
+        });
     }
+
+    let new_home = profile_hermes_home(&base, &name);
+    write_active_profile_sticky(&base, &name);
+    let mut inner = state.inner.lock()?;
+    inner.current_profile = name.clone();
+    inner.hermes_home = new_home.to_string_lossy().to_string();
+    Ok(SwitchProfileResult {
+        ok: true,
+        profile_name: Some(name),
+        api_base_url: Some(inner.api_base_url.clone()),
+        gateway_url: Some(inner.gateway_url.clone()),
+        session_token: inner.session_token.clone(),
+        hermes_home: Some(inner.hermes_home.clone()),
+        error: None,
+        recovered_previous_profile: None,
+    })
 }
 
 #[cfg(test)]

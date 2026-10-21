@@ -26,3 +26,9 @@ mod tests {
         }
     }
 }
+
+/// Read and parse a JSON file; any IO or parse error yields `None`.
+pub fn read_json_file<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> Option<T> {
+    let content = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&content).ok()
+}

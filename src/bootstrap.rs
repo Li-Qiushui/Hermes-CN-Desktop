@@ -1,32 +1,24 @@
-// Shared bootstrap pipeline: bring up the backend the desktop talks to.
+// Shared bootstrap pipeline: attach the desktop to an external Hermes kernel.
 //
-// Extracted from main.rs so the runtime connection-switch command
-// (commands/connection.rs `apply_connection_config`) can reuse the exact same
-// local-acquire path (env check → bundled/managed runtime install → resource
-// sync → dashboard spawn) when flipping remote → local, including the
-// "no managed runtime on disk yet" first-install case.
+// Two backend shapes come out of here, both attach-only:
+//   - local: a loopback Hermes Agent CLI dashboard (http://127.0.0.1:9119)
+//   - remote: a Hermes Agent on another host
 //
-// Three backend shapes come out of here:
-//   - managed: a desktop-owned `hermes dashboard` subprocess (acquire_managed_dashboard)
-//   - local: an attach-only handle to a loopback Hermes Agent CLI dashboard
-//   - remote: an attach-only handle to a remote Hermes Agent
-
-use std::path::{Path, PathBuf};
+// Nothing here installs, spawns or supervises a kernel — the desktop only
+// probes the URL, picks up its session token and publishes the address to the
+// renderer.
 
 use tauri::Emitter;
 
-use crate::connection::{ConnectionMode, LocalBackend, RemoteBackend};
-use crate::environment;
+use crate::connection::{ConnectionBackend, ConnectionMode, RemoteBackend};
 use crate::error::AppError;
-use crate::process::{dashboard, runtime};
+use crate::process::dashboard;
 use crate::state::{AppState, DashboardHandle};
 
 /// Emit a "runtime-status" event for the frontend overlay to consume.
 /// Phases (in order along the happy path):
-///   "installing" — managed runtime is being downloaded
-///   "starting-dashboard" — runtime ready, spawning dashboard (or, in remote
-///                          mode, attaching to the remote agent)
-///   "ready" — full bootstrap complete, frontend can mount the app
+///   "starting-dashboard" — probing the configured kernel
+///   "ready" — bootstrap complete, frontend can mount the app
 ///   "error" — fatal; frontend should display message and offer retry
 pub fn emit_runtime_status(app: &tauri::AppHandle, phase: &str, message: &str) {
     let _ = app.emit(
@@ -49,175 +41,45 @@ pub fn record_bootstrap_error(app: &tauri::AppHandle, message: String) -> String
     message
 }
 
-/// Finish an offline bootstrap when the managed runtime is intentionally
-/// stopped or uninstalled. The renderer still needs the profile/home metadata
-/// and a ready event so it can mount recovery surfaces, but no backend URL is
-/// invented and no runtime payload is installed.
-pub fn finalize_offline_bootstrap(app: &tauri::AppHandle) {
-    use tauri::Manager;
-
-    let state = app.state::<AppState>();
-    if let Ok(mut inner) = state.inner.lock() {
-        inner.connection_mode = ConnectionMode::Managed;
-        inner.api_base_url.clear();
-        inner.gateway_url.clear();
-        inner.session_token = None;
-        inner.oauth_session = None;
-        inner.dashboard_handle = None;
-        inner.embedded = false;
-        inner.embedded_payload = None;
-        inner.last_runtime_error = None;
+/// Attach to the resolved backend. An unreachable kernel is deliberately NOT a
+/// bootstrap error: an "error" runtime-status would stop the React app from
+/// ever mounting, locking the user out of the Settings page where a bad saved
+/// URL gets fixed. The gateway client's reconnect UI surfaces unreachability
+/// once the app is up.
+pub async fn connect_backend(
+    app: &tauri::AppHandle,
+    backend: &ConnectionBackend,
+) -> DashboardHandle {
+    match backend {
+        ConnectionBackend::Local(local) => connect_local_backend(app, &local.base_url).await,
+        ConnectionBackend::Remote(remote) => connect_remote_backend(app, remote).await,
     }
-    emit_runtime_status(app, "ready-offline", "内核未启动，已进入桌面引导");
-    log::info!("Hermes Agent ready (managed runtime offline)");
 }
 
-pub async fn install_bundled_runtime_for_bootstrap(
-    app: &tauri::AppHandle,
-    resource_dir: Option<&Path>,
-) -> bool {
-    // Allow skipping bundled runtime install via env var (e.g. when the user
-    // only uses local/remote connection mode and never needs a local runtime).
-    if std::env::var("HERMES_DESKTOP_SKIP_BUNDLED_RUNTIME")
-        .map(|v| v == "1")
-        .unwrap_or(false)
-    {
-        log::info!("HERMES_DESKTOP_SKIP_BUNDLED_RUNTIME=1; skipping bundled runtime install");
-        return true;
-    }
-
-    if !runtime::bundled_runtime_available(resource_dir) {
-        return true;
-    }
-
-    emit_runtime_status(app, "installing", "正在安装内置 hermes-agent-cn runtime...");
-    log::info!("Bootstrap: install bundled runtime");
-    let install = runtime::install_bundled_runtime_if_needed(resource_dir).await;
-    if !install.ok {
-        let msg = install
-            .error
-            .clone()
-            .unwrap_or_else(|| "unknown bundled runtime install error".into());
-        record_bootstrap_error(app, format!("内置 runtime 安装失败: {}", msg));
-        return false;
-    }
-
-    if let Some(installed) = &install.installed {
-        log::info!(
-            "Installed bundled managed runtime v{}",
-            installed.runtime_version
-        );
-    }
-    true
-}
-
-/// Install the managed runtime if needed, sync bundled resources, and ensure
-/// the dashboard process is running. Shared by every (non-external, non-remote)
-/// bootstrap path. On failure the error is surfaced via
-/// `record_bootstrap_error` and returned as `Err`.
-///
-/// `install_bundled` controls whether the bundled-runtime install runs here;
-/// the synchronous fallback already does it up front and passes `false`.
-pub async fn acquire_managed_dashboard(
-    app: &tauri::AppHandle,
-    options: dashboard::EnsureDashboardOptions,
-    resource_dir: Option<PathBuf>,
-    install_bundled: bool,
-) -> Result<DashboardHandle, String> {
-    emit_runtime_status(app, "checking-env", "正在检查本机环境...");
-    // Resolve the user's real PATH (login shell / registry) before anything
-    // spawns, so the dashboard and its MCP descendants inherit it.
-    let _ = tauri::async_runtime::spawn_blocking(|| {
-        crate::path_resolver::refresh_blocking(crate::path_resolver::SHELL_PROBE_TIMEOUT, true)
-    })
-    .await;
-    if let Err(err) = environment::check_bootstrap_environment(&options.hermes_home) {
-        return Err(record_bootstrap_error(app, err));
-    }
-
-    if install_bundled && !install_bundled_runtime_for_bootstrap(app, resource_dir.as_deref()).await
-    {
-        // install_bundled_runtime_for_bootstrap already recorded the error.
-        return Err("bundled runtime install failed".to_string());
-    }
-
-    let embedded_possible = crate::embedded::embedded_possible(resource_dir.as_deref());
-    if embedded_possible {
-        log::info!(
-            "Bootstrap: embedded runtime available (payload: {:?}) — skipping managed-runtime install/update",
-            crate::embedded::resolve_payload_root(resource_dir.as_deref())
-                .map(|p| p.display().to_string())
-        );
-    }
-
-    let info = runtime::get_runtime_info(None);
-    // The managed-runtime install/update only provisions the `hermes dashboard`
-    // SUBPROCESS. In embedded mode the in-process Python runtime replaces that
-    // subprocess entirely, so a fresh embedded-only install must never block on
-    // this (network) check — first run would otherwise hang for the manifest
-    // fetch timeout (or worse, an unresolvable DNS) before the embedded runtime
-    // even gets a chance to start.
-    if !embedded_possible && info.current.is_none() && info.updates_configured {
-        emit_runtime_status(app, "installing", "正在下载 hermes-agent-cn runtime...");
-        log::info!("Bootstrap: install_runtime_update");
-        let install = runtime::install_runtime_update(None).await;
-        if !install.ok {
-            let msg = install
-                .error
-                .unwrap_or_else(|| "unknown install error".into());
-            return Err(record_bootstrap_error(
-                app,
-                format!("runtime 安装失败: {}", msg),
-            ));
-        }
-        if let Some(installed) = &install.installed {
-            log::info!("Installed managed runtime v{}", installed.runtime_version);
-        }
-    } else if !embedded_possible && info.current.is_none() {
+/// Attach to a loopback Hermes Agent CLI dashboard: probe it and pick up the
+/// session token it serves.
+pub async fn connect_local_backend(app: &tauri::AppHandle, base_url: &str) -> DashboardHandle {
+    emit_runtime_status(app, "starting-dashboard", "正在连接本机 Hermes Agent...");
+    log::info!("Local connection: attaching to {}", base_url);
+    if !dashboard::probe_attached_dashboard(base_url).await {
         log::warn!(
-            "No managed runtime installed and update channel is not configured. \
-             PATH `hermes` fallback is disabled; dashboard startup will fail \
-             until a managed runtime is installed."
+            "Local Hermes Agent dashboard not reachable at {} during bootstrap; continuing — \
+             Settings → 连接 can fix the URL, or start the kernel with `hermes dashboard`",
+            base_url
         );
     }
-
-    if let Err(err) = runtime::sync_runtime_resources_if_available(resource_dir.as_deref()) {
-        log::warn!("Failed to sync bundled runtime resources: {}", err);
-    }
-
-    // Embedded runtime path (docs/embedded-python.md): initialize CPython
-    // inside this process instead of spawning a `hermes` subprocess. Falls back
-    // to the subprocess path below when the payload is absent or the interpreter
-    // fails to start (HERMES_DESKTOP_EMBEDDED_PYTHON=0 disables it entirely).
-    if crate::embedded::EmbeddedPython::ensure_started(resource_dir.as_deref()) {
-        emit_runtime_status(
-            app,
-            "starting-dashboard",
-            "正在启动嵌入式 Python runtime...",
+    let token = dashboard::fetch_session_token(base_url).await;
+    if token.is_none() {
+        log::warn!(
+            "Local Hermes Agent dashboard at {} did not expose a session token",
+            base_url
         );
-        log::info!(
-            "Bootstrap: embedded Python runtime active (payload: {})",
-            crate::embedded::EmbeddedPython::get()
-                .and_then(|r| r.payload_root().map(|p| p.display().to_string()))
-                .unwrap_or_else(|| "<none>".into())
-        );
-        return Ok(DashboardHandle::embedded());
     }
-
-    emit_runtime_status(app, "starting-dashboard", "正在启动 dashboard...");
-    dashboard::ensure_hermes_dashboard(options)
-        .await
-        .map_err(|e| record_bootstrap_error(app, format!("dashboard 启动失败: {}", e)))
+    DashboardHandle::local(base_url.to_string(), token)
 }
 
-/// Attach to a remote Hermes Agent: no runtime install, no spawn, no ownership
-/// marker — just a reachability probe and an attach-only handle.
-///
-/// An unreachable remote is deliberately NOT a bootstrap error (unlike the
-/// official Electron desktop, which hard-fails): an "error" runtime-status
-/// would stop the React app from ever mounting, locking the user out of the
-/// Settings page where a bad saved URL gets fixed. The gateway client's
-/// reconnect UI surfaces unreachability once the app is up.
+/// Attach to a remote Hermes Agent: no spawn, no ownership — just a
+/// reachability probe and an attach-only handle.
 pub async fn connect_remote_backend(
     app: &tauri::AppHandle,
     remote: &RemoteBackend,
@@ -262,46 +124,15 @@ pub async fn connect_remote_backend(
 
 /// Emit the re-login banner event from bootstrap's background verify.
 fn emit_auth_expired(app: &tauri::AppHandle, base_url: &str) {
-    use tauri::Emitter;
     let _ = app.emit(
         "connection-auth-expired",
         serde_json::json!({ "baseUrl": base_url, "reason": "session_expired", "loginUrl": null }),
     );
 }
 
-/// Attach to a local Hermes Agent CLI dashboard. The URL is already validated
-/// as loopback by connection.rs; we best-effort fetch the current session token
-/// from the served HTML so users do not have to paste it manually.
-pub async fn connect_local_backend(
-    app: &tauri::AppHandle,
-    local: &LocalBackend,
-) -> DashboardHandle {
-    emit_runtime_status(
-        app,
-        "starting-dashboard",
-        "正在连接本地 Hermes Agent CLI...",
-    );
-    log::info!("Local connection mode: attaching to {}", local.base_url);
-    if !dashboard::probe_attached_dashboard(&local.base_url).await {
-        log::warn!(
-            "Local Hermes Agent CLI dashboard not reachable at {} during bootstrap; continuing — \
-             Settings → 连接 can fix the URL or switch back to managed runtime",
-            local.base_url
-        );
-    }
-    let token = dashboard::fetch_session_token(&local.base_url).await;
-    if token.is_none() {
-        log::warn!(
-            "Local Hermes Agent CLI dashboard at {} did not expose a session token",
-            local.base_url
-        );
-    }
-    DashboardHandle::local(local.base_url.clone(), token)
-}
-
-/// Finish bootstrap once a dashboard handle is available: fetch the session
-/// token, build the gateway URL, populate AppState, and emit the "ready"
-/// event the frontend waits on.
+/// Finish bootstrap once a handle is available: fetch the session token, build
+/// the gateway URL, populate AppState, and emit the "ready" event the frontend
+/// waits on.
 pub async fn finalize_bootstrap(
     app: &tauri::AppHandle,
     handle: DashboardHandle,
@@ -314,9 +145,9 @@ pub async fn finalize_bootstrap(
 
     // An OAuth remote authenticates via the cookie session, not a token — the
     // registry already holds it (seeded in connect_remote_backend).
-    let oauth_session = if mode == ConnectionMode::Remote {
+    let oauth_session = if handle.oauth {
         matches!(
-            crate::connection::read_config().remote_auth_mode,
+            crate::connection::read_config().auth_mode,
             crate::connection::RemoteAuthMode::Oauth
         )
         .then(|| crate::oauth_session::session_for(&handle.api_base_url).ok())
@@ -325,22 +156,13 @@ pub async fn finalize_bootstrap(
         None
     };
 
-    let is_embedded = handle.api_base_url == crate::embedded::EMBEDDED_API_BASE_URL
-        || handle.ownership_state.as_deref() == Some("embedded");
     let session_token = if oauth_session.is_some() {
         None
-    } else if is_embedded {
-        // The embedded runtime never scrapes HTML — the synthetic token is
-        // already on the handle (frontend contract only; zero HTTP is sent).
-        handle
-            .session_token
-            .clone()
-            .or_else(|| Some(crate::embedded::embedded_session_token()))
     } else {
         match handle.session_token.clone() {
             Some(token) => Some(token),
-            // Remote token handles carry their token, so this dashboard scrape
-            // fallback is only for managed or loopback-local dashboards.
+            // Remote token handles carry their token; this scrape fallback is
+            // only for loopback dashboards that hand out a fresh token.
             None => match std::env::var("HERMES_DESKTOP_SESSION_TOKEN")
                 .ok()
                 .or_else(|| std::env::var("HERMES_DASHBOARD_SESSION_TOKEN").ok())
@@ -351,15 +173,11 @@ pub async fn finalize_bootstrap(
         }
     };
     // OAuth gateway URL carries no token; the relay mints a ticket per connect.
-    // Embedded mode has no WS URL at all — the gateway rides the in-memory
-    // transport, so the placeholder is only a frontend-contract value.
-    let gateway_url = if is_embedded {
-        crate::embedded::EMBEDDED_GATEWAY_URL.to_string()
-    } else {
-        dashboard::build_gateway_url(&handle.api_base_url, session_token.as_deref())
-    };
-    let (effective_home, effective_home_base, effective_profile) = if mode == ConnectionMode::Local
-    {
+    let gateway_url = dashboard::build_gateway_url(&handle.api_base_url, session_token.as_deref());
+
+    // A loopback kernel owns its HERMES_HOME; ask it so profile/session views
+    // point at the real tree instead of the desktop's own home.
+    let (effective_home, effective_home_base, effective_profile) = if !mode.is_remote() {
         match dashboard::fetch_attached_dashboard_hermes_home(&handle.api_base_url)
             .await
             .filter(|h| !h.trim().is_empty())
@@ -386,21 +204,8 @@ pub async fn finalize_bootstrap(
         inner.hermes_home_base = effective_home_base;
         inner.session_token = session_token;
         inner.current_profile = effective_profile;
-        inner.yolo_mode = match mode {
-            ConnectionMode::Managed => dashboard::yolo_mode_effective(&inner.hermes_home),
-            // YOLO is a managed-runtime launch flag; it has no meaning for a
-            // backend this desktop doesn't own.
-            ConnectionMode::Local | ConnectionMode::Remote => false,
-        };
         inner.connection_mode = mode;
         inner.oauth_session = oauth_session;
-        inner.embedded = is_embedded;
-        inner.embedded_payload = if is_embedded {
-            crate::embedded::EmbeddedPython::get()
-                .and_then(|r| r.payload_root().map(|p| p.display().to_string()))
-        } else {
-            None
-        };
         inner.dashboard_handle = Some(handle);
     }
 

@@ -65,11 +65,11 @@ fn in_flight() -> &'static Mutex<std::collections::HashSet<String>> {
 /// configured oauth remote for this URL (so a fresh login is remembered).
 fn persist_login(base_url: &str, cookies: Vec<PersistedCookie>) {
     let mut config = connection::read_config();
-    let is_target = config.remote_url.as_deref() == Some(base_url);
+    let is_target = config.url.as_deref() == Some(base_url);
     if is_target {
-        config.remote_session = Some(cookies);
-        if config.remote_auth_mode == connection::RemoteAuthMode::Token {
-            config.remote_auth_mode = connection::RemoteAuthMode::Oauth;
+        config.session = Some(cookies);
+        if config.auth_mode == connection::RemoteAuthMode::Token {
+            config.auth_mode = connection::RemoteAuthMode::Oauth;
         }
         let _ = connection::write_config(&config);
     }
@@ -276,7 +276,7 @@ pub async fn connection_password_login(
 pub async fn connection_auth_me(input: OauthLoginInput) -> Result<OauthLoginResult, AppError> {
     let base_url = connection::normalize_remote_base_url(&input.remote_url)?;
     let session = oauth_session::session_for(&base_url)?;
-    if let Some(cookies) = connection::read_config().remote_session {
+    if let Some(cookies) = connection::read_config().session {
         session.import_cookies(&cookies);
     }
     match session.fetch_me().await {
@@ -314,8 +314,8 @@ pub async fn connection_oauth_logout(
 
     // Clear persisted session cookies.
     let mut config = connection::read_config();
-    if config.remote_url.as_deref() == Some(base_url.as_str()) {
-        config.remote_session = None;
+    if config.url.as_deref() == Some(base_url.as_str()) {
+        config.session = None;
         let _ = connection::write_config(&config);
     }
 

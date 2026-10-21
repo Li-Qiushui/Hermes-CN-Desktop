@@ -3,15 +3,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::{LazyLock, Mutex};
-use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::State;
-use url::Url;
 
 use crate::error::AppError;
 use crate::state::AppState;
@@ -310,12 +306,6 @@ fn new_flow_id(platform: ImPlatform) -> String {
 
 fn bytes_to_lower_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
-fn same_path(left: &str, right: &str) -> bool {
-    let left = fs::canonicalize(left).unwrap_or_else(|_| PathBuf::from(left));
-    let right = fs::canonicalize(right).unwrap_or_else(|_| PathBuf::from(right));
-    left == right
 }
 
 fn expires_at_ms_from(timeout: Duration) -> u64 {
@@ -1531,155 +1521,11 @@ fn validate_path_segment(value: &str, label: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-fn validate_managed_gateway_target(
-    api_base_url: &str,
-    dashboard_owned: bool,
-    dashboard_home: Option<&str>,
-    hermes_home: &str,
-) -> Result<(), String> {
-    if api_base_url.is_empty() {
-        return Err("Dashboard 尚未就绪，无法重启 Gateway。".to_string());
-    }
-
-    let parsed = Url::parse(api_base_url)
-        .map_err(|_| format!("Dashboard API 地址无效，无法重启 Gateway：{api_base_url}"))?;
-    let port = parsed.port();
-    let host = parsed.host_str().unwrap_or_default();
-    if host != "127.0.0.1" || port == Some(9119) {
-        return Err(format!(
-            "拒绝重启非桌面端 managed runtime Gateway：{}",
-            api_base_url
-        ));
-    }
-    if !dashboard_owned {
-        return Err("拒绝重启 Gateway：当前 dashboard 不是桌面端托管进程。".to_string());
-    }
-    if let Some(marker_home) = dashboard_home {
-        if !same_path(marker_home, hermes_home) {
-            return Err(
-                "拒绝重启 Gateway：dashboard 所属 HERMES_HOME 与当前 profile 不一致。".to_string(),
-            );
-        }
-    }
-
-    Ok(())
-}
-
-fn spawn_managed_gateway_process(hermes_home: &str) -> Result<(u32, PathBuf), String> {
-    let record = crate::process::runtime::read_current_record().ok_or_else(|| {
-        format!(
-            "Managed runtime 未安装或 current.json 无效，无法启动 Gateway。请先在运行时管理里安装 runtime：{}",
-            crate::process::runtime::current_record_path_display()
-        )
-    })?;
-
-    let gateway_runtime_dir = crate::process::runtime::gateway_runtime_dir();
-    let gateway_lock_dir = gateway_runtime_dir.join("token-locks");
-    fs::create_dir_all(&gateway_runtime_dir)
-        .map_err(|err| format!("无法创建 Gateway runtime 目录：{err}"))?;
-    fs::create_dir_all(&gateway_lock_dir)
-        .map_err(|err| format!("无法创建 Gateway lock 目录：{err}"))?;
-
-    let log_dir = Path::new(hermes_home).join("logs");
-    fs::create_dir_all(&log_dir).map_err(|err| format!("无法创建 Gateway 日志目录：{err}"))?;
-    let log_path = log_dir.join("desktop-gateway-restart.log");
-    let mut log = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .map_err(|err| format!("无法打开 Gateway 重启日志：{err}"))?;
-    let _ = writeln!(
-        log,
-        "\n=== desktop managed gateway restart {} ===\nexecutable={}\nHERMES_HOME={}\nHERMES_GATEWAY_RUNTIME_DIR={}\n",
-        now_ms(),
-        record.executable_path,
-        hermes_home,
-        gateway_runtime_dir.to_string_lossy(),
-    );
-    match crate::process::gateway::preflight_managed_gateway_restart(
-        &record,
-        hermes_home,
-        &gateway_runtime_dir,
-        &gateway_lock_dir,
-    ) {
-        Ok(report) => {
-            let _ = writeln!(log, "preflight={}\n", report.summary());
-        }
-        Err(err) => {
-            let _ = writeln!(log, "preflight_error={err}\n");
-        }
-    }
-
-    let stdout = log
-        .try_clone()
-        .map(Stdio::from)
-        .unwrap_or_else(|_| Stdio::null());
-    let stderr = Stdio::from(log);
-
-    let mut cmd = Command::new(&record.executable_path);
-    // User .env first; the explicit desktop wiring below must win. The IM
-    // gateway reads the credentials this onboarding flow just wrote into
-    // $HERMES_HOME/.env, so inject them at spawn instead of relying solely
-    // on the runtime's own dotenv load. See #197.
-    crate::env_file::inject_env_file(&mut cmd, hermes_home, "IM gateway");
-    cmd.args(["gateway", "run", "--replace"])
-        .current_dir(&record.path)
-        .env("HERMES_HOME", hermes_home)
-        .env("HERMES_GATEWAY_RUNTIME_DIR", &gateway_runtime_dir)
-        .env("HERMES_GATEWAY_LOCK_DIR", &gateway_lock_dir)
-        .env("HERMES_DESKTOP_MANAGED", "1")
-        .env("HERMES_DESKTOP", "1")
-        .env("HERMES_GATEWAY_DETACHED", "1")
-        .env("HERMES_NONINTERACTIVE", "1")
-        .env("PYTHONUNBUFFERED", "1")
-        .stdout(stdout)
-        .stderr(stderr)
-        .stdin(Stdio::null());
-    if let Some(skills_dir) = crate::process::runtime::current_bundled_skills_dir() {
-        cmd.env("HERMES_BUNDLED_SKILLS", skills_dir);
-    }
-    if let Some(plugins_dir) = crate::process::runtime::current_bundled_plugins_dir() {
-        cmd.env("HERMES_BUNDLED_PLUGINS", plugins_dir);
-    }
-    if let Some(web_dist) = crate::process::runtime::current_dashboard_web_dist_dir() {
-        cmd.env("HERMES_WEB_DIST", web_dist);
-    }
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
-    }
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
-        const DETACHED_PROCESS: u32 = 0x00000008;
-        cmd.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
-    }
-
-    let mut child = cmd
-        .spawn()
-        .map_err(|err| format!("无法启动桌面端 managed Gateway：{err}"))?;
-    let pid = child.id();
-    thread::sleep(Duration::from_millis(350));
-    match child.try_wait() {
-        Ok(Some(status)) => Err(format!(
-            "Gateway 启动进程过早退出：{status}。请查看日志：{}",
-            log_path.to_string_lossy()
-        )),
-        Ok(None) => {
-            thread::spawn(move || {
-                let _ = child.wait();
-            });
-            Ok((pid, log_path))
-        }
-        Err(err) => Err(format!("无法确认 Gateway 启动状态：{err}")),
-    }
-}
-
-async fn restart_gateway(state: &State<'_, AppState>, requested: bool) -> ImRestartResult {
+async fn restart_gateway(
+    app: &tauri::AppHandle,
+    state: &State<'_, AppState>,
+    requested: bool,
+) -> ImRestartResult {
     if !requested {
         return ImRestartResult {
             requested: false,
@@ -1688,29 +1534,8 @@ async fn restart_gateway(state: &State<'_, AppState>, requested: bool) -> ImRest
             message: Some("未请求重启 Gateway。".to_string()),
         };
     }
-    let (api_base_url, hermes_home, dashboard_owned, dashboard_home) = match state.inner.lock() {
-        Ok(inner) => (
-            inner.api_base_url.clone(),
-            inner.hermes_home.clone(),
-            inner
-                .dashboard_handle
-                .as_ref()
-                .map(|handle| handle.owns_process)
-                .unwrap_or(false),
-            inner.dashboard_handle.as_ref().and_then(|handle| {
-                handle
-                    .ownership_marker_path
-                    .as_ref()
-                    .and_then(|path| fs::read_to_string(path).ok())
-                    .and_then(|content| {
-                        serde_json::from_str::<crate::process::dashboard::DashboardOwnershipMarker>(
-                            &content,
-                        )
-                        .ok()
-                    })
-                    .map(|marker| marker.hermes_home)
-            }),
-        ),
+    let api_base_url = match state.inner.lock() {
+        Ok(inner) => inner.api_base_url.clone(),
         Err(_) => {
             return ImRestartResult {
                 requested: true,
@@ -1720,36 +1545,44 @@ async fn restart_gateway(state: &State<'_, AppState>, requested: bool) -> ImRest
             }
         }
     };
-
-    if let Err(message) = validate_managed_gateway_target(
-        &api_base_url,
-        dashboard_owned,
-        dashboard_home.as_deref(),
-        &hermes_home,
-    ) {
+    if api_base_url.trim().is_empty() {
         return ImRestartResult {
             requested: true,
             ok: false,
             status: None,
-            message: Some(message),
+            message: Some("Dashboard 尚未就绪，无法重启 Gateway。".to_string()),
         };
     }
 
-    match spawn_managed_gateway_process(&hermes_home) {
-        Ok((pid, log_path)) => ImRestartResult {
+    // The kernel is external: ask it to restart through its own API.
+    let request = crate::commands::api_proxy::ApiRequestInput {
+        path: "/api/gateway/restart".to_string(),
+        method: Some("POST".to_string()),
+        headers: None,
+        body: Some("{}".to_string()),
+    };
+    match crate::commands::api_proxy::api_request_from_state(app, request, state).await {
+        Ok(response) if (200..300).contains(&response.status) => ImRestartResult {
             requested: true,
             ok: true,
-            status: None,
+            status: Some(response.status),
+            message: Some("已请求外部 Hermes 重启 Gateway。".to_string()),
+        },
+        Ok(response) => ImRestartResult {
+            requested: true,
+            ok: false,
+            status: Some(response.status),
             message: Some(format!(
-                "已在桌面端 managed runtime 中启动 Gateway（PID {pid}）。本次没有调用 dashboard /api/gateway/restart，因此不会重启 9119 上的用户全局 Hermes Agent。日志：{}",
-                log_path.to_string_lossy()
+                "重启 Gateway 失败（HTTP {}）：{}",
+                response.status,
+                response.body.chars().take(300).collect::<String>()
             )),
         },
         Err(err) => ImRestartResult {
             requested: true,
             ok: false,
             status: None,
-            message: Some(err),
+            message: Some(format!("重启 Gateway 失败：{err}")),
         },
     }
 }
@@ -1795,6 +1628,7 @@ pub async fn im_onboarding_poll(
 #[tauri::command]
 pub async fn im_onboarding_apply(
     input: ImOnboardingApplyInput,
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<ImOnboardingApplyResult, AppError> {
     let (hermes_home, current_profile) = {
@@ -1808,7 +1642,7 @@ pub async fn im_onboarding_apply(
     if input.platform == ImPlatform::Weixin {
         write_weixin_account_store(&hermes_home, &patch)?;
     }
-    let restart = restart_gateway(&state, input.restart_gateway.unwrap_or(true)).await;
+    let restart = restart_gateway(&app, &state, input.restart_gateway.unwrap_or(true)).await;
     let mut written = BTreeMap::new();
     for (key, value) in &patch {
         written.insert(
@@ -2215,44 +2049,9 @@ mod tests {
         assert!(err.to_string().contains("WEIXIN_ACCOUNT_ID"));
     }
 
-    #[test]
-    fn managed_gateway_target_rejects_global_9119() {
-        let dir = TempDir::new().unwrap();
-        let home = dir.path().to_str().unwrap();
-        let err = validate_managed_gateway_target("http://127.0.0.1:9119", true, Some(home), home)
-            .unwrap_err();
-        assert!(err.contains("非桌面端 managed runtime"));
-    }
 
-    #[test]
-    fn managed_gateway_target_rejects_unowned_dashboard() {
-        let dir = TempDir::new().unwrap();
-        let home = dir.path().to_str().unwrap();
-        let err = validate_managed_gateway_target("http://127.0.0.1:9120", false, Some(home), home)
-            .unwrap_err();
-        assert!(err.contains("不是桌面端托管进程"));
-    }
 
-    #[test]
-    fn managed_gateway_target_rejects_marker_home_mismatch() {
-        let current = TempDir::new().unwrap();
-        let other = TempDir::new().unwrap();
-        let err = validate_managed_gateway_target(
-            "http://127.0.0.1:9120",
-            true,
-            Some(other.path().to_str().unwrap()),
-            current.path().to_str().unwrap(),
-        )
-        .unwrap_err();
-        assert!(err.contains("HERMES_HOME 与当前 profile 不一致"));
-    }
 
-    #[test]
-    fn managed_gateway_target_accepts_owned_runtime_dashboard() {
-        let dir = TempDir::new().unwrap();
-        let home = dir.path().to_str().unwrap();
-        validate_managed_gateway_target("http://127.0.0.1:9120", true, Some(home), home).unwrap();
-    }
 
     #[tokio::test]
     #[serial]

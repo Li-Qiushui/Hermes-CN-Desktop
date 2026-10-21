@@ -11,7 +11,7 @@ use tauri::State;
 use zip::write::SimpleFileOptions;
 
 use crate::error::{AppError, AppResult};
-use crate::process::runtime;
+use crate::process::data_dir;
 use crate::state::AppState;
 
 const MAX_TEXT_FILE_BYTES: u64 = 25 * 1024 * 1024;
@@ -93,15 +93,7 @@ struct RuntimeProcessSnapshot {
     hermes_home: String,
     hermes_home_base: String,
     current_profile: String,
-    owns_process: bool,
-    pid: Option<u32>,
-    command_program: Option<String>,
-    command_args: Vec<String>,
-    command_line: Option<String>,
-    gateway_runtime_dir: Option<String>,
-    gateway_lock_dir: Option<String>,
-    ownership_marker_path: Option<String>,
-    ownership_state: Option<String>,
+    connection_mode: String,
     session_token_present: bool,
     gateway_ws_relay_active: bool,
 }
@@ -142,39 +134,23 @@ pub async fn export_debug_bundle(
 fn capture_debug_state(state: &State<'_, AppState>) -> AppResult<DebugStateSnapshot> {
     let (last_error, process, desktop_state) = {
         let inner = state.inner.lock()?;
-        let dashboard = inner.dashboard_handle.as_ref();
-        let process = dashboard.map(|handle| RuntimeProcessSnapshot {
-            api_base_url: inner.api_base_url.clone(),
-            gateway_url: inner.gateway_url.clone(),
-            hermes_home: inner.hermes_home.clone(),
-            hermes_home_base: inner.hermes_home_base.clone(),
-            current_profile: inner.current_profile.clone(),
-            owns_process: handle.owns_process,
-            pid: handle
-                .child
-                .as_ref()
-                .map(|child| child.id())
-                .or(handle.attached_pid),
-            command_program: handle.command_program.clone(),
-            command_args: handle.command_args.clone(),
-            command_line: handle.command_program.as_ref().map(|program| {
-                std::iter::once(program.as_str())
-                    .chain(handle.command_args.iter().map(|arg| arg.as_str()))
-                    .map(shell_quote)
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            }),
-            gateway_runtime_dir: handle.gateway_runtime_dir.clone(),
-            gateway_lock_dir: handle.gateway_lock_dir.clone(),
-            ownership_marker_path: handle.ownership_marker_path.clone(),
-            ownership_state: handle.ownership_state.clone(),
-            session_token_present: inner.session_token.is_some(),
-            gateway_ws_relay_active: inner
-                .gateway_ws
-                .as_ref()
-                .map(|relay| !relay.abort.load(std::sync::atomic::Ordering::Relaxed))
-                .unwrap_or(false),
-        });
+        let process = inner
+            .dashboard_handle
+            .as_ref()
+            .map(|handle| RuntimeProcessSnapshot {
+                api_base_url: inner.api_base_url.clone(),
+                gateway_url: inner.gateway_url.clone(),
+                hermes_home: inner.hermes_home.clone(),
+                hermes_home_base: inner.hermes_home_base.clone(),
+                current_profile: inner.current_profile.clone(),
+                connection_mode: handle.mode.as_str().to_string(),
+                session_token_present: inner.session_token.is_some(),
+                gateway_ws_relay_active: inner
+                    .gateway_ws
+                    .as_ref()
+                    .map(|relay| !relay.abort.load(std::sync::atomic::Ordering::Relaxed))
+                    .unwrap_or(false),
+            });
 
         let desktop_state = json!({
             "appVersion": env!("CARGO_PKG_VERSION"),
@@ -188,20 +164,12 @@ fn capture_debug_state(state: &State<'_, AppState>) -> AppResult<DebugStateSnaps
             "hermesHome": inner.hermes_home,
             "hermesHomeBase": inner.hermes_home_base,
             "currentProfile": inner.current_profile,
+            "connectionMode": inner.connection_mode.as_str(),
             "sessionTokenPresent": inner.session_token.is_some(),
-            "dashboardRestartInFlight": inner.dashboard_restart_in_flight,
             "lastRuntimeError": inner.last_runtime_error,
-            "yoloMode": inner.yolo_mode,
             "dashboard": process.as_ref().map(|p| json!({
-                "ownsProcess": p.owns_process,
-                "pid": p.pid,
-                "commandProgram": p.command_program,
-                "commandArgs": p.command_args,
-                "commandLine": p.command_line,
-                "gatewayRuntimeDir": p.gateway_runtime_dir,
-                "gatewayLockDir": p.gateway_lock_dir,
-                "ownershipMarkerPath": p.ownership_marker_path,
-                "ownershipState": p.ownership_state,
+                "apiBaseUrl": p.api_base_url,
+                "connectionMode": p.connection_mode,
                 "gatewayWsRelayActive": p.gateway_ws_relay_active,
             })),
         });
@@ -209,30 +177,20 @@ fn capture_debug_state(state: &State<'_, AppState>) -> AppResult<DebugStateSnaps
         (inner.last_runtime_error.clone(), process, desktop_state)
     };
 
-    let mut runtime_info = runtime::get_runtime_info(last_error);
-    if let Some(process) = process.clone() {
-        runtime_info.process = Some(runtime::RuntimeProcessInfo {
-            api_base_url: process.api_base_url,
-            gateway_url: process.gateway_url,
-            hermes_home: process.hermes_home.clone(),
-            hermes_home_base: process.hermes_home_base.clone(),
-            current_profile: process.current_profile.clone(),
-            owns_process: process.owns_process,
-            pid: process.pid,
-            command_program: process.command_program,
-            command_args: process.command_args,
-            command_line: process.command_line,
-            gateway_runtime_dir: process.gateway_runtime_dir,
-            gateway_lock_dir: process.gateway_lock_dir,
-            ownership_marker_path: process.ownership_marker_path,
-            ownership_state: process.ownership_state,
-            session_token_present: process.session_token_present,
-            gateway_ws_relay_active: process.gateway_ws_relay_active,
-        });
-    }
-
-    let runtime_info_value = serde_json::to_value(&runtime_info)
-        .map_err(|e| AppError::Internal(format!("Failed to serialize runtime info: {e}")))?;
+    // The kernel is external: there is no local install record to report.
+    let runtime_info = json!({
+        "mode": "external",
+        "lastError": last_error,
+        "process": process.as_ref().map(|p| json!({
+            "apiBaseUrl": p.api_base_url,
+            "gatewayUrl": p.gateway_url,
+            "currentProfile": p.current_profile,
+            "connectionMode": p.connection_mode,
+            "sessionTokenPresent": p.session_token_present,
+            "gatewayWsRelayActive": p.gateway_ws_relay_active,
+        })),
+    });
+    let runtime_info_value = runtime_info.clone();
 
     let hermes_home = process
         .as_ref()
@@ -574,39 +532,10 @@ fn add_log_directories(bundle: &mut DebugBundleWriter, snapshot: &DebugStateSnap
     }
 }
 
-fn add_runtime_artifacts(bundle: &mut DebugBundleWriter, snapshot: &DebugStateSnapshot) {
-    if let Some(path) = snapshot
-        .runtime_info
-        .get("currentRecordPath")
-        .and_then(Value::as_str)
-    {
-        let path = Path::new(path);
-        if path.exists() {
-            let _ = bundle.add_redacted_file(path, "runtime/current.json.redacted.txt");
-        }
-    }
-
-    if let Some(path) = snapshot
-        .desktop_state
-        .get("dashboard")
-        .and_then(|v| v.get("ownershipMarkerPath"))
-        .and_then(Value::as_str)
-    {
-        let path = Path::new(path);
-        if path.exists() {
-            let _ = bundle.add_redacted_file(path, "runtime/desktop-owner.json.redacted.txt");
-        }
-    }
-
-    if let Some(dir) = snapshot
-        .runtime_info
-        .get("gatewayRuntimeDir")
-        .and_then(Value::as_str)
-    {
-        let path = Path::new(dir);
-        if path.exists() {
-            let _ = bundle.add_redacted_dir(path, "runtime/gateway-runtime");
-        }
+fn add_runtime_artifacts(bundle: &mut DebugBundleWriter, _snapshot: &DebugStateSnapshot) {
+    let path = data_dir::gateway_runtime_dir();
+    if path.exists() {
+        let _ = bundle.add_redacted_dir(&path, "runtime/gateway-runtime");
     }
 }
 
@@ -667,19 +596,6 @@ fn now_unix_ms() -> u128 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis()
-}
-
-fn shell_quote(value: &str) -> String {
-    if value.is_empty() {
-        return "''".to_string();
-    }
-    if value
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-' | ':' | '='))
-    {
-        return value.to_string();
-    }
-    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 fn redact_json(value: Value) -> Value {

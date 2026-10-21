@@ -29,7 +29,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::process::runtime;
+use crate::process::{artifacts, data_dir};
 
 const UI_SCHEMA_VERSION: u32 = 1;
 const UI_CURRENT_FILE: &str = "current.json";
@@ -130,7 +130,7 @@ pub struct UiUpdateReadyPayload {
 // ───────────────────────────── disk layout ────────────────────────────────
 
 pub(crate) fn ui_root() -> PathBuf {
-    runtime::runtime_root().join("ui")
+    data_dir::data_dir().join("ui")
 }
 
 fn ui_versions_root() -> PathBuf {
@@ -145,11 +145,6 @@ fn ui_downloads_root() -> PathBuf {
     ui_root().join("downloads")
 }
 
-fn read_json_file<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
-    let content = fs::read_to_string(path).ok()?;
-    serde_json::from_str(&content).ok()
-}
-
 fn write_json_file<T: Serialize>(path: &Path, data: &T) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -159,11 +154,11 @@ fn write_json_file<T: Serialize>(path: &Path, data: &T) -> Result<(), String> {
 }
 
 /// Create `path` under `ui_root()` and verify it cannot escape the UI root
-/// (mirrors runtime.rs's `ensure_managed_subdir`).
+/// (mirrors the shared subdir bootstrap).
 fn ensure_ui_subdir(path: &Path, label: &str) -> Result<PathBuf, String> {
     fs::create_dir_all(path).map_err(|error| {
         format!(
-            "Failed to create managed UI {label} directory {}: {}",
+            "Failed to create UI {label} directory {}: {}",
             path.display(),
             error
         )
@@ -177,7 +172,7 @@ fn ensure_ui_subdir(path: &Path, label: &str) -> Result<PathBuf, String> {
     })?;
     let canonical_path = path.canonicalize().map_err(|error| {
         format!(
-            "Failed to validate managed UI {label} directory {}: {}",
+            "Failed to validate UI {label} directory {}: {}",
             path.display(),
             error
         )
@@ -271,8 +266,8 @@ pub(crate) fn ui_manifest_url() -> Option<String> {
         "{}/{}-{}-{}.json",
         base,
         channel,
-        runtime::current_platform(),
-        runtime::current_arch()
+        artifacts::current_platform(),
+        artifacts::current_arch()
     ))
 }
 
@@ -301,10 +296,10 @@ pub(crate) fn ui_signature_payload(manifest: &UiUpdateManifest) -> Vec<u8> {
 /// Verify the UI manifest signature with the same configured public key the
 /// kernel track trusts (env > baked > fallback, see runtime.rs).
 pub fn verify_ui_signature(manifest: &UiUpdateManifest) -> Result<(), String> {
-    let public_key_pem = runtime::configured_public_key()
+    let public_key_pem = artifacts::configured_public_key()
         .ok_or_else(|| "UI update public key is not configured".to_string())?;
     let payload = ui_signature_payload(manifest);
-    runtime::verify_payload_signature(&payload, &manifest.signature, &public_key_pem)
+    artifacts::verify_payload_signature(&payload, &manifest.signature, &public_key_pem)
 }
 
 // ───────────────────────────── version gates ───────────────────────────────
@@ -336,7 +331,7 @@ fn desktop_ge(floor: &str) -> bool {
 /// `index.html` actually exists on disk (a broken record reads as absent and
 /// the handler falls back to the embedded bundle).
 pub(crate) fn ui_current_record() -> Option<UiInstallRecord> {
-    let record = read_json_file::<UiInstallRecord>(&ui_current_record_path())?;
+    let record = crate::util::read_json_file::<UiInstallRecord>(&ui_current_record_path())?;
     if record.schema_version != UI_SCHEMA_VERSION {
         return None;
     }
@@ -498,15 +493,15 @@ pub async fn check_ui_update() -> UiUpdateCheckResult {
                         manifest.schema_version, UI_SCHEMA_VERSION
                     ));
                 }
-                if manifest.platform != runtime::current_platform()
-                    || manifest.arch != runtime::current_arch()
+                if manifest.platform != artifacts::current_platform()
+                    || manifest.arch != artifacts::current_arch()
                 {
                     return err_check(format!(
                         "UI manifest is for {}-{}, not {}-{}",
                         manifest.platform,
                         manifest.arch,
-                        runtime::current_platform(),
-                        runtime::current_arch()
+                        artifacts::current_platform(),
+                        artifacts::current_arch()
                     ));
                 }
                 if let Err(e) = verify_ui_signature(&manifest) {
@@ -575,7 +570,7 @@ pub async fn install_ui_update() -> UiInstallUpdateResult {
     if let Err(e) = verify_ui_signature(&manifest) {
         return err_install(e);
     }
-    let version_segment = match runtime::safe_version_segment(&manifest.ui_version) {
+    let version_segment = match artifacts::safe_version_segment(&manifest.ui_version) {
         Ok(segment) => segment,
         Err(e) => return err_install(e),
     };
@@ -628,7 +623,7 @@ pub async fn install_ui_update() -> UiInstallUpdateResult {
     if let Err(e) = fs::write(&zip_path, &artifact) {
         return err_install(format!("Failed to write zip: {e}"));
     }
-    let digest = match runtime::file_sha256(&zip_path) {
+    let digest = match artifacts::file_sha256(&zip_path) {
         Some(d) => d,
         None => return err_install(format!("UI artifact not readable: {}", zip_path.display())),
     };
@@ -658,7 +653,7 @@ pub async fn install_ui_update() -> UiInstallUpdateResult {
             ));
         }
     };
-    if let Err(e) = runtime::extract_zip(&zip_path, staging.path()) {
+    if let Err(e) = artifacts::extract_zip(&zip_path, staging.path()) {
         return err_install(format!("Failed to extract UI zip: {e}"));
     }
 
@@ -674,7 +669,7 @@ pub async fn install_ui_update() -> UiInstallUpdateResult {
         return err_install(e);
     }
     if let Err(e) = fs::rename(staging.path(), &target) {
-        if let Err(e2) = runtime::copy_dir_all(staging.path(), &target) {
+        if let Err(e2) = artifacts::copy_dir_all(staging.path(), &target) {
             return err_install(format!("Failed to install UI: rename={e}, copy={e2}"));
         }
     }
@@ -728,7 +723,7 @@ pub fn rollback_ui_update() -> UiInstallUpdateResult {
             };
         }
     };
-    let prev_segment = match runtime::safe_version_segment(&prev_ui_version) {
+    let prev_segment = match artifacts::safe_version_segment(&prev_ui_version) {
         Ok(segment) => segment,
         Err(error) => {
             return UiInstallUpdateResult {
@@ -760,7 +755,7 @@ pub fn rollback_ui_update() -> UiInstallUpdateResult {
             )),
         };
     }
-    let prev_manifest: Option<UiUpdateManifest> = read_json_file(&prev_dir.join(UI_MANIFEST_FILE));
+    let prev_manifest: Option<UiUpdateManifest> = crate::util::read_json_file(&prev_dir.join(UI_MANIFEST_FILE));
     let installed = UiInstallRecord {
         schema_version: UI_SCHEMA_VERSION,
         ui_version: prev_ui_version,
@@ -869,8 +864,8 @@ mod tests {
             channel: "stable".to_string(),
             ui_version: "1.2.3".to_string(),
             app_version_floor: "0.1.0".to_string(),
-            platform: runtime::current_platform().to_string(),
-            arch: runtime::current_arch().to_string(),
+            platform: artifacts::current_platform().to_string(),
+            arch: artifacts::current_arch().to_string(),
             artifact_url: "https://example.com/ui.zip".to_string(),
             sha256: "deadbeef".to_string(),
             signature: String::new(),
@@ -939,8 +934,8 @@ mod tests {
                 "stable",                     // channel
                 "1.2.3",                      // ui_version
                 "0.1.0",                      // app_version_floor
-                runtime::current_platform(),  // platform
-                runtime::current_arch(),      // arch
+                artifacts::current_platform(),  // platform
+                artifacts::current_arch(),      // arch
                 "https://example.com/ui.zip", // artifact_url
                 "deadbeef",                   // sha256
                 "owner/repo",                 // source_repo
@@ -970,7 +965,7 @@ mod tests {
         let (key, pem) = test_keypair();
         let mut manifest = fixture_manifest();
         sign_ui_manifest(&key, &mut manifest);
-        let result = runtime::verify_payload_signature(
+        let result = artifacts::verify_payload_signature(
             &ui_signature_payload(&manifest),
             &manifest.signature,
             &pem,
@@ -984,7 +979,7 @@ mod tests {
         let mut manifest = fixture_manifest();
         sign_ui_manifest(&key, &mut manifest);
         manifest.app_version_floor = "0.0.1".to_string();
-        let result = runtime::verify_payload_signature(
+        let result = artifacts::verify_payload_signature(
             &ui_signature_payload(&manifest),
             &manifest.signature,
             &pem,
@@ -1015,7 +1010,7 @@ mod tests {
         );
         let sig = key.sign(kernel_payload.as_bytes());
         manifest.signature = base64::engine::general_purpose::STANDARD.encode(sig.to_bytes());
-        let result = runtime::verify_payload_signature(
+        let result = artifacts::verify_payload_signature(
             &ui_signature_payload(&manifest),
             &manifest.signature,
             &pem,
@@ -1238,8 +1233,8 @@ mod tests {
         std::env::set_var("HERMES_UI_UPDATE_CHANNEL", "canary");
         let expected = format!(
             "https://example.test/runtime/canary-{}-{}.json",
-            runtime::current_platform(),
-            runtime::current_arch()
+            artifacts::current_platform(),
+            artifacts::current_arch()
         );
         assert_eq!(ui_manifest_url().as_deref(), Some(expected.as_str()));
         restore_env("HERMES_UI_UPDATE_MANIFEST_URL", &old_manifest);
@@ -1259,8 +1254,8 @@ mod tests {
         let expected = format!(
             "{}/stable-{}-{}.json",
             UI_FALLBACK_MANIFEST_BASE_URL,
-            runtime::current_platform(),
-            runtime::current_arch()
+            artifacts::current_platform(),
+            artifacts::current_arch()
         );
         assert_eq!(ui_manifest_url().as_deref(), Some(expected.as_str()));
         restore_env("HERMES_UI_UPDATE_MANIFEST_URL", &old_manifest);

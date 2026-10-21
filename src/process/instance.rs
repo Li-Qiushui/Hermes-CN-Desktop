@@ -1,7 +1,7 @@
 //! Per-runtime-root single-instance guard (issue #366).
 //!
 //! Two desktop shells sharing one runtime root would fight over the same
-//! managed kernel (each respawn/quit tears down the other's backend), so a
+//! kernel (each window would otherwise fight over the same state), so a
 //! second launch against the SAME root must hand focus to the incumbent and
 //! exit — WeChat-style. Distinct roots (two portable extractions, or a
 //! portable copy next to an installed build) are a supported scenario and
@@ -26,7 +26,7 @@ use fs2::FileExt;
 #[cfg(target_os = "windows")]
 use std::sync::Mutex;
 
-use crate::process::runtime;
+use crate::process::data_dir;
 
 const INSTANCE_LOCK_FILENAME: &str = "desktop-instance.lock";
 const FOCUS_REQUEST_FILENAME: &str = "focus-request.json";
@@ -61,11 +61,11 @@ pub enum SingleInstance {
 }
 
 fn instance_lock_path() -> PathBuf {
-    runtime::runtime_root().join(INSTANCE_LOCK_FILENAME)
+    data_dir::data_dir().join(INSTANCE_LOCK_FILENAME)
 }
 
 fn focus_request_path() -> PathBuf {
-    runtime::runtime_root().join(FOCUS_REQUEST_FILENAME)
+    data_dir::data_dir().join(FOCUS_REQUEST_FILENAME)
 }
 
 fn single_instance_disabled() -> bool {
@@ -144,7 +144,7 @@ fn try_acquire_named_mutex() -> Result<(), bool> {
     use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE};
     use windows_sys::Win32::System::Threading::CreateMutexW;
 
-    let root = runtime::runtime_root();
+    let root = data_dir::data_dir();
     let root_str = root.to_string_lossy();
     let safe_name = root_str.replace("\\", "_").replace(":", "");
     let wide: Vec<u16> = OsStr::new(&format!("Local\\HermesDesktop_{safe_name}"))

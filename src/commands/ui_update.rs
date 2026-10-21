@@ -7,7 +7,6 @@
 
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::connection;
 use crate::error::AppError;
 use crate::process::ui_update;
 use crate::state::AppState;
@@ -64,10 +63,6 @@ pub async fn ui_install_update(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<ui_update::UiInstallUpdateResult, AppError> {
-    {
-        let inner = state.inner.lock()?;
-        connection::require_managed_mode(inner.connection_mode, "界面热更新")?;
-    }
     if !try_begin_ui_update(&state)? {
         return Ok(ui_update::UiInstallUpdateResult {
             ok: false,
@@ -89,10 +84,6 @@ pub async fn ui_rollback(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<ui_update::UiInstallUpdateResult, AppError> {
-    {
-        let inner = state.inner.lock()?;
-        connection::require_managed_mode(inner.connection_mode, "界面回退")?;
-    }
     if !try_begin_ui_update(&state)? {
         return Ok(ui_update::UiInstallUpdateResult {
             ok: false,

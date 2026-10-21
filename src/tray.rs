@@ -1,6 +1,6 @@
 //! System tray integration for the desktop app.
 //!
-//! Closing the main window should keep the managed runtime alive. The tray is
+//! Closing the main window should keep the desktop alive. The tray is
 //! the visible affordance for bringing the UI back or explicitly quitting the
 //! whole desktop runtime.
 
