@@ -239,16 +239,6 @@ export const COMMAND_PALETTE_COMMANDS: readonly CommandPaletteItem[] = [
     priority: 13,
   },
   {
-    id: "command-backup",
-    group: "commands",
-    label: "备份恢复",
-    subtitle: "/backup · 导入导出 Profile 配置",
-    keywords: ["backup", "restore", "export", "import", "备份", "恢复"],
-    icon: "backup",
-    action: { type: "navigate", to: "/backup" },
-    priority: 14,
-  },
-  {
     id: "command-memory",
     group: "commands",
     label: "内置记忆",

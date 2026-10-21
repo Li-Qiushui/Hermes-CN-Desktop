@@ -520,26 +520,6 @@ const tauriBridge = {
     return invokeCommand("set_guide_state", { input: { guideState } });
   },
 
-  async installManagedRuntime(): Promise<RuntimeControlResult> {
-    return invokeCommand("managed_runtime_install");
-  },
-
-  async startManagedRuntime(): Promise<RuntimeControlResult> {
-    return invokeCommand("managed_runtime_start");
-  },
-
-  async stopManagedRuntime(): Promise<RuntimeControlResult> {
-    return invokeCommand("managed_runtime_stop");
-  },
-
-  async uninstallManagedRuntime(): Promise<RuntimeControlResult> {
-    return invokeCommand("managed_runtime_uninstall");
-  },
-
-  async reinstallManagedRuntime(): Promise<RuntimeControlResult> {
-    return invokeCommand("managed_runtime_reinstall");
-  },
-
   async probeConnectionConfig(remoteUrl: string): Promise<ProbeConnectionResult> {
     return invokeCommand("probe_connection_config", { remoteUrl });
   },

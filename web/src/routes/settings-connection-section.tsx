@@ -1,6 +1,6 @@
-// Settings → 连接: choose between the desktop-managed runtime, a loopback
-// Hermes Agent CLI dashboard, and a remote Hermes Agent. 本地连接自动从
-// dashboard HTML 读取 session token；远程连接继续使用手动 session token。
+// Settings → 连接: 连接本机回环上的 Hermes Agent CLI dashboard，或远端 Hermes
+// Agent。本地连接自动从 dashboard HTML 读取 session token；远程连接继续使用
+// 手动 session token。
 import { useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
@@ -8,7 +8,6 @@ import {
   CheckCircle2,
   ExternalLink,
   Globe2,
-  HardDrive,
   XCircle,
 } from "lucide-react";
 import type {
@@ -22,7 +21,6 @@ import { Alert, Button, Input, LoadingIndicator } from "@hermes/shared-ui";
 import { notifyConnectionAuthRestored } from "@/lib/connection-auth-events";
 import { runtime } from "@/lib/runtime";
 import { SettingsHero } from "./settings-hero";
-import { ManagedRuntimePanel } from "./managed-runtime-panel";
 import s from "./settings.module.css";
 
 interface SettingsSectionProps {
@@ -31,6 +29,7 @@ interface SettingsSectionProps {
   onApplied?: (mode: ConnectionMode) => Promise<void> | void;
 }
 
+type ExternalMode = Exclude<ConnectionMode, "managed">;
 type ProbeStatus = "idle" | "probing" | "reachable" | "unreachable" | "authRequired";
 type ConnectionMessage = { tone: "ok" | "error"; text: string; hint?: string };
 
@@ -42,7 +41,7 @@ const LOCAL_DASHBOARD_RECOVERY_HINT =
 function modeLabel(mode: ConnectionMode | undefined): string {
   if (mode === "remote") return "外部 Hermes · 远端服务器";
   if (mode === "local") return "外部 Hermes · 本机其他实例";
-  return "内置内核";
+  return "外部 Hermes";
 }
 
 function ModeCard({
@@ -110,14 +109,11 @@ export function ConnectionSection({
   const supported = Boolean(desktop?.getConnectionConfig);
   const browserCompanion = Boolean(window.__HERMES_RUNTIME__?.browserCompanion);
   const runtimeMode = runtime.getConnectionMode();
-  const initialMode = externalOnly && runtimeMode === "managed" ? "local" : runtimeMode;
+  const initialMode: ExternalMode = runtimeMode === "managed" ? "local" : runtimeMode;
 
   const [config, setConfig] = useState<ConnectionConfigView | null>(null);
   const [loadError, setLoadError] = useState("");
-  const [mode, setMode] = useState<ConnectionMode>(initialMode);
-  const [externalKind, setExternalKind] = useState<Exclude<ConnectionMode, "managed">>(
-    initialMode === "remote" ? "remote" : "local",
-  );
+  const [mode, setMode] = useState<ExternalMode>(initialMode);
   const [localUrl, setLocalUrl] = useState(DEFAULT_LOCAL_URL);
   const [remoteUrl, setRemoteUrl] = useState("");
   // The saved token never round-trips; this holds only what the user types.
@@ -143,8 +139,7 @@ export function ConnectionSection({
       .getConnectionConfig()
       .then((view) => {
         setConfig(view);
-        setMode(externalOnly && view.mode === "managed" ? "local" : view.mode);
-        if (view.mode !== "managed") setExternalKind(view.mode);
+        setMode(view.mode === "managed" ? "local" : view.mode);
         setLocalUrl(view.localUrl || DEFAULT_LOCAL_URL);
         setRemoteUrl(view.remoteUrl);
       })
@@ -272,13 +267,13 @@ export function ConnectionSection({
     ? Boolean(identity) // oauth: must be logged in
     : Boolean(trimmedRemoteUrl && (tokenInput.trim() || config?.remoteTokenSet));
   const localReady = Boolean(trimmedLocalUrl);
-  const canSubmit = mode === "managed" || (mode === "local" ? localReady : remoteReady);
+  const canSubmit = mode === "local" ? localReady : remoteReady;
   const identityLabel = identity
     ? identity.displayName || identity.email || identity.userId || "已登录"
     : null;
 
   const handleTest = async () => {
-    if (!desktop?.testConnectionConfig || mode === "managed") return;
+    if (!desktop?.testConnectionConfig) return;
     setMessage(null);
     setTesting(true);
     try {
@@ -390,14 +385,10 @@ export function ConnectionSection({
     ? "正在读取连接状态"
     : envOverride
       ? "连接由环境变量覆盖"
-      : effectiveMode === "managed"
-        ? "正在使用内置内核"
-        : `当前连接目标：${modeLabel(effectiveMode)}`;
+      : `当前连接目标：${modeLabel(effectiveMode)}`;
   const connectionDescription = envOverride
     ? `当前会话由环境变量强制连接到远程端（${config?.remoteUrl ?? "远程地址"}），需取消环境变量后才能在此修改。`
-    : effectiveMode === "managed"
-      ? "软件分为两种顶层使用模式：使用桌面端内置内核，或连接本机其他 / 远端服务器上的外部 Hermes。"
-      : "这里显示的是当前连接目标，不代表目标一定可用；请以上方的外部 Hermes Agent 实时检测结果为准。";
+    : "这里显示的是当前连接目标，不代表目标一定可用；请以上方的外部 Hermes Agent 实时检测结果为准。";
   const connectionBadge = !connectionLoaded ? "读取中" : envOverride ? "环境变量" : modeLabel(effectiveMode);
 
   return (
@@ -407,7 +398,7 @@ export function ConnectionSection({
       {!externalOnly && (
         <SettingsHero
           ok={connectionLoaded}
-          icon={effectiveMode === "remote" || envOverride ? <Globe2 size={24} /> : effectiveMode === "local" ? <Cable size={24} /> : <HardDrive size={24} />}
+          icon={effectiveMode === "remote" || envOverride ? <Globe2 size={24} /> : <Cable size={24} />}
           eyebrow="Hermes Agent 连接"
           title={connectionTitle}
           description={connectionDescription}
@@ -456,53 +447,27 @@ export function ConnectionSection({
         </div>
       )}
 
-      {!externalOnly && (
-        <div className={s.connModeGrid}>
-          <ModeCard
-            active={mode === "managed"}
-            current={effectiveMode === "managed"}
-            icon={HardDrive}
-            title="内置内核"
-            description="由桌面端安装、启动和维护，数据与系统中的其他 Hermes 隔离。"
-            disabled={disabled}
-            onSelect={() => setMode("managed")}
-          />
-          <ModeCard
-            active={mode !== "managed"}
-            current={effectiveMode !== "managed"}
-            icon={Globe2}
-            title="外部 Hermes"
-            description="连接本机另一个 Hermes，或连接远端服务器上的 Hermes。"
-            disabled={disabled}
-            onSelect={() => setMode(externalKind)}
-          />
-        </div>
-      )}
+      <div className={s.connModeGrid} role="radiogroup" aria-label="外部 Hermes 位置">
+        <ModeCard
+          active={mode === "local"}
+          current={effectiveMode === "local"}
+          icon={Cable}
+          title="本机其他 Hermes"
+          description="接入本机已经运行的 Hermes Dashboard，默认使用 127.0.0.1:9119。"
+          disabled={disabled}
+          onSelect={() => setMode("local")}
+        />
+        <ModeCard
+          active={mode === "remote"}
+          current={effectiveMode === "remote"}
+          icon={Globe2}
+          title="远端服务器 Hermes"
+          description="通过地址和 Token / OAuth 连接另一台机器上的 Hermes。"
+          disabled={disabled}
+          onSelect={() => setMode("remote")}
+        />
+      </div>
 
-      {mode !== "managed" && (
-        <div className={s.connModeGrid} role="radiogroup" aria-label="外部 Hermes 位置" style={{ marginTop: 12 }}>
-          <ModeCard
-            active={mode === "local"}
-            current={effectiveMode === "local"}
-            icon={Cable}
-            title="本机其他 Hermes"
-            description="接入本机已经运行的 Hermes Dashboard，默认使用 127.0.0.1:9119。"
-            disabled={disabled}
-            onSelect={() => { setExternalKind("local"); setMode("local"); }}
-          />
-          <ModeCard
-            active={mode === "remote"}
-            current={effectiveMode === "remote"}
-            icon={Globe2}
-            title="远端服务器 Hermes"
-            description="通过地址和 Token / OAuth 连接另一台机器上的 Hermes。"
-            disabled={disabled}
-            onSelect={() => { setExternalKind("remote"); setMode("remote"); }}
-          />
-        </div>
-      )}
-
-      {!externalOnly && mode === "managed" && <ManagedRuntimePanel compact />}
 
       {mode === "local" && (
         <div className={s.row}>
@@ -666,24 +631,21 @@ export function ConnectionSection({
       )}
 
       <div className={s.connFooter}>
-        {mode !== "managed" && (
-          <Button
-            type="button"
-            className={s.connFooterSpacer}
-            variant="outline"
-            onClick={() => void handleTest()}
-            disabled={disabled || (mode === "local" ? !trimmedLocalUrl : !trimmedRemoteUrl)}
-            loading={testing}
-            leadingIcon={<Cable size={12} />}
-          >
-            测试连接
-          </Button>
-        )}
+        <Button
+          type="button"
+          className={s.connFooterSpacer}
+          variant="outline"
+          onClick={() => void handleTest()}
+          disabled={disabled || (mode === "local" ? !trimmedLocalUrl : !trimmedRemoteUrl)}
+          loading={testing}
+          leadingIcon={<Cable size={12} />}
+        >
+          测试连接
+        </Button>
         {!externalOnly && (
           <>
             <Button
               type="button"
-              className={mode === "managed" ? s.connFooterSpacer : undefined}
               variant="ghost"
               onClick={() => { window.location.hash = "#/guide"; }}
             >
@@ -712,9 +674,7 @@ export function ConnectionSection({
             ? "连接并进入桌面端"
             : mode === "remote"
               ? "保存并连接远程"
-              : mode === "local"
-                ? "保存并连接本地"
-                : "保存并切回本机内核"}
+              : "保存并连接本地"}
         </Button>
       </div>
 

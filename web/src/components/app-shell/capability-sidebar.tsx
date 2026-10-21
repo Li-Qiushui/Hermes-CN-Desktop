@@ -1,7 +1,6 @@
 import { Link, useLocation } from "react-router-dom";
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import {
-  Archive,
   Boxes,
   Clock,
   Ghost,
@@ -54,11 +53,6 @@ export const CONFIG_ITEMS: readonly CapabilityItem[] = [
   },
 ];
 
-export const BACKUP_ITEMS: readonly CapabilityItem[] = [
-  { label: "备份恢复", path: "/backup", icon: Archive },
-  { label: "配置迁移", path: "/config-migration", icon: Sparkles, shortcut: "/migration" },
-];
-
 const AUTOMATION_ITEMS: readonly CapabilityItem[] = [
   { label: "定时任务", path: "/cron", icon: Clock },
 ];
@@ -69,7 +63,6 @@ export const CAPABILITY_SECTIONS: readonly {
 }[] = [
   { label: "配置", items: CONFIG_ITEMS },
   { label: "自动化", items: AUTOMATION_ITEMS },
-  { label: "备份与恢复", items: BACKUP_ITEMS },
 ];
 
 export function CapabilitySidebar() {

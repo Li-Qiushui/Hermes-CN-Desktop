@@ -4,7 +4,6 @@ import {
   Bell,
   Bug,
   Cable,
-  Cpu,
   FileCog,
   FileText,
   HeartPulse,
@@ -35,7 +34,6 @@ const ADVANCED_ITEMS: readonly AdvancedItem[] = [
   { label: "主题", path: "/theme", icon: Palette },
   { label: "配置", path: "/config", icon: FileCog },
   { label: "连接", path: "/connection", icon: Cable },
-  { label: "内核", path: "/kernel", icon: Cpu },
   { label: "环境", path: "/env", icon: MonitorCog },
   { label: "关于", path: "/about", icon: Info },
 ];

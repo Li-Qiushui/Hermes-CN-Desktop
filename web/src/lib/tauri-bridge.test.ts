@@ -366,22 +366,12 @@ describe("isTauriDevMode", () => {
     })).toBe(false);
   });
 
-  it("exposes persisted guide and managed runtime lifecycle commands", async () => {
+  it("exposes persisted guide state command", async () => {
     await installTauriBridge();
 
     await window.hermesDesktop?.setGuideState?.("deferred");
-    await window.hermesDesktop?.installManagedRuntime?.();
-    await window.hermesDesktop?.startManagedRuntime?.();
-    await window.hermesDesktop?.stopManagedRuntime?.();
-    await window.hermesDesktop?.uninstallManagedRuntime?.();
-    await window.hermesDesktop?.reinstallManagedRuntime?.();
 
     expect(mockInvoke).toHaveBeenCalledWith("set_guide_state", { input: { guideState: "deferred" } });
-    expect(mockInvoke).toHaveBeenCalledWith("managed_runtime_install", undefined);
-    expect(mockInvoke).toHaveBeenCalledWith("managed_runtime_start", undefined);
-    expect(mockInvoke).toHaveBeenCalledWith("managed_runtime_stop", undefined);
-    expect(mockInvoke).toHaveBeenCalledWith("managed_runtime_uninstall", undefined);
-    expect(mockInvoke).toHaveBeenCalledWith("managed_runtime_reinstall", undefined);
   });
 
   it("verifies backend version before mounting the runtime in Tauri mode", async () => {

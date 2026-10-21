@@ -13,6 +13,7 @@ import { dashboardPortFromUrl, dashboardUrlFromInputs } from "@/lib/dashboard-ur
 import { openExternalUrl } from "@/lib/external-links";
 import { isSessionRunning, mergeLiveRuntimeSessions } from "@/lib/session-activity";
 import { formatTokens } from "@/lib/format";
+import { formatContext, formatModelShort } from "@/lib/model-label";
 import {
   gatewayRestartAntivirusHint,
   gatewayRestartButtonLabel,
@@ -21,18 +22,6 @@ import {
 import { detectHostOS, runtime } from "@/lib/runtime";
 import { buildSidebarVersionRows } from "./sidebar-version-tag";
 import s from "./app-status-bar.module.css";
-
-function formatModelShort(model: string | null | undefined): string {
-  if (!model) return "—";
-  return model.replace(/^claude-/, "").replace(/-\d{8}$/, "");
-}
-
-function formatContext(ctx: number | null | undefined): string {
-  if (!ctx || ctx <= 0) return "—";
-  if (ctx >= 1_000_000) return `${(ctx / 1_000_000).toFixed(0)}M`;
-  if (ctx >= 1_000) return `${(ctx / 1_000).toFixed(0)}k`;
-  return `${ctx}`;
-}
 
 export function AppStatusBar() {
   const { data: status, isError: statusError } = useStatus();
@@ -50,11 +39,7 @@ export function AppStatusBar() {
   });
   const port = dashboardPortFromUrl(dashboardUrl);
   const gatewayOnline = !!status && !statusError;
-  const modeLabel = runtime.isRemote()
-    ? "远端 Hermes"
-    : runtime.isLocalConnection()
-      ? "本机外部 Hermes"
-      : "内置内核";
+  const modeLabel = runtime.isRemote() ? "远端 Hermes" : "外部 Hermes";
 
   const modelLabel = formatModelShort(modelInfo?.model);
   const contextLabel = formatContext(

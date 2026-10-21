@@ -1,9 +1,6 @@
 import ReactDOMServer from "react-dom/server";
 import { afterEach, expect, it, vi } from "vitest";
 
-vi.mock("./managed-runtime-panel", () => ({
-  ManagedRuntimePanel: () => <div>MANAGED_PANEL_MOUNTED</div>,
-}));
 
 import { ConnectionSection } from "./settings-connection-section";
 

@@ -509,11 +509,6 @@ declare global {
       testConnectionConfig?(input: ConnectionConfigInput): Promise<TestConnectionResult>;
       getDesktopControlState?(): Promise<RuntimeControlResult>;
       setGuideState?(guideState: import("@hermes/protocol").GuideState): Promise<RuntimeControlResult>;
-      installManagedRuntime?(): Promise<RuntimeControlResult>;
-      startManagedRuntime?(): Promise<RuntimeControlResult>;
-      stopManagedRuntime?(): Promise<RuntimeControlResult>;
-      uninstallManagedRuntime?(): Promise<RuntimeControlResult>;
-      reinstallManagedRuntime?(): Promise<RuntimeControlResult>;
       probeConnectionConfig?(remoteUrl: string): Promise<ProbeConnectionResult>;
       connectionOauthLogin?(remoteUrl: string): Promise<OauthLoginResult>;
       connectionPasswordLogin?(input: {

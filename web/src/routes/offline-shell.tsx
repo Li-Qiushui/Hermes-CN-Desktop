@@ -1,11 +1,10 @@
 import { Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
-import { CircleOff, Compass, ExternalLink, Globe2, HardDrive, Palette } from "lucide-react";
+import { CircleOff, Compass, ExternalLink, Globe2, Palette } from "lucide-react";
 import { Button } from "@hermes/shared-ui";
 import { HermesLogoMark } from "@/components/brand/hermes-logo-mark";
 import { openExternalUrl } from "@/lib/external-links";
 import { ThemeSection } from "./settings";
 import { ConnectionSection } from "./settings-connection-section";
-import { ManagedRuntimePanel } from "./managed-runtime-panel";
 import s from "./offline-shell.module.css";
 
 function OfflinePage({ title, sub, children }: { title: string; sub: string; children: React.ReactNode }) {
@@ -51,12 +50,12 @@ function OfflineHome() {
   }
 
   return (
-    <OfflinePage title="当前没有正在使用的 Hermes 后端" sub="内置内核已停止或卸载。你仍然可以连接外部 Hermes，或恢复内置内核。">
+    <OfflinePage title="没有连接到外部 Hermes" sub="请确认外部 Hermes 已启动，并在连接页填写它的地址。">
       <div className={s.empty}>
         <CircleOff size={32} />
         <h2>工作台暂时离线</h2>
         <p>会话、模型、Skills、MCP 等页面需要后端。连接成功后重新加载即可恢复。</p>
-        <div><Button variant="solid" tone="accent" onClick={() => { window.location.hash = "#/guide"; }}><Compass size={12} />继续使用引导</Button></div>
+        <div><Button variant="solid" tone="accent" onClick={() => { window.location.hash = "#/connection"; }}><Globe2 size={12} />去设置连接</Button></div>
       </div>
     </OfflinePage>
   );
@@ -67,7 +66,7 @@ function OfflineAbout() {
     <OfflinePage title="关于与帮助" sub="离线时也可以访问社区和使用文档。">
       <div className={s.cards}>
 
-        <article><Compass size={20} /><h2>重新选择开始方式</h2><p>选择开箱即用，或连接你已经部署好的 Hermes。</p><Button variant="outline" onClick={() => { window.location.hash = "#/guide"; }}>打开引导</Button></article>
+        <article><Compass size={20} /><h2>重新填写连接地址</h2><p>连接你已经部署好的本机或远端 Hermes。</p><Button variant="outline" onClick={() => { window.location.hash = "#/connection"; }}>打开连接设置</Button></article>
       </div>
     </OfflinePage>
   );
@@ -82,7 +81,6 @@ export function OfflineShell() {
         <nav>
           <Link data-active={pathname === "/" ? "true" : undefined} to="/"><CircleOff size={16} />离线状态</Link>
           <Link data-active={pathname === "/connection" ? "true" : undefined} to="/connection"><Globe2 size={16} />连接</Link>
-          <Link data-active={pathname === "/kernel" ? "true" : undefined} to="/kernel"><HardDrive size={16} />内核</Link>
           <Link data-active={pathname === "/theme" ? "true" : undefined} to="/theme"><Palette size={16} />主题</Link>
           <Link data-active={pathname === "/about" ? "true" : undefined} to="/about"><Compass size={16} />关于</Link>
         </nav>
@@ -91,7 +89,6 @@ export function OfflineShell() {
         <Routes>
           <Route path="/" element={<OfflineHome />} />
           <Route path="/connection" element={<OfflinePage title="连接外部 Hermes" sub="选择本机其他 Hermes 或远端服务器。"><ConnectionSection showHeading={false} /></OfflinePage>} />
-          <Route path="/kernel" element={<OfflinePage title="内置内核" sub="安装、启动、卸载或重装内置内核。"><ManagedRuntimePanel /></OfflinePage>} />
           <Route path="/theme" element={<OfflinePage title="主题" sub="调整桌面界面的外观。"><ThemeSection showHeading={false} /></OfflinePage>} />
           <Route path="/about" element={<OfflineAbout />} />
           <Route path="*" element={<Navigate to="/" replace />} />

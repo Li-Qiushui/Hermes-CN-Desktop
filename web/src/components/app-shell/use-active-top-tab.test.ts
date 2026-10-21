@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BACKUP_ITEMS, CONFIG_ITEMS } from "./capability-sidebar";
+import { CONFIG_ITEMS } from "./capability-sidebar";
 import { TOP_TABS } from "./use-active-top-tab";
 
 function tabFor(path: string) {
@@ -7,11 +7,6 @@ function tabFor(path: string) {
 }
 
 describe("TOP_TABS", () => {
-  it("keeps config migration under the 02 config tab", () => {
-    expect(tabFor("/config-migration")).toBe("skills");
-    expect(tabFor("/config-migration/details")).toBe("skills");
-  });
-
   it("keeps IM routes under the 03 message gateway tab", () => {
     expect(tabFor("/im/feishu")).toBe("gateway");
     expect(tabFor("/im/weixin")).toBe("gateway");
@@ -26,18 +21,8 @@ describe("TOP_TABS", () => {
     expect(tabFor("/notifications")).toBe("advanced");
     expect(tabFor("/config")).toBe("advanced");
     expect(tabFor("/connection")).toBe("advanced");
-    expect(tabFor("/kernel")).toBe("advanced");
     expect(tabFor("/env")).toBe("advanced");
     expect(tabFor("/about")).toBe("advanced");
-  });
-
-  it("shows config migration in the 023 backup and restore sidebar section", () => {
-    expect(BACKUP_ITEMS.some((item) => item.label === "配置迁移" && item.path === "/config-migration")).toBe(true);
-  });
-
-  it("keeps backup restore under the 02 config tab and backup sidebar section", () => {
-    expect(tabFor("/backup")).toBe("skills");
-    expect(BACKUP_ITEMS.some((item) => item.label === "备份恢复" && item.path === "/backup")).toBe(true);
   });
 
   it("keeps voice setup under the 02 config tab and sidebar section", () => {
