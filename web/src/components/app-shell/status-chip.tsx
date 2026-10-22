@@ -7,6 +7,7 @@ import { useRuntimeInfo } from "@/hooks/use-runtime-update";
 import { useGatewayRestartAction } from "@/hooks/use-gateway-restart";
 import { useModelInfo } from "@/hooks/use-config";
 import { dashboardPortFromUrl, dashboardUrlFromInputs } from "@/lib/dashboard-url";
+import { connectionTargetLabel, kernelErrorPreview } from "@/lib/kernel-status";
 import { formatContext, formatModelShort } from "@/lib/model-label";
 import { runtime } from "@/lib/runtime";
 import { buildSidebarVersionRows } from "./sidebar-version-tag";
@@ -31,19 +32,23 @@ export function StatusChip() {
   });
   const port = dashboardPortFromUrl(dashboardUrl);
   const gatewayOnline = !!status && !statusError;
-  const modeLabel = runtime.isRemote() ? "远端" : "外部";
+  const modeLabel = connectionTargetLabel(runtime.isRemote());
   const versionRows = buildSidebarVersionRows({ status, runtimeInfo });
   const restartDisabled = gatewayRestart.busy || gatewayRestart.locked;
-  const tone = gatewayOnline ? "success" : statusError || status ? "danger" : "neutral";
+  const kernelDegraded = runtime.isBackendDegraded?.() === true;
+  const degradedReason = (
+    typeof window === "undefined" ? "" : (window.__HERMES_RUNTIME__?.backendDegradedReason ?? "")
+  ).trim();
+  const tone = kernelDegraded ? "danger" : gatewayOnline ? "success" : statusError || status ? "danger" : "neutral";
 
   const modelLabel = formatModelShort(modelInfo?.model);
   const hasModel = modelLabel !== "—";
   const contextLabel = formatContext(
     modelInfo?.effective_context_length ?? modelInfo?.auto_context_length,
   );
-  const connectionLabel = gatewayOnline ? port : statusError ? "未连接" : "连接中";
+  const connectionLabel = kernelDegraded ? "内核异常" : gatewayOnline ? port : statusError ? "未连接" : "连接中";
   const summary = [
-    `${modeLabel} ${gatewayOnline ? port : "未连接"}`,
+    kernelDegraded ? "内核异常 · 已降级到手动连接" : `${modeLabel} ${gatewayOnline ? port : "未连接"}`,
     hasModel ? `模型 ${modelLabel}` : null,
     `上下文 ${contextLabel}`,
   ].filter(Boolean).join(" · ");
@@ -56,11 +61,11 @@ export function StatusChip() {
           className={s.chip}
           data-state={open ? "open" : undefined}
           title={`${summary} · ${dashboardUrl}`}
-          aria-label={`${modeLabel} Hermes 连接 ${dashboardUrl}，模型 ${modelLabel}，上下文 ${contextLabel}`}
+          aria-label={`连接 ${dashboardUrl}（${modeLabel}），模型 ${modelLabel}，上下文 ${contextLabel}`}
           data-no-drag
         >
           <StatusDot tone={tone} size="sm" />
-          <span className={s.chipStatus} data-tone={gatewayOnline ? undefined : "danger"}>
+          <span className={s.chipStatus} data-tone={kernelDegraded || !gatewayOnline ? "danger" : undefined}>
             {connectionLabel}
           </span>
           <span className={s.chipSep} aria-hidden="true">·</span>
@@ -96,10 +101,23 @@ export function StatusChip() {
           </div>
           <div className={s.popRow}>
             <span className={s.popLabel}>健康</span>
-            <span className={s.popValue} data-tone={gatewayOnline ? undefined : "danger"}>
-              {gatewayOnline ? "正常" : "异常"}
+            <span className={s.popValue} data-tone={kernelDegraded || !gatewayOnline ? "danger" : undefined}>
+              {kernelDegraded ? "内核异常（已降级）" : gatewayOnline ? "正常" : "异常"}
             </span>
           </div>
+          {kernelDegraded && (
+            <div className={s.popRow}>
+              <span className={s.popLabel}>降级原因</span>
+              <span
+                className={s.popValue}
+                data-tone="danger"
+                title={degradedReason || undefined}
+                data-testid="status-chip-degraded-reason"
+              >
+                {kernelErrorPreview(degradedReason) || "内核未启动，已降级到手动连接"}
+              </span>
+            </div>
+          )}
           <hr className={s.popDivider} />
           <div className={s.popRow}>
             <span className={s.popLabel}>模型</span>

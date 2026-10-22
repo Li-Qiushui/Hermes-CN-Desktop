@@ -7,6 +7,7 @@ pub mod desktop_control;
 pub mod env_file;
 pub mod environment;
 pub mod error;
+pub mod kernel_managed;
 pub mod oauth_session;
 pub mod path_resolver;
 pub mod prevent_sleep;

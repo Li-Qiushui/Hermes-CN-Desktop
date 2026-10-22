@@ -13,6 +13,7 @@ pub mod file_dialogs;
 pub mod gateway;
 pub mod git;
 pub mod im_onboarding;
+pub mod kernel;
 pub mod log_export;
 pub mod memory;
 pub mod notify;

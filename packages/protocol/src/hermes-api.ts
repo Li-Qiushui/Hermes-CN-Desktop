@@ -618,10 +618,16 @@ export type ModelInfo = z.infer<typeof ModelInfo>;
 // 后端事实来源：Core `hermes_cli/moa_config.py`（normalize_moa_config）与
 // `hermes_cli/web_server.py`（GET/PUT /api/model/moa，MoaConfigPayload）。
 
-export const MoaModelSlot = z.object({
-  provider: z.string(),
-  model: z.string(),
-});
+// 后端槽位除 provider/model 外还带 reasoning_effort、enabled
+// （hermes_cli/moa_config.py `_clean_slot`、web_routers/models.py `_slot_dict`）。
+// passthrough 让这些 UI 不编辑的字段原样过一遍，否则读出来就丢，保存时又被
+// PUT 默认值覆盖——用户的槽位配置会静默丢失。
+export const MoaModelSlot = z
+  .object({
+    provider: z.string(),
+    model: z.string(),
+  })
+  .passthrough();
 export type MoaModelSlot = z.infer<typeof MoaModelSlot>;
 
 // passthrough 保留后端归一化返回里 UI 不编辑的字段（reference_max_tokens、
@@ -633,7 +639,6 @@ export const MoaPresetConfig = z
     aggregator: MoaModelSlot,
     reference_temperature: z.number().nullable().optional(),
     aggregator_temperature: z.number().nullable().optional(),
-    max_tokens: z.number(),
   })
   .passthrough();
 export type MoaPresetConfig = z.infer<typeof MoaPresetConfig>;

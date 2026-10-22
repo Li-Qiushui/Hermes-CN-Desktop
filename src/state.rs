@@ -99,6 +99,10 @@ pub struct AppStateInner {
     /// Lazily started when the user chooses “在浏览器中打开社区桌面版”.
     pub browser_companion: Option<BrowserCompanionHandle>,
     pub last_runtime_error: Option<String>,
+    /// Set when the loopback kernel failed to start and bootstrap fell back to
+    /// the configured URL. `get_runtime_config` reports `backendReady: false`
+    /// while this is set, so the UI shows the failure instead of "connecting".
+    pub backend_degraded: bool,
     /// Whether the attached kernel is on this machine (loopback) or another
     /// host. Commands consult it to decide which local-only capabilities are
     /// allowed and how the token is refreshed.
@@ -154,6 +158,7 @@ impl AppState {
                 gateway_ws: None,
                 browser_companion: None,
                 last_runtime_error: None,
+                backend_degraded: false,
                 connection_mode: ConnectionMode::Local,
                 oauth_session: None,
                 last_auth_expired_emit: None,

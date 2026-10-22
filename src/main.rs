@@ -1,8 +1,9 @@
 // Hermes Agent — Tauri v2 entry point.
 //
-// The desktop shell attaches to an external Hermes kernel (loopback dashboard
-// or remote gateway), registers all IPC commands and opens the main window. It
-// never installs, spawns or supervises a kernel of its own.
+// The desktop shell attaches to a Hermes kernel (loopback dashboard or remote
+// gateway), registers all IPC commands and opens the main window. For a
+// loopback kernel it may also spawn and supervise one it owns via
+// `bootstrap` → `kernel_managed`; a remote kernel is attach-only.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -19,10 +20,12 @@ use hermes_agent_cn::process::{data_dir, instance, ui_update};
 use hermes_agent_cn::state::AppState;
 use hermes_agent_cn::tray;
 
-/// Stop the process-local relay on shutdown. The kernel itself is external, so
-/// there is nothing to terminate.
+/// Stop the process-local relay on shutdown, and reap a kernel this desktop
+/// spawned (never one it merely attached to).
 fn shutdown_local_state(app: &tauri::AppHandle, reason: &str) {
     use tauri::Manager;
+
+    hermes_agent_cn::kernel_managed::shutdown_owned_kernel();
 
     let state = app.state::<AppState>();
     let gateway_ws = match state.inner.lock() {
@@ -360,6 +363,8 @@ fn main() {
             commands::im_onboarding::im_onboarding_begin,
             commands::im_onboarding::im_onboarding_poll,
             commands::im_onboarding::im_onboarding_apply,
+            commands::kernel::kernel_status,
+            commands::kernel::retry_kernel,
             commands::file_dialogs::pick_files,
             commands::file_dialogs::pick_directory,
             commands::file_dialogs::create_workspace_project,

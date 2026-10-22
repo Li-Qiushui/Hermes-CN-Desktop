@@ -1,18 +1,21 @@
-// Shared bootstrap pipeline: attach the desktop to an external Hermes kernel.
+// Shared bootstrap pipeline: attach the desktop to a Hermes kernel.
 //
-// Two backend shapes come out of here, both attach-only:
-//   - local: a loopback Hermes Agent CLI dashboard (http://127.0.0.1:9119)
-//   - remote: a Hermes Agent on another host
+// Two backend shapes come out of here:
+//   - local: a loopback Hermes Agent CLI dashboard (spawned+supervised when no
+//     live one is found, otherwise attached to)
+//   - remote: a Hermes Agent on another host, attach-only
 //
-// Nothing here installs, spawns or supervises a kernel — the desktop only
-// probes the URL, picks up its session token and publishes the address to the
-// renderer.
+// A spawned loopback kernel reports itself ready via a marker line; bootstrap
+// waits for it, picks up the session token and publishes the address to the
+// renderer. Nothing here installs a kernel.
 
 use tauri::Emitter;
 
 use crate::connection::{ConnectionBackend, ConnectionMode, RemoteBackend};
 use crate::error::AppError;
+use crate::kernel_managed::{self, KernelStatus};
 use crate::process::dashboard;
+use crate::process::data_dir;
 use crate::state::{AppState, DashboardHandle};
 
 /// Emit a "runtime-status" event for the frontend overlay to consume.
@@ -41,6 +44,38 @@ pub fn record_bootstrap_error(app: &tauri::AppHandle, message: String) -> String
     message
 }
 
+/// Record a non-fatal degradation: log it, mark the state degraded, and emit a
+/// "degraded" runtime-status. Unlike `record_bootstrap_error` this does not
+/// block the renderer from mounting — the app comes up with
+/// `backendReady: false` so the UI can surface the failure and offer retry.
+/// The reason travels on `KernelStatus::degraded` (`lastError`) and on the
+/// "degraded" event, never on `last_runtime_error`: that field is reserved for
+/// fatal bootstrap errors, because the renderer's ready-poll treats any
+/// `lastError` there as "boot failed" and refuses to mount.
+pub fn record_runtime_degraded(app: &tauri::AppHandle, message: String) -> String {
+    use tauri::Manager;
+    log::error!("{}", message);
+    let state = app.state::<AppState>();
+    if let Ok(mut inner) = state.inner.lock() {
+        inner.backend_degraded = true;
+    }
+    emit_runtime_status(app, "degraded", &message);
+    message
+}
+
+/// Clear the degraded markers once a kernel attach/spawn/switch actually
+/// succeeded, so `backendReady` can go back to true and the UI stops showing
+/// the degraded badge with a stale error.
+pub fn clear_runtime_degraded(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    let state = app.state::<AppState>();
+    if let Ok(mut inner) = state.inner.lock() {
+        inner.backend_degraded = false;
+        inner.last_runtime_error = None;
+    }
+    drop(state);
+}
+
 /// Attach to the resolved backend. An unreachable kernel is deliberately NOT a
 /// bootstrap error: an "error" runtime-status would stop the React app from
 /// ever mounting, locking the user out of the Settings page where a bad saved
@@ -51,17 +86,107 @@ pub async fn connect_backend(
     backend: &ConnectionBackend,
 ) -> DashboardHandle {
     match backend {
-        ConnectionBackend::Local(local) => connect_local_backend(app, &local.base_url).await,
-        ConnectionBackend::Remote(remote) => connect_remote_backend(app, remote).await,
+        ConnectionBackend::Local(local) => connect_managed_local_backend(app, &local.base_url).await,
+        ConnectionBackend::Remote(remote) => {
+            kernel_managed::set_kernel_status(KernelStatus::remote(&remote.base_url));
+            clear_runtime_degraded(app);
+            connect_remote_backend(app, remote).await
+        }
     }
 }
 
+fn kernel_log_dir() -> std::path::PathBuf {
+    data_dir::data_dir().join("kernel-logs")
+}
+
+/// Loopback kernel: hand lifecycle to `kernel_managed` (attach to a live
+/// backend, otherwise spawn one we own), then reuse the plain local attach
+/// path with whichever URL came back.
+pub async fn connect_managed_local_backend(
+    app: &tauri::AppHandle,
+    fallback_url: &str,
+) -> DashboardHandle {
+    emit_runtime_status(app, "starting-dashboard", "正在准备本机 Hermes Agent...");
+    match kernel_managed::ensure_kernel(None, &kernel_log_dir()).await {
+        Ok((kernel, ownership)) => {
+            log::info!(
+                "Local kernel {} at {} (pid {:?}, owned {})",
+                ownership.as_str(),
+                kernel.base_url(),
+                kernel.pid,
+                kernel.owned
+            );
+            clear_runtime_degraded(app);
+            kernel_managed::set_kernel_status(KernelStatus::from_handle(&kernel, ownership, 0));
+            connect_local_backend(app, &kernel.base_url()).await.0
+        }
+        Err(err) => {
+            log::warn!(
+                "Local kernel {} did not come up; probing the configured address {}: {}",
+                kernel_log_dir().display(),
+                fallback_url,
+                err
+            );
+            let (handle, reachable) = connect_local_backend(app, fallback_url).await;
+            match fallback_outcome(reachable) {
+                KernelFallback::Attached => {
+                    clear_runtime_degraded(app);
+                    mark_attached(fallback_url, None);
+                    handle
+                }
+                KernelFallback::Degraded => {
+                    let message = format!(
+                        "本机 Hermes 内核启动失败，配置地址 {} 也不可达：{}",
+                        fallback_url, err
+                    );
+                    record_runtime_degraded(app, message);
+                    kernel_managed::set_kernel_status(KernelStatus::degraded(
+                        fallback_url,
+                        err.to_string(),
+                    ));
+                    handle
+                }
+            }
+        }
+    }
+}
+
+/// A failed kernel start is only a degradation when the configured address is
+/// unreachable too: a live fallback kernel is a normal attach, not an error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KernelFallback {
+    Attached,
+    Degraded,
+}
+
+pub fn fallback_outcome(fallback_reachable: bool) -> KernelFallback {
+    if fallback_reachable {
+        KernelFallback::Attached
+    } else {
+        KernelFallback::Degraded
+    }
+}
+
+fn mark_attached(base_url: &str, last_error: Option<String>) {
+    let status = match last_error {
+        Some(error) => KernelStatus::degraded(base_url, error),
+        None => KernelStatus::attached(base_url),
+    };
+    kernel_managed::set_kernel_status(status);
+}
+
 /// Attach to a loopback Hermes Agent CLI dashboard: probe it and pick up the
-/// session token it serves.
-pub async fn connect_local_backend(app: &tauri::AppHandle, base_url: &str) -> DashboardHandle {
+/// session token it serves. The bool reports whether the probe answered, so
+/// callers can decide between "attached" and "degraded" instead of discarding
+/// the reachability result.
+pub async fn connect_local_backend(
+    app: &tauri::AppHandle,
+    base_url: &str,
+) -> (DashboardHandle, bool) {
     emit_runtime_status(app, "starting-dashboard", "正在连接本机 Hermes Agent...");
     log::info!("Local connection: attaching to {}", base_url);
-    if !dashboard::probe_attached_dashboard(base_url).await {
+    let reachable = dashboard::probe_attached_dashboard(base_url).await;
+    if !reachable {
         log::warn!(
             "Local Hermes Agent dashboard not reachable at {} during bootstrap; continuing — \
              Settings → 连接 can fix the URL, or start the kernel with `hermes dashboard`",
@@ -75,7 +200,7 @@ pub async fn connect_local_backend(app: &tauri::AppHandle, base_url: &str) -> Da
             base_url
         );
     }
-    DashboardHandle::local(base_url.to_string(), token)
+    (DashboardHandle::local(base_url.to_string(), token), reachable)
 }
 
 /// Attach to a remote Hermes Agent: no spawn, no ownership — just a
@@ -211,4 +336,15 @@ pub async fn finalize_bootstrap(
 
     emit_runtime_status(app, "ready", "");
     log::info!("Hermes Agent ready");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_live_fallback_kernel_is_an_attach_not_a_degradation() {
+        assert_eq!(fallback_outcome(true), KernelFallback::Attached);
+        assert_eq!(fallback_outcome(false), KernelFallback::Degraded);
+    }
 }

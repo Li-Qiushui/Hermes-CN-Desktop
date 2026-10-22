@@ -42,7 +42,9 @@ pub fn get_runtime_config(state: State<'_, AppState>) -> Result<RuntimeConfig, A
         kernel_version: None,
         current_profile: inner.current_profile.clone(),
         connection_mode: inner.connection_mode.as_str().to_string(),
-        backend_ready: inner.dashboard_handle.is_some() && !inner.api_base_url.trim().is_empty(),
+        backend_ready: inner.dashboard_handle.is_some()
+            && !inner.api_base_url.trim().is_empty()
+            && !inner.backend_degraded,
         guide_state: control.guide_state.as_str().to_string(),
         managed_runtime_desired_state: "running".to_string(),
         managed_runtime_lifecycle_state: "running".to_string(),

@@ -878,6 +878,16 @@ describe("MoaConfigResponse schema", () => {
     expect(parsed.reference_models).toEqual(normalized.reference_models);
   });
 
+  it("parses presets from kernels that no longer emit max_tokens", () => {
+    const { max_tokens: _top, ...withoutTop } = normalized;
+    const preset = { ...normalized.presets.default };
+    delete (preset as { max_tokens?: number }).max_tokens;
+    delete (preset as { reference_max_tokens?: number }).reference_max_tokens;
+    const parsed = MoaConfigResponse.parse({ ...withoutTop, presets: { default: preset } });
+    expect(parsed.presets.default.max_tokens).toBeUndefined();
+    expect(parsed.presets.default.aggregator.model).toBe("anthropic/claude-opus-4.8");
+  });
+
   it("defaults a missing active_preset to empty string", () => {
     const { active_preset: _omit, ...withoutActive } = normalized;
     const parsed = MoaConfigResponse.parse(withoutActive);
@@ -887,5 +897,41 @@ describe("MoaConfigResponse schema", () => {
   it("parses the PUT echo carrying an ok flag", () => {
     const parsed = MoaConfigResponse.parse({ ok: true, ...normalized });
     expect(parsed.presets.default.max_tokens).toBe(4096);
+  });
+
+  it("keeps slot-level reasoning_effort / enabled through a round-trip", () => {
+    const payload = {
+      default_preset: "default",
+      active_preset: "",
+      presets: {
+        default: {
+          enabled: true,
+          reference_models: [
+            { provider: "openrouter", model: "deepseek/deepseek-v4-pro", reasoning_effort: "high", enabled: false },
+          ],
+          aggregator: {
+            provider: "openrouter",
+            model: "anthropic/claude-opus-4.8",
+            reasoning_effort: "low",
+            enabled: false,
+          },
+        },
+      },
+    };
+
+    const parsed = MoaConfigResponse.parse(payload);
+    const preset = parsed.presets.default;
+    expect(preset.reference_models[0]).toEqual({
+      provider: "openrouter",
+      model: "deepseek/deepseek-v4-pro",
+      reasoning_effort: "high",
+      enabled: false,
+    });
+    expect(preset.aggregator.reasoning_effort).toBe("low");
+    expect(preset.aggregator.enabled).toBe(false);
+    // 回写（PUT body）同样是这个对象：再解析一次不能少字段。
+    const roundTripped = MoaConfigResponse.parse(JSON.parse(JSON.stringify(parsed)));
+    expect(roundTripped.presets.default.aggregator).toEqual(preset.aggregator);
+    expect(roundTripped.presets.default.reference_models[0].enabled).toBe(false);
   });
 });

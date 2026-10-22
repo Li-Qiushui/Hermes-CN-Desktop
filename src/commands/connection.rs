@@ -17,6 +17,7 @@ use tauri::State;
 
 use crate::connection::{self, ConnectionConfig, ConnectionMode, SanitizedConnectionConfig};
 use crate::error::{AppError, AppResult};
+use crate::kernel_managed::{self, KernelStatus};
 use crate::process::dashboard;
 use crate::state::{AppState, DashboardHandle};
 
@@ -637,8 +638,10 @@ async fn apply_remote(
         inner.session_token = Some(token.clone());
         inner.connection_mode = ConnectionMode::Remote;
         inner.last_runtime_error = None;
+        inner.backend_degraded = false;
         inner.dashboard_handle = Some(DashboardHandle::remote(base_url.clone(), token.clone()));
     }
+    kernel_managed::set_kernel_status(KernelStatus::remote(&base_url));
 
     log::info!("Connection switched to remote Hermes Agent at {}", base_url);
     Ok(ApplyConnectionResult {
@@ -706,8 +709,10 @@ async fn apply_remote_oauth(
         inner.oauth_session = Some(session);
         inner.connection_mode = ConnectionMode::Remote;
         inner.last_runtime_error = None;
+        inner.backend_degraded = false;
         inner.dashboard_handle = Some(DashboardHandle::remote_oauth(base_url.to_string()));
     }
+    kernel_managed::set_kernel_status(KernelStatus::remote(base_url));
     let mut persisted = config.clone();
     persisted.session = Some(cookies);
     let _ = connection::write_config(&persisted);
@@ -789,8 +794,10 @@ async fn apply_local_connection(
         }
         inner.connection_mode = ConnectionMode::Local;
         inner.last_runtime_error = None;
+        inner.backend_degraded = false;
         inner.dashboard_handle = Some(DashboardHandle::local(base_url.clone(), Some(token.clone())));
     }
+    kernel_managed::set_kernel_status(KernelStatus::attached(&base_url));
 
     log::info!(
         "Connection switched to local Hermes Agent CLI at {}",
