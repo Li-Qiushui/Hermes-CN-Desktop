@@ -86,7 +86,7 @@ function visiblePageItems(page: number, totalPages: number): PageItem[] {
 }
 
 function formatPercent(value: number | null): string {
-  if (value === null || !Number.isFinite(value)) return "上期为 0";
+  if (value === null || !Number.isFinite(value)) return "暂无上期数据";
   const abs = Math.abs(value);
   if (abs < 0.1) return "持平";
   return `${value > 0 ? "+" : ""}${abs >= 100 ? value.toFixed(0) : value.toFixed(1)}%`;
@@ -117,7 +117,7 @@ function formatKpiValue(kpi: AnalyticsKpiView): string {
 
 function kpiSubLabel(kpi: AnalyticsKpiView): string {
   if (kpi.changePercent === 0) return "较上期持平";
-  if (kpi.changePercent === null) return kpi.value > 0 ? "上期为 0" : "暂无上期数据";
+  if (kpi.changePercent === null) return kpi.previous > 0 ? "上期为 0" : "暂无上期数据";
   return `较上期 ${formatPercent(kpi.changePercent)}`;
 }
 

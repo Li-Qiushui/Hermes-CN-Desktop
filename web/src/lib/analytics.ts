@@ -385,9 +385,16 @@ function buildKpis(totals: AnalyticsTotals, previous: AnalyticsTotals): Analytic
 }
 
 export function buildAnalyticsViewModel(data: AnalyticsResponse, now = new Date()): AnalyticsViewModel {
-  const totalTokenCount = finite(data.totals.total_tokens);
+  // 分母用「逐模型 token 之和」而不是 totals.total_tokens：
+  // 内核的 by_model 会把 aux_tasks（后台复盘/视觉/压缩/起标题）也算进模型行，
+  // 而 totals 只统计主对话，两者混用会出现 133% 这种占比。
+  const modelTokenCount = data.by_model.reduce(
+    (sum, item) => sum + finite(item.input_tokens) + finite(item.output_tokens),
+    0,
+  );
+  const shareBase = modelTokenCount > 0 ? modelTokenCount : finite(data.totals.total_tokens);
   const models = data.by_model
-    .map((item) => modelView(item, totalTokenCount))
+    .map((item) => modelView(item, shareBase))
     .sort((a, b) => b.totalTokens - a.totalTokens || b.apiCalls - a.apiCalls || a.label.localeCompare(b.label));
   const topSessions = data.top_sessions
     .map(topSessionView)
@@ -401,7 +408,7 @@ export function buildAnalyticsViewModel(data: AnalyticsResponse, now = new Date(
     models,
     topSessions,
     kpis: buildKpis(data.totals, data.comparison.previous_totals),
-    isEmpty: totalTokenCount === 0 && finite(data.totals.total_sessions) === 0 && models.length === 0,
+    isEmpty: finite(data.totals.total_tokens) === 0 && finite(data.totals.total_sessions) === 0 && models.length === 0,
   };
 }
 
