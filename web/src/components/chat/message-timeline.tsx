@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode, WheelEvent } from "react";
 import { useAtomValue } from "jotai";
 import { AlertTriangle, ChevronRight, Info, Volume2, VolumeX } from "lucide-react";
@@ -14,8 +14,8 @@ import { MessageText } from "./message-text";
 import { SkillInvocationMessage } from "./skill-invocation-message";
 import { CopyButton } from "@/components/ui/copy-button";
 import s from "./message-timeline.module.css";
-import { summarizeToolActivity } from "./tool-activity";
-import { groupConsecutiveTools, groupElapsedMs } from "./group-tools";
+import { groupElapsedMs } from "./group-tools";
+import { cachedGroupConsecutiveTools, cachedToolActivitySummary } from "./tool-cache";
 import { truncateMiddle } from "@/lib/truncate-middle";
 import { sanitizeTextForSpeech, speakText, voiceErrorMessage } from "@/lib/voice";
 import { isSkillInvocationText } from "@/lib/skill-invocation";
@@ -30,6 +30,9 @@ import type { SessionUsageResult } from "@hermes/protocol";
 const useIsomorphicLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 const BOTTOM_FOLLOW_THRESHOLD_PX = 120;
 const BOTTOM_REATTACH_THRESHOLD_PX = 8;
+const LONG_SESSION_RENDER_THRESHOLD = 80;
+const LONG_SESSION_INITIAL_WINDOW = 60;
+const LONG_SESSION_EARLIER_BATCH = 40;
 
 interface MessageTimelineProps {
   messages: ChatMessage[];
@@ -48,6 +51,11 @@ interface TurnAnchor {
   title: string;
 }
 
+interface RenderWindowState {
+  sessionKey: string | undefined;
+  start: number;
+}
+
 type SpeechPlaybackStatus = "idle" | "preparing" | "speaking";
 
 interface SpeechPlaybackState {
@@ -58,13 +66,6 @@ interface SpeechPlaybackState {
 interface SpeechPlaybackError {
   message: string;
   messageId: string;
-}
-
-interface SpeechPlaybackControls {
-  error: SpeechPlaybackError | null;
-  onSpeak: (messageId: string, text: string) => void;
-  onStop: () => void;
-  state: SpeechPlaybackState;
 }
 
 export function resolveBottomFollowState(
@@ -322,7 +323,32 @@ function formatToolElapsed(ms: number | undefined): string | null {
   return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`;
 }
 
-function ToolCard({ tool }: { tool: ChatToolItem }) {
+function sameToolList(
+  prev: readonly ChatToolItem[] | undefined,
+  next: readonly ChatToolItem[] | undefined,
+): boolean {
+  if (prev === next) return true;
+  if (!prev || !next) return false;
+  if (prev.length !== next.length) return false;
+  for (let index = 0; index < prev.length; index += 1) {
+    if (prev[index] !== next[index]) return false;
+  }
+  return true;
+}
+
+function toolCardPropsEqual(prev: { tool: ChatToolItem }, next: { tool: ChatToolItem }): boolean {
+  return prev.tool === next.tool;
+}
+
+function toolListPropsEqual(prev: { tools: ChatToolItem[] }, next: { tools: ChatToolItem[] }): boolean {
+  return sameToolList(prev.tools, next.tools);
+}
+
+function initialRenderWindowStart(total: number): number {
+  return total > LONG_SESSION_RENDER_THRESHOLD ? total - LONG_SESSION_INITIAL_WINDOW : 0;
+}
+
+function ToolCardBase({ tool }: { tool: ChatToolItem }) {
   const [open, setOpen] = useState(tool.status === "error");
   const [elapsed, setElapsed] = useState(() =>
     tool.status === "running" ? Math.max(0, Date.now() - tool.startedAt) : 0,
@@ -392,7 +418,9 @@ function ToolCard({ tool }: { tool: ChatToolItem }) {
   );
 }
 
-function ToolGroupCard({ tools }: { tools: ChatToolItem[] }) {
+const ToolCard = memo(ToolCardBase, toolCardPropsEqual);
+
+function ToolGroupCardBase({ tools }: { tools: ChatToolItem[] }) {
   const [open, setOpen] = useState(false);
   const head = tools[0];
   const elapsedLabel = formatToolElapsed(groupElapsedMs(tools));
@@ -426,7 +454,9 @@ function ToolGroupCard({ tools }: { tools: ChatToolItem[] }) {
   );
 }
 
-function ToolActivity({ tools }: { tools: ChatToolItem[] }) {
+const ToolGroupCard = memo(ToolGroupCardBase, toolListPropsEqual);
+
+function ToolActivityBase({ tools }: { tools: ChatToolItem[] }) {
   const hasError = tools.some((tool) => tool.status === "error");
   const hasRunning = tools.some((tool) => tool.status === "running");
   const [open, setOpen] = useState(hasError);
@@ -445,7 +475,7 @@ function ToolActivity({ tools }: { tools: ChatToolItem[] }) {
     return () => window.clearInterval(timer);
   }, [hasRunning]);
 
-  const summary = useMemo(() => summarizeToolActivity(tools, now), [now, tools]);
+  const summary = cachedToolActivitySummary(tools, now);
   const elapsedLabel = formatToolElapsed(summary.elapsedMs);
 
   return (
@@ -473,7 +503,7 @@ function ToolActivity({ tools }: { tools: ChatToolItem[] }) {
       ) : null}
       {open ? (
         <div className={s.toolActivityDetails}>
-          {groupConsecutiveTools(tools).map((entry, index) =>
+          {cachedGroupConsecutiveTools(tools).map((entry, index) =>
             entry.kind === "group" ? (
               <ToolGroupCard key={entry.key} tools={entry.tools} />
             ) : (
@@ -486,7 +516,9 @@ function ToolActivity({ tools }: { tools: ChatToolItem[] }) {
   );
 }
 
-function ToolChain({ tools }: { tools: ChatToolItem[] }) {
+const ToolActivity = memo(ToolActivityBase, toolListPropsEqual);
+
+function ToolChainBase({ tools }: { tools: ChatToolItem[] }) {
   if (tools.length === 0) return null;
   return (
     <div className={s.toolChain}>
@@ -494,6 +526,8 @@ function ToolChain({ tools }: { tools: ChatToolItem[] }) {
     </div>
   );
 }
+
+const ToolChain = memo(ToolChainBase, toolListPropsEqual);
 
 interface MessageBlocksProps {
   message: ChatMessage;
@@ -503,7 +537,17 @@ interface MessageBlocksProps {
   progressModel?: string;
 }
 
-function MessageBlocks({ message, streaming, turnStartedAt, sessionUsage, progressModel }: MessageBlocksProps) {
+function messageBlocksPropsEqual(prev: MessageBlocksProps, next: MessageBlocksProps): boolean {
+  return (
+    prev.message === next.message &&
+    prev.streaming === next.streaming &&
+    prev.turnStartedAt === next.turnStartedAt &&
+    prev.sessionUsage === next.sessionUsage &&
+    prev.progressModel === next.progressModel
+  );
+}
+
+function MessageBlocksBase({ message, streaming, turnStartedAt, sessionUsage, progressModel }: MessageBlocksProps) {
   const showReasoning = useAtomValue(showReasoningAtom);
   const cliDelegations = useAtomValue(cliDelegationsByToolIdAtom);
   const blocks = message.blocks ?? [];
@@ -599,6 +643,8 @@ function MessageBlocks({ message, streaming, turnStartedAt, sessionUsage, progre
 
   return <>{items}</>;
 }
+
+const MessageBlocks = memo(MessageBlocksBase, messageBlocksPropsEqual);
 
 function getCopyableText(message: ChatMessage): string | undefined {
   if (message.blocks?.length) {
@@ -778,10 +824,35 @@ interface MessageBubbleProps {
   turnStartedAt?: number;
   sessionUsage?: SessionUsageResult | null;
   progressModel?: string;
-  speech?: SpeechPlaybackControls;
+  speechStatus: SpeechPlaybackStatus;
+  speechError: string | null;
+  onSpeak: (messageId: string, text: string) => void;
+  onStop: () => void;
 }
 
-function MessageBubble({ message, turnStartedAt, sessionUsage, progressModel, speech }: MessageBubbleProps) {
+function messageBubblePropsEqual(prev: MessageBubbleProps, next: MessageBubbleProps): boolean {
+  return (
+    prev.message === next.message &&
+    prev.turnStartedAt === next.turnStartedAt &&
+    prev.sessionUsage === next.sessionUsage &&
+    prev.progressModel === next.progressModel &&
+    prev.speechStatus === next.speechStatus &&
+    prev.speechError === next.speechError &&
+    prev.onSpeak === next.onSpeak &&
+    prev.onStop === next.onStop
+  );
+}
+
+function MessageBubbleBase({
+  message,
+  turnStartedAt,
+  sessionUsage,
+  progressModel,
+  speechStatus,
+  speechError,
+  onSpeak,
+  onStop,
+}: MessageBubbleProps) {
   const showReasoning = useAtomValue(showReasoningAtom);
   const assistantDisplayName = useAtomValue(assistantDisplayNameAtom);
   const assistantAvatarDataUrl = useAtomValue(assistantAvatarEffectiveAtom);
@@ -793,7 +864,6 @@ function MessageBubble({ message, turnStartedAt, sessionUsage, progressModel, sp
   const readable = !isUser && !isSystem && !isToolOnly && !streaming && message.status !== "error"
     ? getReadableText(message)
     : undefined;
-  const speechStatus = speech?.state.messageId === message.id ? speech.state.status : "idle";
   const speechBusy = speechStatus === "preparing" || speechStatus === "speaking";
   const hasBlocks = !isUser && Boolean(message.blocks?.length);
   const hasSkillInvocation = isSkillInvocationText(message.text);
@@ -926,14 +996,14 @@ function MessageBubble({ message, turnStartedAt, sessionUsage, progressModel, sp
                 复制
               </CopyButton>
             ) : null}
-            {readable && speech ? (
+            {readable ? (
               <button
                 type="button"
                 onClick={() => {
                   if (speechBusy) {
-                    speech.onStop();
+                    onStop();
                   } else {
-                    speech.onSpeak(message.id, readable);
+                    onSpeak(message.id, readable);
                   }
                 }}
                 data-speech-state={speechStatus}
@@ -950,8 +1020,8 @@ function MessageBubble({ message, turnStartedAt, sessionUsage, progressModel, sp
                 <span>{speechBusy ? "停止" : "朗读"}</span>
               </button>
             ) : null}
-            {speech?.error?.messageId === message.id ? (
-              <span className={s.messageSpeechError}>{speech.error.message}</span>
+            {speechError ? (
+              <span className={s.messageSpeechError}>{speechError}</span>
             ) : null}
           </span>
           {messageStats ? <MessageStatsFooter stats={messageStats} /> : null}
@@ -960,6 +1030,8 @@ function MessageBubble({ message, turnStartedAt, sessionUsage, progressModel, sp
     </div>
   );
 }
+
+const MessageBubble = memo(MessageBubbleBase, messageBubblePropsEqual);
 
 export function MessageTimeline({
   messages,
@@ -1024,6 +1096,20 @@ export function MessageTimeline({
     return anchors;
   }, [visibleMessages]);
   const showTurnRail = turnAnchors.length > 1;
+
+  const sessionKey = visibleMessages[0]?.id;
+  const [renderWindow, setRenderWindow] = useState<RenderWindowState>({
+    sessionKey: undefined,
+    start: 0,
+  });
+  const initialWindowStart = initialRenderWindowStart(visibleMessages.length);
+  if (renderWindow.sessionKey !== sessionKey) {
+    setRenderWindow({ sessionKey, start: initialWindowStart });
+  }
+  const windowStart =
+    renderWindow.sessionKey === sessionKey ? renderWindow.start : initialWindowStart;
+  const windowedMessages = windowStart > 0 ? visibleMessages.slice(windowStart) : visibleMessages;
+  const hiddenMessageCount = windowStart;
 
   const stopSpeech = useCallback(() => {
     speechSequenceRef.current += 1;
@@ -1128,12 +1214,44 @@ export function MessageTimeline({
     if (target && text) void playSpeech(target.id, text);
   }, [autoTts, messages, playSpeech]);
 
-  const speechControls = useMemo<SpeechPlaybackControls>(() => ({
-    error: speechError,
-    onSpeak: (messageId, text) => void playSpeech(messageId, text),
-    onStop: stopSpeech,
-    state: speechState,
-  }), [playSpeech, speechError, speechState, stopSpeech]);
+  const handleSpeak = useCallback((messageId: string, text: string) => {
+    void playSpeech(messageId, text);
+  }, [playSpeech]);
+
+  const revealEarlierRef = useRef<{ node: HTMLElement; top: number } | null>(null);
+
+  const firstRenderedRow = useCallback((): HTMLElement | null => {
+    const root = messagesRef.current;
+    if (!root) return null;
+    for (const child of Array.from(root.children)) {
+      if (child instanceof HTMLElement && child.querySelector("[data-role]")) return child;
+    }
+    return null;
+  }, []);
+
+  const revealEarlierMessages = useCallback(() => {
+    const node = firstRenderedRow();
+    revealEarlierRef.current = node ? { node, top: node.getBoundingClientRect().top } : null;
+    setRenderWindow((previous) => ({
+      sessionKey,
+      start: Math.max(
+        0,
+        (previous.sessionKey === sessionKey ? previous.start : windowStart) -
+          LONG_SESSION_EARLIER_BATCH,
+      ),
+    }));
+  }, [firstRenderedRow, sessionKey, windowStart]);
+
+  useIsomorphicLayoutEffect(() => {
+    const pending = revealEarlierRef.current;
+    const container = containerRef.current;
+    if (!pending || !container) return;
+    revealEarlierRef.current = null;
+    const shift = pending.node.getBoundingClientRect().top - pending.top;
+    if (shift === 0) return;
+    container.scrollTop += shift;
+    lastScrollTopRef.current = container.scrollTop;
+  }, [windowStart]);
 
   const setTurnAnchorNode = useCallback((id: string, node: HTMLDivElement | null) => {
     if (node) {
@@ -1466,7 +1584,16 @@ export function MessageTimeline({
           </div>
         ) : null}
 
-        {visibleMessages.map((message, index) => {
+        {hiddenMessageCount > 0 ? (
+          <div className={s.dateSeparator}>
+            <button type="button" className={s.systemNoticeToggle} onClick={revealEarlierMessages}>
+              显示更早的 {Math.min(LONG_SESSION_EARLIER_BATCH, hiddenMessageCount)} 条消息
+            </button>
+          </div>
+        ) : null}
+
+        {windowedMessages.map((message, offset) => {
+          const index = windowStart + offset;
           const previous = visibleMessages[index - 1];
           const showDate = !previous || formatDay(previous.createdAt) !== formatDay(message.createdAt);
           const isLast = index === visibleMessages.length - 1;
@@ -1483,7 +1610,10 @@ export function MessageTimeline({
                 turnStartedAt={isLast ? turnStartedAt : undefined}
                 sessionUsage={isLast ? sessionUsage : undefined}
                 progressModel={isLast ? progressModel : undefined}
-                speech={speechControls}
+                speechStatus={speechState.messageId === message.id ? speechState.status : "idle"}
+                speechError={speechError?.messageId === message.id ? speechError.message : null}
+                onSpeak={handleSpeak}
+                onStop={stopSpeech}
               />
             </div>
           );

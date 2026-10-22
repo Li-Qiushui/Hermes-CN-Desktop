@@ -384,4 +384,37 @@ describe("MessageTimeline", () => {
     expect(html).not.toContain('title="朗读回复"');
   });
 
+  it("renders only the tail window and an earlier-messages entry for very long conversations", () => {
+    const messages: ChatMessage[] = Array.from({ length: 100 }, (_, index) => ({
+      id: `m-${index}`,
+      role: index % 2 === 0 ? "user" as const : "assistant" as const,
+      createdAt: index + 1,
+      status: "complete" as const,
+      text: `第 ${index + 1} 条`,
+    }));
+
+    const html = renderTimeline(<MessageTimeline messages={messages} />);
+
+    expect(html.match(/data-turn-anchor="true"/g)).toHaveLength(30);
+    expect(html).toContain("显示更早的 40 条消息");
+    expect(html).toContain("第 100 条");
+    expect(html).not.toContain("<p>第 39 条</p>");
+  });
+
+  it("renders every message without a window below the long-conversation threshold", () => {
+    const messages: ChatMessage[] = Array.from({ length: 80 }, (_, index) => ({
+      id: `m-${index}`,
+      role: index % 2 === 0 ? "user" as const : "assistant" as const,
+      createdAt: index + 1,
+      status: "complete" as const,
+      text: `第 ${index + 1} 条`,
+    }));
+
+    const html = renderTimeline(<MessageTimeline messages={messages} />);
+
+    expect(html.match(/data-turn-anchor="true"/g)).toHaveLength(40);
+    expect(html).not.toContain("显示更早的");
+    expect(html).toContain("第 1 条");
+  });
+
 });
