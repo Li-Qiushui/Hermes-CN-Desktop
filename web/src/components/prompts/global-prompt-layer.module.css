@@ -1,0 +1,252 @@
+.layer {
+  position: fixed;
+  right: var(--h-space-4);
+  bottom: var(--h-space-4);
+  z-index: var(--h-z-toast);
+  display: flex;
+  flex-direction: column;
+  gap: var(--h-space-2);
+  width: 420px;
+  max-width: calc(100% - 32px);
+  pointer-events: none;
+}
+
+.notice {
+  pointer-events: auto;
+  align-self: flex-end;
+  border: 1px solid var(--h-line);
+  border-radius: 8px;
+  background: var(--h-bg-soft);
+  color: var(--h-text-2);
+  font-size: 13px;
+  padding: 8px 12px;
+}
+
+.card {
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--h-space-2);
+  border: 1px solid var(--h-line);
+  border-radius: 8px;
+  background: var(--h-bg-pane);
+  box-shadow: var(--h-shadow-l);
+  padding: 12px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.headIcon {
+  display: inline-flex;
+  color: var(--h-warn);
+}
+
+.headIcon[data-kind="clarify"] {
+  color: var(--h-accent);
+}
+
+.title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--h-text);
+}
+
+.spacer {
+  flex: 1;
+}
+
+.timer {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--h-text-3);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.timer[data-low="true"] {
+  color: var(--h-err);
+}
+
+.counter {
+  color: var(--h-text-4);
+  font-size: 13px;
+}
+
+.sessionRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.sessionLabel {
+  overflow: hidden;
+  color: var(--h-text-3);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sessionLink {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  background: none;
+  color: var(--h-warn);
+  cursor: pointer;
+  font-family: var(--h-font-cn);
+  font-size: 13px;
+  padding: 0;
+}
+
+.sessionLink:hover {
+  text-decoration: underline;
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--h-space-2);
+}
+
+.command {
+  margin: 0;
+  overflow-x: auto;
+  border: 1px solid var(--h-line-soft);
+  border-radius: 8px;
+  background: var(--h-bg-code);
+  color: var(--h-text);
+  font-family: var(--h-font-mono);
+  font-size: 13px;
+  line-height: 1.6;
+  padding: 8px 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.description,
+.question {
+  margin: 0;
+  color: var(--h-text-2);
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.error {
+  border-left: 2px solid var(--h-err);
+  color: var(--h-err);
+  font-size: 13px;
+  line-height: 1.5;
+  padding-left: 8px;
+  word-break: break-word;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.answerForm {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--h-line);
+  border-radius: 8px;
+  background: var(--h-bg-input);
+  color: var(--h-text);
+  font-family: var(--h-font-cn);
+  font-size: 13px;
+  height: 32px;
+  padding: 0 12px;
+}
+
+.input:focus {
+  border-color: var(--h-warn);
+  outline: none;
+}
+
+.fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.fieldRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.fieldLabel {
+  flex: 0 0 auto;
+  width: 48px;
+  color: var(--h-text-3);
+  font-size: 13px;
+}
+
+.fieldInput {
+  flex: 1;
+  min-width: 0;
+  height: 40px;
+  border: 1px solid var(--h-line);
+  border-radius: 8px;
+  background: var(--h-bg-input);
+  color: var(--h-text);
+  font-family: var(--h-font-cn);
+  font-size: 13px;
+  padding: 0 12px;
+}
+
+.fieldInput:focus {
+  border-color: var(--h-warn);
+  outline: none;
+}
+
+.backlog {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  align-self: flex-end;
+  border: 1px solid var(--h-line);
+  border-radius: 8px;
+  background: var(--h-bg-soft);
+  padding: 6px 10px;
+}
+
+.backlogIcon {
+  flex: 0 0 auto;
+  color: var(--h-text-3);
+}
+
+.backlogButton {
+  border: 0;
+  background: none;
+  color: var(--h-text-2);
+  cursor: pointer;
+  font-family: var(--h-font-cn);
+  font-size: 13px;
+  padding: 0;
+}
+
+.backlogButton:hover {
+  color: var(--h-text);
+  text-decoration: underline;
+}

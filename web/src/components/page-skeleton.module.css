@@ -1,0 +1,56 @@
+.rows,
+.board {
+  display: grid;
+  gap: 12px;
+}
+
+.rows {
+  align-content: start;
+}
+
+.row,
+.boardHead,
+.boardCard {
+  border: 1px solid var(--h-line-soft);
+  border-radius: 8px;
+  background: var(--h-bg-pane);
+  animation: pageSkeletonPulse 1.6s ease-in-out infinite;
+}
+
+.row {
+  height: 56px;
+}
+
+.board {
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(240px, 1fr);
+  gap: 12px;
+  overflow: hidden;
+}
+
+.boardColumn {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  min-width: 0;
+}
+
+.boardHead {
+  height: 32px;
+}
+
+.boardCard {
+  height: 72px;
+  animation-delay: 80ms;
+}
+
+@keyframes pageSkeletonPulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+
+  50% {
+    opacity: 1;
+  }
+}
