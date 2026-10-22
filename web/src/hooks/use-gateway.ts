@@ -19,7 +19,7 @@ import {
   SessionCompressResult,
   type GatewayEvent,
 } from "@hermes/protocol";
-import { CN_BACKEND_PROVIDER_SLUGS } from "@/lib/cn-provider-slugs";
+import { filterCnProviders } from "@/lib/cn-provider-slugs";
 import { getGatewayClient } from "@/lib/gateway-client";
 import {
   isDefinitiveMissingSessionError,
@@ -553,17 +553,22 @@ export function useGateway() {
       ensureSubscribed();
       return getCachedModelOptions(
         sessionId,
-        async () => parseGatewayResult(
-          ModelOptionsResult,
-          await getGatewayClient().request(
+        async () => {
+          const result = parseGatewayResult(
+            ModelOptionsResult,
+            await getGatewayClient().request(
+              "model.options",
+              {
+                // 不再下发 slug_filter：0.22.x 内核的 model.options 参数是严格的，
+                // 多余字段会整条报 "Extra inputs are not permitted"。
+                // CN 侧的真源过滤改在拿到结果后本地做。
+                ...(sessionId ? { session_id: sessionId } : {}),
+              },
+            ),
             "model.options",
-            {
-              slug_filter: CN_BACKEND_PROVIDER_SLUGS,
-              ...(sessionId ? { session_id: sessionId } : {}),
-            },
-          ),
-          "model.options",
-        ),
+          );
+          return { ...result, providers: filterCnProviders(result.providers) };
+        },
       );
     },
     [ensureSubscribed],

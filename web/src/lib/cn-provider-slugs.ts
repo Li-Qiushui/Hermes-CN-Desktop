@@ -29,3 +29,28 @@ export const CN_BACKEND_PROVIDER_SLUGS = [
 ] as const;
 
 export type CnBackendProviderSlug = (typeof CN_BACKEND_PROVIDER_SLUGS)[number];
+
+const CN_SLUG_SET = new Set<string>(CN_BACKEND_PROVIDER_SLUGS);
+
+/**
+ * 内核 0.22.x 的 `model.options` 不接受 `slug_filter` 参数（严格校验，多传字段整条报错），
+ * 因此 CN 版改为拿到完整结果后本地过滤：
+ *   - 保留 CN 关心的内置 provider
+ *   - 保留用户自定义 provider（is_user_defined）
+ *   - 保留当前正在使用的 provider（is_current），避免头部显示不一致
+ *   - 另外保留带 warning 的条目（通常是「已配置但缺凭证」，用户需要看到才能修）
+ */
+export function filterCnProviders<T extends {
+  slug: string;
+  is_user_defined?: boolean;
+  is_current?: boolean;
+  warning?: string;
+}>(providers: readonly T[]): T[] {
+  return providers.filter(
+    (provider) =>
+      CN_SLUG_SET.has(provider.slug) ||
+      provider.is_user_defined === true ||
+      provider.is_current === true ||
+      Boolean(provider.warning),
+  );
+}
