@@ -105,7 +105,8 @@ function isExternalBackendUnreachable(error: unknown): boolean {
   // perspective, while all other proxy errors remain strict.
   return code === "proxy_error"
     && error instanceof Error
-    && error.message.includes("Request timed out");
+    && (error.message.includes("Request timed out")
+      || error.message.includes("backend unreachable"));
 }
 
 /**
@@ -224,6 +225,29 @@ async function fatalErrorAndExit(title: string, message: string): Promise<never>
   throw new Error(`${title}: ${message}`);
 }
 
+/**
+ * Turn the proxy's raw error into an actionable sentence: the proxy reports a
+ * down/unset backend as "backend unreachable: ..." or as a reqwest connect
+ * failure, and echoing "builder error" tells the user nothing.
+ */
+export function explainBackendReason(reason: string): string {
+  const lower = reason.toLowerCase();
+  if (lower.includes("backend unreachable") || lower.includes("builder error")) {
+    return "桌面端还没有连上 Hermes 内核（后端地址为空或内核未启动）。请先在本机运行 `hermes dashboard --port 9119`，再点重试。";
+  }
+  if (
+    lower.includes("error sending request") ||
+    lower.includes("connection refused") ||
+    lower.includes("client error (connect)")
+  ) {
+    return "连接 Hermes 内核失败（连接被拒绝）。请确认内核已在 9119 端口运行，再点重试。";
+  }
+  if (lower.includes("401") || lower.includes("unauthorized")) {
+    return "Hermes 内核要求鉴权（401）。请在连接设置里填写内核 token，或确认本机 loopback 访问已放行。";
+  }
+  return reason;
+}
+
 export function assertCompatible(): void {
   if (state.kind === "ok" || state.kind === "deferred") return;
 
@@ -247,7 +271,7 @@ export function assertCompatible(): void {
     // The backend does not expose the API (very old backend) or is unreachable.
     // For strict enforcement, treat this as a fatal error in Tauri builds.
     const message =
-      `无法验证后端版本：${state.reason}\n\n` +
+      `无法验证后端版本：${explainBackendReason(state.reason)}\n\n` +
       `请确认后端已启动，且与当前桌面端版本兼容。`;
     void fatalErrorAndExit("版本验证失败", message);
     throw new Error(`backend version unavailable: ${state.reason}`);

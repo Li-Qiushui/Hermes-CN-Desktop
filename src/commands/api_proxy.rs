@@ -520,6 +520,14 @@ async fn api_request_impl_inner(
     }
 
     // 5. Proxy to dashboard
+    // No backend address yet (bootstrap still attaching, or connection config
+    // unreadable): fail with a stable reason instead of letting reqwest build a
+    // request from a relative path, which surfaces as a bare "builder error".
+    if api_base_url.trim().is_empty() {
+        return Err(AppError::ProxyError(
+            "backend unreachable: no backend address configured yet".to_string(),
+        ));
+    }
     let full_url = if path.starts_with("http://") || path.starts_with("https://") {
         // Validate same origin
         let base = url::Url::parse(api_base_url)?;
