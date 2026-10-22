@@ -1,6 +1,6 @@
 # Hermes Agent CN Desktop
 
-[Tauri v2](https://v2.tauri.app/) + Rust + React 构建的 Hermes Agent 桌面客户端，内置 [Hermes-CN-Core](https://github.com/Eynzof/Hermes-CN-Core) 内核。
+[Tauri v2](https://v2.tauri.app/) + Rust + React 构建的 Hermes Agent 桌面客户端，**只连接外部 Hermes Agent 内核**，包内不含 Python runtime、不含托管内核。
 
 本仓库是 [Eynzof/Hermes-CN-Desktop](https://github.com/Eynzof/Hermes-CN-Desktop) 的精简分支，默认分支 `slim`。只做减法，不加功能。
 
@@ -50,11 +50,10 @@ pnpm tauri:dev
 ## 仓库结构
 
 ```text
-├── src/          Rust：Tauri commands、进程与 runtime 管理、连接模式
+├── src/          Rust：Tauri commands、连接配置与外部内核通信
 ├── web/          React：Vite、TanStack Query、Jotai
 ├── packages/     protocol（IPC 契约）、shared-ui（设计 token）
-├── static/       打包时注入的 dashboard、runtime、内置 skills
-└── scripts/      runtime staging 与 release staging
+└── scripts/      版本同步与构建辅助
 ```
 
 ## 许可
