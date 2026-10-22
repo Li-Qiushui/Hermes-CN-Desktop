@@ -212,7 +212,7 @@
   left: 50%;
   transform: translate(-50%, -50%);
   z-index: 1001;
-  width: min(520px, calc(100vw - 32px));
+  width: min(520px, calc(100% - 32px));
   max-height: min(86vh, 760px);
   display: flex;
   flex-direction: column;

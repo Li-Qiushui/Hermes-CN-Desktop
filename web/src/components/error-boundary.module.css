@@ -62,5 +62,5 @@
 }
 
 .buttonSecondary:hover {
-  background: var(--h-bg-hover);
+  background: var(--h-bg-soft);
 }

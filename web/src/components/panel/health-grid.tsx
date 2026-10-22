@@ -16,6 +16,8 @@ import {
 import { useNavigate } from "react-router-dom";
 import { Button } from "@hermes/shared-ui";
 import { useStatus } from "@/hooks/use-status";
+import { useKernelStatus } from "@/hooks/use-kernel-status";
+import { describeKernelStatus } from "@/lib/kernel-status";
 import { useConfig, useModelInfo } from "@/hooks/use-config";
 import { useEnvVars } from "@/hooks/use-env";
 import { useSkills } from "@/hooks/use-skills";
@@ -230,6 +232,20 @@ function buildDiagnosticsPayload(input: {
     },
     null,
     2,
+  );
+}
+
+function KernelStatusRow() {
+  const kernelQuery = useKernelStatus();
+  const line = describeKernelStatus(kernelQuery.data);
+  const text = kernelQuery.isError ? "未接管 · desktop 桥不可用" : line.text;
+  const tone: Tone = kernelQuery.isError ? "warn" : line.tone;
+  return (
+    <div className={s.kernelRow} data-tone={tone} title={line.title}>
+      <ServerCog size={14} aria-hidden="true" />
+      <span className={s.kernelRowLabel}>{line.label}</span>
+      <span className={s.kernelRowText}>{text}</span>
+    </div>
   );
 }
 
@@ -586,6 +602,8 @@ export function HealthGrid({ variant = "compact" }: HealthGridProps) {
           </div>
         </div>
 
+        <KernelStatusRow />
+
         <div className={s.metrics}>
           {health.metrics.map((metric) => <MetricCard key={metric.label} metric={metric} />)}
         </div>
@@ -664,6 +682,7 @@ export function HealthGrid({ variant = "compact" }: HealthGridProps) {
 
   return (
     <section className={s.root} data-variant="compact">
+      <KernelStatusRow />
       <div
         className={s.compactHead}
         data-tone={health.overallTone}

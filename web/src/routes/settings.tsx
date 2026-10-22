@@ -52,6 +52,7 @@ import {
   useCronAction,
 } from "@/hooks/use-cron";
 import { useLogs } from "@/hooks/use-logs";
+import { ConversationWidthControl } from "@/components/chat/conversation-width-control";
 import { useActiveProfileName } from "@/hooks/use-profiles";
 import {
   useYoloMode,
@@ -65,7 +66,9 @@ import {
   assistantDisplayNameAtom,
   composerSubmitShortcutAtom,
   conversationFontSizeAtom,
+  conversationWidthModeAtom,
   type ConversationFontSizeMode,
+  type ConversationWidthMode,
   notifyOnApprovalAtom,
   notifyOnCompleteAtom,
   notifyOnlyBackgroundAtom,
@@ -346,6 +349,7 @@ const UI_SCALE_OPTIONS: Array<{ value: ThemeConfig["scale"]; label: string }> = 
 export function ThemeSection({ showHeading = true }: SettingsSectionProps) {
   const { config, update } = useTheme();
   const [conversationFontSize, setConversationFontSize] = useAtom(conversationFontSizeAtom);
+  const [conversationWidth, setConversationWidth] = useAtom(conversationWidthModeAtom);
   const densityLabel = config.density === "compact" ? "紧凑" : "舒适";
 
   return (
@@ -382,6 +386,16 @@ export function ThemeSection({ showHeading = true }: SettingsSectionProps) {
           sub="调整行与卡片的垂直留白。舒适匹配当前默认布局。"
           right={
             <RadioGroup value={config.density} options={[{ value: "compact", label: "紧凑" }, { value: "comfortable", label: "舒适" }]} onChange={(v) => update({ density: v as ThemeConfig["density"] })} />
+          }
+        />
+        <AppearanceRow
+          label="对话宽度"
+          sub="会话正文的最大宽度。窗口不够宽时自动收窄，不会出现横向滚动。"
+          right={
+            <ConversationWidthControl
+              value={conversationWidth}
+              onChange={(v) => setConversationWidth(v as ConversationWidthMode)}
+            />
           }
         />
         <AppearanceRow

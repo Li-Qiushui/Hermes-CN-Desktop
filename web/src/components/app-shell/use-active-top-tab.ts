@@ -3,8 +3,6 @@ import { useLocation } from "react-router-dom";
 export type TopTab =
   | "workbench"
   | "skills"
-  | "gateway"
-  | "wanderMemory"
   | "hermesMemory"
   | "advanced";
 
@@ -61,29 +59,15 @@ export const TOP_TABS: readonly TopTabDef[] = [
       path.startsWith("/coding-agents"),
   },
   {
-    id: "gateway",
-    num: "03",
-    label: "消息接入",
-    href: "/im/feishu",
-    matches: (path) => path.startsWith("/im"),
-  },
-  {
-    id: "wanderMemory",
-    num: "04",
-    label: "Wander 记忆",
-    href: "/wander-memory/memories",
-    matches: (path) => path.startsWith("/wander-memory"),
-  },
-  {
     id: "hermesMemory",
-    num: "05",
+    num: "03",
     label: "Hermes 记忆",
     href: "/memory",
     matches: (path) => ["/memory", "/memconfig", "/openviking", "/hindsight"].some((route) => isRoute(path, route)),
   },
   {
     id: "advanced",
-    num: "06",
+    num: "04",
     label: "高级",
     href: "/health",
     matches: (path) =>
@@ -92,6 +76,9 @@ export const TOP_TABS: readonly TopTabDef[] = [
       path.startsWith("/logs") ||
       path.startsWith("/debug") ||
       path.startsWith("/theme") ||
+      // 消息接入与 Wander 记忆已并入高级，顶栏不再单独占用 tab
+      path.startsWith("/im") ||
+      path.startsWith("/wander-memory") ||
       ADVANCED_ROUTES.some((route) => isRoute(path, route)),
   },
 ];

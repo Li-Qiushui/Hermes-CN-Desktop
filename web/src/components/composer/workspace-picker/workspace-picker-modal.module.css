@@ -12,7 +12,7 @@
 .wpModal {
   display: flex;
   flex-direction: column;
-  width: min(640px, calc(100vw - 32px));
+  width: min(640px, calc(100% - 32px));
   max-height: min(680px, calc(100vh - 48px));
   border: 1px solid var(--h-line);
   border-radius: 0;

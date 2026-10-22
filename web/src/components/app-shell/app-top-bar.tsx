@@ -3,6 +3,7 @@ import { Moon, Search, Sun } from "lucide-react";
 import { useTheme } from "@hermes/shared-ui";
 import { useCommandPalette } from "@/components/command-palette";
 import { HermesLogoMark } from "@/components/brand/hermes-logo-mark";
+import { detectHostOS } from "@/lib/runtime";
 import { StatusChip } from "./status-chip";
 import { TOP_TABS } from "./use-active-top-tab";
 import s from "./app-top-bar.module.css";
@@ -17,13 +18,14 @@ export function AppTopBar() {
   const ThemeIcon =
     isDarkTheme ? Sun : Moon;
   const themeToggleLabel = `切换到${isDarkTheme ? "浅色" : "深色"}模式`;
+  const searchShortcut = detectHostOS() === "macos" ? "⌘ K" : "Ctrl+K";
 
   return (
     <header className={s.topbar} data-window-drag data-tauri-drag-region="deep">
       <div className={s.brand} data-no-drag>
         <span className={s.brandText}>
           <HermesLogoMark size={20} />
-          <span className={s.wordmark}>Hermes</span>
+          <span className={s.wordmark}>Hermes Agent</span>
         </span>
       </div>
 
@@ -50,12 +52,12 @@ export function AppTopBar() {
         type="button"
         className={s.search}
         onClick={openCommandPalette}
-        title="搜索命令 / 会话 / 文件"
+        title={`搜索命令 / 会话 / 文件（${searchShortcut}）`}
         data-no-drag
       >
         <Search size={12} />
         <span>搜索命令 / 会话 / 文件…</span>
-        <span className={s.searchKbd}>⌘ K</span>
+        <span className={s.searchKbd}>{searchShortcut}</span>
       </button>
 
       <div className={s.actions}>

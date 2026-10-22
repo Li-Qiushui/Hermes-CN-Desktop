@@ -8,8 +8,8 @@ function tabFor(path: string) {
 
 describe("TOP_TABS", () => {
   it("keeps IM routes under the 03 message gateway tab", () => {
-    expect(tabFor("/im/feishu")).toBe("gateway");
-    expect(tabFor("/im/weixin")).toBe("gateway");
+    expect(tabFor("/im/feishu")).toBe("advanced");
+    expect(tabFor("/im/weixin")).toBe("advanced");
   });
 
   it("keeps kanban under the 01 workbench tab", () => {
@@ -46,24 +46,22 @@ describe("TOP_TABS", () => {
   });
 
   it("keeps the Wander memory workbench under the 04 tab", () => {
-    expect(tabFor("/wander-memory")).toBe("wanderMemory");
-    expect(tabFor("/wander-memory/memories")).toBe("wanderMemory");
-    expect(tabFor("/wander-memory/files")).toBe("wanderMemory");
-    expect(tabFor("/wander-memory/dialogue")).toBe("wanderMemory");
-    expect(tabFor("/wander-memory/chat")).toBe("wanderMemory");
-    expect(tabFor("/wander-memory/context")).toBe("wanderMemory");
-    expect(tabFor("/wander-memory/status")).toBe("wanderMemory");
-    expect(tabFor("/wander-memory/api")).toBe("wanderMemory");
+    expect(tabFor("/wander-memory")).toBe("advanced");
+    expect(tabFor("/wander-memory/memories")).toBe("advanced");
+    expect(tabFor("/wander-memory/files")).toBe("advanced");
+    expect(tabFor("/wander-memory/dialogue")).toBe("advanced");
+    expect(tabFor("/wander-memory/chat")).toBe("advanced");
+    expect(tabFor("/wander-memory/context")).toBe("advanced");
+    expect(tabFor("/wander-memory/status")).toBe("advanced");
+    expect(tabFor("/wander-memory/api")).toBe("advanced");
   });
 
-  it("keeps memory tab ordering with the Wander memory entry", () => {
+  it("keeps four top tabs after IM and Wander memory moved into 高级", () => {
     expect(TOP_TABS.map((tab) => [tab.num, tab.label])).toEqual([
       ["01", "工作台"],
       ["02", "配置"],
-      ["03", "消息接入"],
-      ["04", "Wander 记忆"],
-      ["05", "Hermes 记忆"],
-      ["06", "高级"],
+      ["03", "Hermes 记忆"],
+      ["04", "高级"],
     ]);
   });
 });

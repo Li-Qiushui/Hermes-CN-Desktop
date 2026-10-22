@@ -57,7 +57,7 @@
 .infoBox,
 .errorBox {
   border: 1px solid var(--h-line);
-  background: var(--h-bg-surface);
+  background: var(--h-bg-pane);
   border-radius: 0;
   box-shadow: none;
 }

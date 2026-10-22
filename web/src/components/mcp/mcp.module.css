@@ -1,7 +1,7 @@
 /* ── 弹窗外壳（基于 shared-ui Dialog.Content，自带居中面板/边框/阴影）── */
 .dialog {
   width: 520px;
-  max-width: calc(100vw - 32px);
+  max-width: calc(100% - 32px);
 }
 
 .dialogHead {

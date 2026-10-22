@@ -55,7 +55,7 @@ describe("顶栏状态 chip", () => {
       </MemoryRouter>,
     );
 
-    const chip = screen.getByRole("button", { name: /外部 Hermes 连接/ });
+    const chip = screen.getByRole("button", { name: /（本机内核）/ });
     expect(chip.textContent).toContain("9119");
     expect(chip.textContent).toContain("deepseek-v4.1-flash");
     expect(chip.textContent).toContain("1M");
@@ -68,7 +68,7 @@ describe("顶栏状态 chip", () => {
       </MemoryRouter>,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /外部 Hermes 连接/ }));
+    fireEvent.click(screen.getByRole("button", { name: /（本机内核）/ }));
 
     await waitFor(() => expect(screen.getByText("健康检查")).toBeTruthy());
     expect(screen.getByText("重连网关")).toBeTruthy();
@@ -90,7 +90,7 @@ describe("顶栏状态 chip", () => {
       </MemoryRouter>,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /外部 Hermes 连接/ }));
+    fireEvent.click(screen.getByRole("button", { name: /（本机内核）/ }));
     const link = await waitFor(() => screen.getByText("打开 配置 · 模型"));
     fireEvent.click(link);
     await waitFor(() => expect(screen.getByText("models-page")).toBeTruthy());

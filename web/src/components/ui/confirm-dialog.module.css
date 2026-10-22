@@ -1,7 +1,7 @@
 /* ── 应用内确认弹窗（替代 window.confirm / window.prompt）── */
 .dialog {
   width: 440px;
-  max-width: calc(100vw - 32px);
+  max-width: calc(100% - 32px);
 }
 
 .dialogHead {

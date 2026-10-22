@@ -8,8 +8,8 @@
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
-  width: min(680px, calc(100vw - 36px));
-  max-width: min(680px, calc(100vw - 36px));
+  width: min(680px, calc(100% - 36px));
+  max-width: min(680px, calc(100% - 36px));
   max-height: min(620px, calc(100vh - 120px));
   border-radius: 0;
   z-index: 91;

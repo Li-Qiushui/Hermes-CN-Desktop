@@ -10,8 +10,8 @@ interface GatewayItem {
 }
 
 export const IM_ITEMS: readonly GatewayItem[] = [
-  { label: "飞书接入", path: "/im/feishu", icon: MessageCircle, title: "将飞书消息平台接入 Hermes Agent" },
-  { label: "微信接入", path: "/im/weixin", icon: MessageSquareText, title: "将微信消息平台接入 Hermes Agent" },
+  { label: "飞书", path: "/im/feishu", icon: MessageCircle, title: "飞书接入 — 将飞书消息平台接入 Hermes Agent" },
+  { label: "微信", path: "/im/weixin", icon: MessageSquareText, title: "微信接入 — 将微信消息平台接入 Hermes Agent" },
 ];
 
 export const GATEWAY_SECTIONS: readonly {

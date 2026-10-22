@@ -8,16 +8,16 @@ describe("configuration navigation", () => {
   it("moves IM onboarding under the 03 message gateway sidebar", () => {
       const im = GATEWAY_SECTIONS.find((section) => section.label === "消息平台接入");
     expect(im?.items.map((item) => [item.label, item.path])).toEqual([
-      ["飞书接入", "/im/feishu"],
-      ["微信接入", "/im/weixin"],
+      ["飞书", "/im/feishu"],
+      ["微信", "/im/weixin"],
     ]);
   });
 
-  it("keeps IM routes inside the 03 message gateway top tab", () => {
-    const gatewayTab = TOP_TABS.find((tab) => tab.num === "03");
-    expect(gatewayTab?.label).toBe("消息接入");
-    expect(gatewayTab?.matches("/im/feishu")).toBe(true);
-    expect(gatewayTab?.matches("/im/weixin")).toBe(true);
+  it("moves IM routes under the 高级 top tab", () => {
+    const advancedTab = TOP_TABS.find((tab) => tab.label === "高级");
+    expect(advancedTab?.matches("/im/feishu")).toBe(true);
+    expect(advancedTab?.matches("/im/weixin")).toBe(true);
+    expect(TOP_TABS.some((tab) => tab.label === "消息接入")).toBe(false);
   });
 
   it("drops the built-in-runtime-only backup and migration entries", () => {

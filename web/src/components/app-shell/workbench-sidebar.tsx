@@ -3,14 +3,26 @@ import { useAtomValue, useSetAtom } from "jotai";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useLocation } from "react-router-dom";
 import { Popover, StatusDot, type StatusDotTone } from "@hermes/shared-ui";
-import { Folder, MessageSquare, MoreHorizontal, Plus } from "lucide-react";
+import {
+  ArrowLeft,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Folder,
+  MessageSquare,
+  MoreHorizontal,
+  Plus,
+  Search,
+} from "lucide-react";
 import { chatRuntimeBySessionAtom } from "@/stores/chat";
 import { activeSessionIdAtom } from "@/stores/ui";
+import { readUiValue, writeUiValue } from "@/lib/ui-store";
 import { useActiveProfileName } from "@/hooks/use-profiles";
 import {
   prefetchSessionMessages,
   useArchiveSession,
   useDeleteSessions,
+  usePagedSessions,
   useSessions,
 } from "@/hooks/use-sessions";
 import { useGateway } from "@/hooks/use-gateway";
@@ -27,8 +39,20 @@ import {
   readSessionTitleOverrides,
   subscribeSessionUiStateChanges,
   unpinSessions,
+  writePinnedSessionIds,
 } from "@/lib/session-ui-state";
-import { deriveSidebarSessionLists } from "@/lib/sidebar-session-lists";
+import {
+  RECENT_SESSION_PAGE_SIZE,
+  allSessionPagesLoaded,
+  deriveSidebarWorkspaces,
+  filterSessionsByQuery,
+  groupSessionsByDay,
+  mergeSessionPages,
+  selectSessionsById,
+  sessionPagesTotal,
+  toggleSelectedSessionId,
+  type SessionDayGroupKey,
+} from "@/lib/sidebar-session-lists";
 import {
   SessionDeleteModal,
   SessionBranchErrorModal,
@@ -49,6 +73,35 @@ import {
 } from "@/lib/workspaces";
 import type { SessionSummary } from "@hermes/protocol";
 import s from "./workbench-sidebar.module.css";
+
+type SidebarSessionsView = "recent" | "pinned" | "workspaces";
+
+const SIDEBAR_VIEW_KEY = "hermes.sidebar-sessions-view";
+const SIDEBAR_GROUPS_KEY = "hermes.sidebar-session-groups";
+const FOCUSED_VIEW_LIMIT = 100;
+
+const VIEW_OPTIONS: Array<{ value: SidebarSessionsView; label: string }> = [
+  { value: "recent", label: "最近" },
+  { value: "pinned", label: "置顶" },
+  { value: "workspaces", label: "工作区" },
+];
+
+function readSidebarView(): SidebarSessionsView {
+  const value = readUiValue<unknown>(SIDEBAR_VIEW_KEY, "recent");
+  return value === "pinned" || value === "workspaces" ? value : "recent";
+}
+
+function readGroupExpanded(): Record<SessionDayGroupKey, boolean> {
+  const raw = readUiValue<unknown>(SIDEBAR_GROUPS_KEY, {});
+  const record = raw && typeof raw === "object" && !Array.isArray(raw)
+    ? (raw as Record<string, unknown>)
+    : {};
+  return {
+    today: record.today !== false,
+    yesterday: record.yesterday !== false,
+    earlier: record.earlier !== false,
+  };
+}
 
 function relTime(unixSec: number, now: Date) {
   const d = new Date(unixSec * 1000);
@@ -74,11 +127,6 @@ function modelShort(model: string | null | undefined) {
   return model.replace(/^claude-/, "").replace(/-\d{8}$/, "");
 }
 
-function sectionLabel(index: number, label: string): string {
-  void index;
-  return label;
-}
-
 function KanbanQuickIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -95,12 +143,14 @@ interface SessionRowProps {
   session: SessionSummary;
   state: "live" | "ok" | "err" | "idle";
   active: boolean;
+  selected: boolean;
   time: string;
   projectName?: string;
   pinned: boolean;
   menuDisabled?: boolean;
   actions: UseSessionRowActions;
   onClick: () => void;
+  onToggleSelect: () => void;
   onHover?: () => void;
   onBranch: () => void;
   branching?: boolean;
@@ -110,12 +160,14 @@ function SessionRow({
   session,
   state,
   active,
+  selected,
   time,
   projectName,
   pinned,
   menuDisabled = false,
   actions,
   onClick,
+  onToggleSelect,
   onHover,
   onBranch,
   branching = false,
@@ -133,16 +185,34 @@ function SessionRow({
   const model = session.model ? modelShort(session.model) : null;
   const actionMenuDisabled = menuDisabled || actions.isDeleting || branching;
   return (
-    // role=button (not a real <button>) so the "⋯" trigger can nest inside it.
     <div
       className={s.sessionRow}
+      data-session-row={session.id}
       data-active={active ? "true" : undefined}
+      data-selected={selected ? "true" : undefined}
       role="button"
       tabIndex={0}
-      onClick={onClick}
+      onClick={(event) => {
+        if (event.ctrlKey || event.metaKey) {
+          event.preventDefault();
+          onToggleSelect();
+          return;
+        }
+        onClick();
+      }}
+      onContextMenu={(event) => {
+        if (actionMenuDisabled) return;
+        event.preventDefault();
+        event.stopPropagation();
+        actions.setOpenMenuId(session.id);
+      }}
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
+          if (event.ctrlKey || event.metaKey) {
+            onToggleSelect();
+            return;
+          }
           onClick();
         }
       }}
@@ -150,9 +220,13 @@ function SessionRow({
       onFocus={onHover}
       title={title}
     >
+      <span className={s.selectMark} data-checked={selected ? "true" : undefined} aria-hidden="true">
+        {selected ? <Check size={11} strokeWidth={2.6} /> : null}
+      </span>
       <div className={s.rowMain}>
         <div className={s.rowTop}>
           <span className={s.ttlText}>{title}</span>
+          {pinned ? <span className={s.rowPinnedFlag}>置顶</span> : null}
           {dotTone ? <StatusDot tone={dotTone} size="sm" className={s.rowDot} /> : null}
         </div>
         <div className={s.rowBottom}>
@@ -185,8 +259,13 @@ function SessionRow({
             disabled={actionMenuDisabled}
             onClick={(event) => event.stopPropagation()}
             onKeyDown={(event) => event.stopPropagation()}
+            onContextMenu={(event) => {
+              if (actionMenuDisabled) return;
+              event.preventDefault();
+              actions.setOpenMenuId(session.id);
+            }}
           >
-            <MoreHorizontal size={16} />
+            <MoreHorizontal size={13} />
           </button>
         </Popover.Trigger>
         <SessionRowMenu
@@ -211,16 +290,38 @@ export function WorkbenchSidebar() {
   const runtimeBySession = useAtomValue(chatRuntimeBySessionAtom);
   const queryClient = useQueryClient();
   const profile = useActiveProfileName();
-  const { data } = useSessions();
-  const archiveSession = useArchiveSession();
-  const deleteSessions = useDeleteSessions();
-  const { setSessionTitle, resumeSession } = useGateway();
-  const sessionBranch = useSessionBranch();
+
+  const [view, setView] = useState<SidebarSessionsView>(readSidebarView);
+  const [query, setQuery] = useState("");
+  const [expandedGroups, setExpandedGroups] = useState<Record<SessionDayGroupKey, boolean>>(readGroupExpanded);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set<string>());
+  const [workspacePath, setWorkspacePath] = useState<string | null>(null);
   const [titleOverrides, setTitleOverrides] = useState(readSessionTitleOverrides);
   const [pinnedSessionIds, setPinnedSessionIds] = useState(readPinnedSessionIds);
   const [projects, setProjects] = useState<WorkspaceProject[]>(readWorkspaceProjects);
   const [pinnedProjectPaths, setPinnedProjectPaths] = useState(readPinnedWorkspaceProjectPaths);
   const [sessionWorkspaceMap, setSessionWorkspaceMap] = useState(readSessionWorkspaceMap);
+
+  const recentPages = usePagedSessions(RECENT_SESSION_PAGE_SIZE, { order: "recent" });
+  const focusedEnabled = view === "workspaces" || pinnedSessionIds.size > 0;
+  const focusedQuery = useSessions(FOCUSED_VIEW_LIMIT, 0, {
+    cwdPrefix: workspacePath ?? undefined,
+    order: "recent",
+    enabled: focusedEnabled,
+  });
+
+  const archiveSession = useArchiveSession();
+  const deleteSessions = useDeleteSessions();
+  const { setSessionTitle, resumeSession } = useGateway();
+  const sessionBranch = useSessionBranch();
+
+  useEffect(() => {
+    writeUiValue(SIDEBAR_VIEW_KEY, view);
+  }, [view]);
+
+  useEffect(() => {
+    writeUiValue(SIDEBAR_GROUPS_KEY, expandedGroups);
+  }, [expandedGroups]);
 
   useEffect(
     () =>
@@ -240,57 +341,86 @@ export function WorkbenchSidebar() {
     [],
   );
 
-  const sessions = useMemo(
-    () =>
-      mergeLiveRuntimeSessions(
-        (data?.sessions ?? []).map((sess) => {
-          const override = titleOverrides[sess.id];
-          return override ? { ...sess, title: override } : sess;
-        }),
-        runtimeBySession,
-      ),
-    [data?.sessions, runtimeBySession, titleOverrides],
+  const applyOverrides = useCallback(
+    (sessions: SessionSummary[] | undefined) =>
+      (sessions ?? []).map((sess) => {
+        const override = titleOverrides[sess.id];
+        return override ? { ...sess, title: override } : sess;
+      }),
+    [titleOverrides],
   );
+
+  const recentSessions = useMemo(
+    () => mergeSessionPages(recentPages.data?.pages ?? []),
+    [recentPages.data?.pages],
+  );
+
+  const liveRecentSessions = useMemo(
+    () => mergeLiveRuntimeSessions(applyOverrides(recentSessions), runtimeBySession),
+    [applyOverrides, recentSessions, runtimeBySession],
+  );
+
+  const liveFocusedSessions = useMemo(
+    () => mergeLiveRuntimeSessions(applyOverrides(focusedQuery.data?.sessions), runtimeBySession),
+    [applyOverrides, focusedQuery.data?.sessions, runtimeBySession],
+  );
+
+  const recentPagesData = recentPages.data?.pages ?? [];
+  const recentTotal = sessionPagesTotal(recentPagesData);
+  const recentLoadedAll = recentPagesData.length > 0 && allSessionPagesLoaded(recentPagesData);
 
   useEffect(() => {
-    if (!data || data.total > sessions.length || pinnedSessionIds.size === 0) return;
-    const liveIds = new Set(sessions.map((session) => session.id));
+    if (pinnedSessionIds.size === 0 || !recentLoadedAll) return;
+    if (recentTotal > liveRecentSessions.length) return;
+    const liveIds = new Set(liveRecentSessions.map((session) => session.id));
     const staleIds = Array.from(pinnedSessionIds).filter((id) => !liveIds.has(id));
     if (staleIds.length > 0) setPinnedSessionIds(unpinSessions(staleIds));
-  }, [data, pinnedSessionIds, sessions]);
+  }, [liveRecentSessions, pinnedSessionIds, recentLoadedAll, recentTotal]);
 
-  const now = new Date();
+  const [now, setNow] = useState(() => new Date());
+  const [liveNow, setLiveNow] = useState(() => new Date());
 
-  const { active, pinned, recent } = useMemo(
-    () =>
-      deriveSidebarSessionLists(
-        sessions,
-        pinnedSessionIds,
-        (session) => isSessionRunning(session, runtimeBySession),
-      ),
-    [pinnedSessionIds, runtimeBySession, sessions],
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const tick = new Date();
+      setNow(tick);
+      setLiveNow(tick);
+    }, 60_000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const timeFor = useCallback(
+    (sess: SessionSummary) =>
+      isSessionRunning(sess, runtimeBySession)
+        ? elapsed(sess.started_at, liveNow)
+        : relTime(sess.ended_at ?? sess.started_at, now),
+    [liveNow, now, runtimeBySession],
   );
 
-  const pinnedProjects = useMemo(
-    () => {
-      const projectByPath = new Map(projects.map((project) => [project.path, project]));
-      return Array.from(pinnedProjectPaths).flatMap((path) => {
-        const project = projectByPath.get(path);
-        return project ? [project] : [];
-      });
-    },
-    [pinnedProjectPaths, projects],
-  );
+  const pinnedSessions = useMemo(() => {
+    const byId = new Map<string, SessionSummary>();
+    for (const session of liveFocusedSessions) byId.set(session.id, session);
+    for (const session of liveRecentSessions) if (!byId.has(session.id)) byId.set(session.id, session);
+    return Array.from(pinnedSessionIds).flatMap((id) => {
+      const session = byId.get(id);
+      return session ? [session] : [];
+    });
+  }, [liveFocusedSessions, liveRecentSessions, pinnedSessionIds]);
 
   const projectNameBySessionId = useMemo(() => {
     const projectNameByPath = new Map(projects.map((project) => [project.path, project.name]));
     return new Map(
-      Object.entries(sessionWorkspaceMap).flatMap(([sessionId, workspacePath]) => {
-        const projectName = projectNameByPath.get(workspacePath) ?? workspaceNameFromPath(workspacePath);
+      Object.entries(sessionWorkspaceMap).flatMap(([sessionId, path]) => {
+        const projectName = projectNameByPath.get(path) ?? workspaceNameFromPath(path);
         return projectName ? [[sessionId, projectName]] : [];
       }),
     );
   }, [projects, sessionWorkspaceMap]);
+
+  const workspaces = useMemo(
+    () => deriveSidebarWorkspaces(liveRecentSessions, projects, workspaceNameFromPath),
+    [liveRecentSessions, projects],
+  );
 
   useEffect(() => {
     if (pinnedProjectPaths.size === 0) return;
@@ -314,8 +444,6 @@ export function WorkbenchSidebar() {
 
   const onSessionsDeleted = useCallback(
     (succeededIds: string[]) => {
-      // If the session being viewed was deleted, leave its detail route so we
-      // don't fall back to loading a now-missing session id.
       if (activeSessionId && succeededIds.includes(activeSessionId)) {
         setActiveId(null);
         navigate("/");
@@ -323,6 +451,7 @@ export function WorkbenchSidebar() {
     },
     [activeSessionId, navigate, setActiveId],
   );
+
   const rowActions = useSessionRowActions({
     deleteSessions: (ids) => deleteSessions.mutateAsync(ids),
     isDeleting: deleteSessions.isPending,
@@ -333,16 +462,177 @@ export function WorkbenchSidebar() {
     onDeleted: onSessionsDeleted,
   });
 
-  const showPinned = pinned.length > 0;
-  const pinnedProjectSectionIndex = showPinned ? 3 : 2;
-  const recentSectionIndex = pinnedProjectSectionIndex + 1;
-  const activeSectionLabel = sectionLabel(1, "进行中");
-  const pinnedSessionSectionLabel = sectionLabel(2, "置顶对话");
-  const pinnedProjectSectionLabel = sectionLabel(pinnedProjectSectionIndex, "置顶项目");
-  const recentSectionLabel = sectionLabel(recentSectionIndex, "最近对话");
+  const activeSessions = useMemo(() => {
+    const pinnedIdSet = new Set(pinnedSessionIds);
+    return liveRecentSessions.filter(
+      (session) => !pinnedIdSet.has(session.id) && isSessionRunning(session, runtimeBySession),
+    );
+  }, [liveRecentSessions, pinnedSessionIds, runtimeBySession]);
+
+  const hasActiveSessions = activeSessions.length > 0;
+
+  useEffect(() => {
+    if (!hasActiveSessions) return;
+    const timer = setInterval(() => setLiveNow(new Date()), 1_000);
+    return () => clearInterval(timer);
+  }, [hasActiveSessions]);
+
+  const sessionTimes = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const sess of liveRecentSessions) map.set(sess.id, timeFor(sess));
+    for (const sess of liveFocusedSessions) {
+      if (!map.has(sess.id)) map.set(sess.id, timeFor(sess));
+    }
+    return map;
+  }, [liveFocusedSessions, liveRecentSessions, timeFor]);
+
+  const visibleRecent = useMemo(() => {
+    const pinnedIdSet = new Set(pinnedSessionIds);
+    return filterSessionsByQuery(
+      liveRecentSessions.filter((session) => !pinnedIdSet.has(session.id)),
+      query,
+    );
+  }, [liveRecentSessions, pinnedSessionIds, query]);
+
+  const visiblePinned = useMemo(
+    () => filterSessionsByQuery(pinnedSessions, query),
+    [pinnedSessions, query],
+  );
+
+  const visibleWorkspaceSessions = useMemo(
+    () => filterSessionsByQuery(liveFocusedSessions, query),
+    [liveFocusedSessions, query],
+  );
+
+  const visibleWorkspaces = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return workspaces;
+    return workspaces.filter((workspace) =>
+      workspace.name.toLowerCase().includes(needle)
+      || workspace.path.toLowerCase().includes(needle),
+    );
+  }, [query, workspaces]);
+
+  const dayGroups = useMemo(() => groupSessionsByDay(visibleRecent, now), [visibleRecent, now]);
+
+  const orderedVisibleSessions = useMemo(() => {
+    if (view === "pinned") return visiblePinned;
+    if (view === "workspaces" && workspacePath) return visibleWorkspaceSessions;
+    return visibleRecent;
+  }, [view, visiblePinned, visibleRecent, visibleWorkspaceSessions, workspacePath]);
+
+  const selectedSessions = useMemo(() => {
+    const pool = [...liveRecentSessions, ...liveFocusedSessions, ...pinnedSessions];
+    const unique = Array.from(new Map(pool.map((session) => [session.id, session])).values());
+    return selectSessionsById(unique, selectedIds);
+  }, [liveFocusedSessions, liveRecentSessions, pinnedSessions, selectedIds]);
+
+  const visibleSessionIds = useMemo(
+    () => new Set(orderedVisibleSessions.map((session) => session.id)),
+    [orderedVisibleSessions],
+  );
+
+  useEffect(() => {
+    setSelectedIds((current) => {
+      if (current.size === 0) return current;
+      const next = new Set(Array.from(current).filter((id) => visibleSessionIds.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [visibleSessionIds]);
+
+  const clearSelection = useCallback(() => setSelectedIds(new Set<string>()), []);
+
+  const toggleSelection = useCallback((id: string) => {
+    setSelectedIds((current) => toggleSelectedSessionId(current, id));
+  }, []);
+
+  const bulkPinDisabled = selectedSessions.length === 0
+    || selectedSessions.some((session) => pinnedSessionIds.has(session.id));
+  const bulkArchiveDisabled = selectedSessions.length === 0
+    || selectedSessions.some((session) => session.archived === true);
+
+  const handleBulkPin = useCallback(() => {
+    if (selectedSessions.length === 0) return;
+    const next = new Set(pinnedSessionIds);
+    for (const session of selectedSessions) next.add(session.id);
+    setPinnedSessionIds(writePinnedSessionIds(next));
+    clearSelection();
+  }, [clearSelection, pinnedSessionIds, selectedSessions]);
+
+  const handleBulkArchive = useCallback(() => {
+    if (selectedSessions.length === 0) return;
+    for (const session of selectedSessions) archiveSession.mutate(session.id);
+    clearSelection();
+  }, [archiveSession, clearSelection, selectedSessions]);
+
+  const handleBulkDelete = useCallback(() => {
+    if (selectedSessions.length === 0) return;
+    rowActions.openDeleteDialog(selectedSessions);
+    clearSelection();
+  }, [clearSelection, rowActions, selectedSessions]);
+
+  const rowState = (sess: SessionSummary): "live" | "ok" | "err" => {
+    if (isSessionRunning(sess, runtimeBySession)) return "live";
+    return sess.end_reason === "error" || sess.end_reason === "interrupted" ? "err" : "ok";
+  };
+
+  const renderRow = (sess: SessionSummary, menuDisabled = false) => (
+    <SessionRow
+      key={sess.id}
+      session={sess}
+      state={rowState(sess)}
+      active={sessionIdMatches(sess.id, activeSessionId)}
+      selected={selectedIds.has(sess.id)}
+      time={sessionTimes.get(sess.id) ?? timeFor(sess)}
+      projectName={projectNameBySessionId.get(sess.id)}
+      pinned={pinnedSessionIds.has(sess.id)}
+      menuDisabled={menuDisabled || isSessionRunning(sess, runtimeBySession)}
+      actions={rowActions}
+      onClick={() => goSession(sess)}
+      onToggleSelect={() => toggleSelection(sess.id)}
+      onHover={() => hoverSession(sess)}
+      onBranch={() => void sessionBranch.branchSession(sess)}
+      branching={sessionBranch.branchingSessionId === sess.id}
+    />
+  );
+
+  const workspaceDetail = workspacePath
+    ? workspaces.find((workspace) => workspace.path === workspacePath)
+      ?? { path: workspacePath, name: workspaceNameFromPath(workspacePath), sessionCount: 0 }
+    : null;
+
+  const noMatchHint = (
+    <div className={s.empty}>没有匹配的对话，搜索全部会话请用 ⌘K</div>
+  );
+  const searching = query.trim().length > 0;
+  const recentPending = recentPages.isLoading && dayGroups.length === 0;
+  const recentFailed = recentPages.isError && dayGroups.length === 0;
+
+  const listLoading = (
+    <div className={s.listSkeleton} data-state="loading" role="status">
+      <span className={s.listStatus}>正在读取会话…</span>
+      <span className={s.skeletonRow} aria-hidden="true" />
+      <span className={s.skeletonRow} aria-hidden="true" />
+      <span className={s.skeletonRow} aria-hidden="true" />
+    </div>
+  );
+
+  const listError = (
+    <div className={s.listError} data-state="error" role="alert">
+      <span className={s.listStatus}>会话列表加载失败</span>
+      <button
+        type="button"
+        className={s.retryButton}
+        data-action="retry-sessions"
+        onClick={() => void recentPages.refetch()}
+      >
+        重试
+      </button>
+    </div>
+  );
 
   return (
-    <aside className={s.sidebar}>
+    <aside className={s.sidebar} data-sidebar="sessions">
       <button type="button" className={s.newTask} onClick={() => navigate("/")}>
         <span className={s.newTaskLead}>
           <span className={s.entryIcon}>
@@ -391,141 +681,213 @@ export function WorkbenchSidebar() {
         </button>
       </div>
 
-      <div className={s.scrollY}>
-        <section className={s.section}>
-          <div className={s.label}>
-            <span>{activeSectionLabel}</span>
+      <div className={s.searchWrap}>
+        <Search size={14} className={s.searchIcon} aria-hidden="true" />
+        <input
+          type="search"
+          className={s.searchInput}
+          value={query}
+          placeholder="搜索对话"
+          aria-label="搜索对话"
+          onChange={(event) => setQuery(event.target.value)}
+        />
+      </div>
 
-          </div>
-          {active.length === 0 ? (
-            <div className={s.empty}>暂无运行任务</div>
-          ) : (
-            active.map((sess) => (
-              <SessionRow
-                key={sess.id}
-                session={sess}
-                state="live"
-                active={sessionIdMatches(sess.id, activeSessionId)}
-                time={elapsed(sess.started_at, now)}
-                projectName={projectNameBySessionId.get(sess.id)}
-                pinned={pinnedSessionIds.has(sess.id)}
-                menuDisabled
-                actions={rowActions}
-                onClick={() => goSession(sess)}
-                onHover={() => hoverSession(sess)}
-                onBranch={() => void sessionBranch.branchSession(sess)}
-                branching={sessionBranch.branchingSessionId === sess.id}
-              />
-            ))
-          )}
-        </section>
+      <div className={s.seg} role="radiogroup" aria-label="对话视图">
+        {VIEW_OPTIONS.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            role="radio"
+            aria-checked={view === option.value}
+            className={s.segOption}
+            data-active={view === option.value ? "true" : undefined}
+            data-view={option.value}
+            onClick={() => {
+              setView(option.value);
+              if (option.value !== "workspaces") setWorkspacePath(null);
+              clearSelection();
+            }}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
 
-        {showPinned ? (
-          <section className={s.section}>
-            <div className={s.label}>
-              <span>{pinnedSessionSectionLabel}</span>
-  
-            </div>
-            {pinned.map((sess) => {
-              const running = isSessionRunning(sess, runtimeBySession);
-              const state: "live" | "ok" | "err" =
-                running
-                  ? "live"
-                  : sess.end_reason === "error" || sess.end_reason === "interrupted"
-                    ? "err"
-                    : "ok";
-              const ts = sess.ended_at ?? sess.started_at;
-              return (
-                <SessionRow
-                  key={sess.id}
-                  session={sess}
-                  state={state}
-                  active={sessionIdMatches(sess.id, activeSessionId)}
-                  time={running ? elapsed(sess.started_at, now) : relTime(ts, now)}
-                  projectName={projectNameBySessionId.get(sess.id)}
-                  pinned={pinnedSessionIds.has(sess.id)}
-                  menuDisabled={running}
-                  actions={rowActions}
-                  onClick={() => goSession(sess)}
-                  onHover={() => hoverSession(sess)}
-                  onBranch={() => void sessionBranch.branchSession(sess)}
-                  branching={sessionBranch.branchingSessionId === sess.id}
-                />
-              );
-            })}
-          </section>
+      <div className={s.scrollY} data-view={view}>
+        {view === "recent" ? (
+          <>
+            {activeSessions.length > 0 ? (
+              <section className={s.section} data-section="active">
+                <div className={s.label}>
+                  <span>进行中</span>
+                  <span className={s.labelCount}>{activeSessions.length}</span>
+                </div>
+                {activeSessions.map((sess) => renderRow(sess, true))}
+              </section>
+            ) : null}
+
+            {recentPending ? (
+              listLoading
+            ) : recentFailed ? (
+              listError
+            ) : dayGroups.length === 0 ? (
+              searching ? noMatchHint : <div className={s.empty}>还没有历史对话</div>
+            ) : (
+              dayGroups.map((group) => {
+                const expanded = expandedGroups[group.key];
+                return (
+                  <section className={s.section} key={group.key} data-day-group={group.key}>
+                    <button
+                      type="button"
+                      className={s.groupHeader}
+                      aria-expanded={expanded}
+                      onClick={() => {
+                        setExpandedGroups((current) => ({
+                          ...current,
+                          [group.key]: !current[group.key],
+                        }));
+                      }}
+                    >
+                      <span className={s.groupChevron}>
+                        {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                      </span>
+                      <span className={s.groupLabel}>{group.label}</span>
+                      <span className={s.labelCount}>{group.items.length}</span>
+                    </button>
+                    {expanded ? group.items.map((sess) => renderRow(sess)) : null}
+                  </section>
+                );
+              })
+            )}
+
+            {visibleRecent.length > 0 ? (
+              <div className={s.loadMoreRow}>
+                {recentLoadedAll ? (
+                  <span className={s.loadMoreDone}>已全部加载</span>
+                ) : (
+                  <button
+                    type="button"
+                    className={s.loadMore}
+                    data-action="load-more"
+                    disabled={recentPages.isFetchingNextPage}
+                    onClick={() => void recentPages.fetchNextPage()}
+                  >
+                    {recentPages.isFetchingNextPage ? "加载中…" : "加载更多"}
+                  </button>
+                )}
+              </div>
+            ) : null}
+          </>
         ) : null}
 
-        <section className={s.section}>
-          <div className={s.label}>
-            <span>{pinnedProjectSectionLabel}</span>
-
-          </div>
-          {pinnedProjects.length === 0 ? (
-            <button
-              type="button"
-              className={s.sideItem}
-              onClick={() => navigate("/projects")}
-            >
-              <span className={s.sideItemIcon}>
-                <Folder size={16} />
-              </span>
-              <span className={s.sideItemLabel}>暂无置顶项目</span>
-            </button>
+        {view === "pinned" ? (
+          recentPending ? (
+            listLoading
+          ) : recentFailed ? (
+            listError
+          ) : visiblePinned.length === 0 ? (
+            searching ? noMatchHint : <div className={s.empty}>还没有置顶对话</div>
           ) : (
-            pinnedProjects.map((proj) => {
-              const target = `/projects/${encodeURIComponent(proj.path)}`;
-              return (
+            <section className={s.section} data-section="pinned">
+              {visiblePinned.map((sess) => renderRow(sess))}
+            </section>
+          )
+        ) : null}
+
+        {view === "workspaces" ? (
+          workspaceDetail ? (
+            <>
+              <button
+                type="button"
+                className={s.backButton}
+                onClick={() => {
+                  setWorkspacePath(null);
+                  clearSelection();
+                }}
+              >
+                <ArrowLeft size={14} />
+                <span>全部工作区</span>
+              </button>
+              <div className={s.workspaceTitle} title={workspaceDetail.path}>
+                <span className={s.workspaceTitleName}>{workspaceDetail.name}</span>
+                <span className={s.labelCount}>{visibleWorkspaceSessions.length}</span>
+              </div>
+              {visibleWorkspaceSessions.length === 0 ? (
+                searching ? noMatchHint : <div className={s.empty}>该工作区还没有对话</div>
+              ) : (
+                <section className={s.section} data-section="workspace-sessions">
+                  {visibleWorkspaceSessions.map((sess) => renderRow(sess))}
+                </section>
+              )}
+            </>
+          ) : recentPending ? (
+            listLoading
+          ) : recentFailed ? (
+            listError
+          ) : searching && visibleWorkspaces.length === 0 ? (
+            noMatchHint
+          ) : workspaces.length === 0 ? (
+            <div className={s.empty}>还没有工作区</div>
+          ) : (
+            <section className={s.section} data-section="workspaces">
+              {visibleWorkspaces.map((workspace) => (
                 <button
                   type="button"
-                  key={proj.path}
-                  className={s.sideItem}
-                  data-active={location.pathname === target ? "true" : undefined}
-                  onClick={() => navigate(target)}
-                  title={proj.path}
+                  key={workspace.path}
+                  className={s.workspaceItem}
+                  data-workspace-path={workspace.path}
+                  onClick={() => setWorkspacePath(workspace.path)}
+                  title={workspace.path}
                 >
-                  <span className={s.sideItemIcon}>
-                    <Folder size={16} />
+                  <span className={s.workspaceIcon}>
+                    <Folder size={15} />
                   </span>
-                  <span className={s.sideItemLabel}>{proj.name}</span>
+                  <span className={s.workspaceName}>{workspace.name}</span>
+                  <span className={s.workspaceCount}>{workspace.sessionCount}</span>
                 </button>
-              );
-            })
-          )}
-        </section>
-
-        <section className={s.section}>
-          <div className={s.label}>
-            <span>{recentSectionLabel}</span>
-
-          </div>
-          {recent.length === 0 ? (
-            <div className={s.empty}>暂无最近会话</div>
-          ) : (
-            recent.map((sess) => {
-              const state: "ok" | "err" =
-                sess.end_reason === "error" || sess.end_reason === "interrupted" ? "err" : "ok";
-              const time = relTime(sess.ended_at ?? sess.started_at, now);
-              return (
-                <SessionRow
-                  key={sess.id}
-                  session={sess}
-                  state={state}
-                  active={sessionIdMatches(sess.id, activeSessionId)}
-                  time={time}
-                  projectName={projectNameBySessionId.get(sess.id)}
-                  pinned={pinnedSessionIds.has(sess.id)}
-                  actions={rowActions}
-                  onClick={() => goSession(sess)}
-                  onHover={() => hoverSession(sess)}
-                  onBranch={() => void sessionBranch.branchSession(sess)}
-                  branching={sessionBranch.branchingSessionId === sess.id}
-                />
-              );
-            })
-          )}
-        </section>
+              ))}
+            </section>
+          )
+        ) : null}
       </div>
+
+      {selectedSessions.length > 0 ? (
+        <div className={s.bulkBar} role="toolbar" aria-label="批量操作">
+          <span className={s.bulkCount}>已选 {selectedSessions.length} 个</span>
+          <div className={s.bulkActions}>
+            <button
+              type="button"
+              className={s.bulkAction}
+              disabled={bulkPinDisabled}
+              title={bulkPinDisabled ? "选中的对话已包含置顶项" : "置顶选中的对话"}
+              onClick={handleBulkPin}
+            >
+              置顶
+            </button>
+            <button
+              type="button"
+              className={s.bulkAction}
+              disabled={bulkArchiveDisabled}
+              title={bulkArchiveDisabled ? "选中的对话已包含归档项" : "归档选中的对话"}
+              onClick={handleBulkArchive}
+            >
+              归档
+            </button>
+            <button
+              type="button"
+              className={s.bulkAction}
+              data-tone="danger"
+              onClick={handleBulkDelete}
+            >
+              删除
+            </button>
+            <button type="button" className={s.bulkAction} onClick={clearSelection}>
+              取消
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       {rowActions.renamingSession ? (
         <SessionRenameModal

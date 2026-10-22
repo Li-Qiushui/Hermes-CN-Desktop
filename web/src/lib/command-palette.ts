@@ -125,7 +125,7 @@ export const COMMAND_PALETTE_COMMANDS: readonly CommandPaletteItem[] = [
     id: "command-kanban",
     group: "commands",
     label: "看板 Kanban",
-    subtitle: "/kanban · 打开官方 Dashboard 看板",
+    subtitle: "/kanban · 原生任务看板",
     keywords: ["kanban", "board", "dashboard", "official", "看板", "任务板"],
     icon: "project",
     action: { type: "navigate", to: "/kanban" },

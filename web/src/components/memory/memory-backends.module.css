@@ -95,7 +95,7 @@
 }
 
 .backendLink:hover {
-  border-color: var(--h-line-strong, var(--h-line));
+  border-color: var(--h-line);
   background: var(--h-color-bg-secondary-surface);
 }
 
@@ -527,7 +527,7 @@
 }
 
 .consoleDialog {
-  width: min(480px, calc(100vw - 32px));
+  width: min(480px, calc(100% - 32px));
   padding: 20px;
   gap: 16px;
 }

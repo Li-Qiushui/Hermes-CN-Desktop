@@ -24,6 +24,21 @@
   padding: 20px var(--h-page-content-gutter-x) 48px;
 }
 
+.scroll[data-fill="true"] {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  padding-bottom: 16px;
+}
+
+.scroll[data-fill="true"] .content {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
 .content {
   width: 100%;
   max-width: var(--h-page-content-max-width);

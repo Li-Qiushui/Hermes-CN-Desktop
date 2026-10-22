@@ -82,6 +82,7 @@ import type {
   WriteWorkspaceFileResult,
   HermesGitBridge,
 } from "./runtime";
+import type { KernelStatusView, RuntimeStatusPhase } from "./kernel-status";
 import { BUILD_COMMIT, DESKTOP_VERSION, versionLabel } from "./build-info";
 import {
   assertCompatible,
@@ -345,6 +346,14 @@ const tauriBridge = {
   async exportDebugBundle(input?: ExportDebugBundleInput): Promise<ExportDebugBundleResult> {
     const inv = await ensureInvoke();
     return inv("export_debug_bundle", { input: input ?? null });
+  },
+
+  async kernelStatus(): Promise<KernelStatusView> {
+    return invokeCommand("kernel_status");
+  },
+
+  async retryKernel(): Promise<KernelStatusView> {
+    return invokeCommand("retry_kernel");
   },
 
   async environmentCheck(): Promise<EnvironmentCheckResult> {
@@ -794,7 +803,7 @@ function showBootstrapOverlay(initialMessage: string): {
   panel.setAttribute("aria-live", "polite");
   panel.setAttribute(
     "style",
-    "width:min(760px,calc(100vw - 64px));display:flex;flex-direction:column;" +
+    "width:min(760px,calc(100% - 64px));display:flex;flex-direction:column;" +
       "align-items:center;gap:20px;text-align:center;",
   );
 
@@ -954,6 +963,13 @@ function showBootstrapOverlay(initialMessage: string): {
         detail.style.display = "block";
         copyButton.disabled = false;
         sub.textContent = "启动失败";
+      } else if (phase === "degraded") {
+        lastErrorMessage = msg || "本机内核启动失败";
+        message.textContent = "本机内核启动失败，已降级到配置地址。进入应用后可在「连接」页重试启动。";
+        errorText.textContent = lastErrorMessage;
+        detail.style.display = "block";
+        copyButton.disabled = false;
+        sub.textContent = "已降级启动";
       } else if (msg) {
         message.textContent = msg;
       }
@@ -968,6 +984,7 @@ async function waitForBootstrap(
   initialMessage: string,
   readConfig: () => Promise<{ apiBaseUrl?: string }>,
   readRuntimeInfo: () => Promise<{ lastError?: string }>,
+  onDegraded?: (message: string) => void,
 ): Promise<{ failed: boolean; message: string }> {
   const { listen } = await import("@tauri-apps/api/event");
 
@@ -1020,13 +1037,18 @@ async function waitForBootstrap(
         .catch(() => {});
     };
 
-    listen<{ phase: string; message: string }>("runtime-status", (event) => {
+    listen<{ phase: RuntimeStatusPhase; message: string }>("runtime-status", (event) => {
       const { phase, message } = event.payload;
       lastPhase = phase;
       if (message) lastMessage = message;
       overlay?.update(phase, message);
       if (phase === "ready") {
         finish({ failed: false, message: "" });
+      } else if (phase === "degraded") {
+        // Degraded is a soft failure: the backend is reachable on a fallback
+        // address, so keep waiting for `ready` instead of blocking the mount.
+        onDegraded?.(message || "本机内核启动失败，已降级到配置地址");
+        ensureOverlay().update("degraded", message);
       } else if (phase === "error") {
         // Error paths should be visible immediately even if the normal slow-start
         // threshold has not elapsed yet.
@@ -1094,6 +1116,11 @@ export function shouldWaitForManagedRuntimeConfig(config: {
   return config.backendReady !== false || managedRuntimeShouldRun;
 }
 
+// Set when the `degraded` runtime-status phase arrives: the kernel did not
+// start, Rust fell back to the configured address. Surfaced to the UI through
+// `window.__HERMES_RUNTIME__` so the offline shell and status bar can explain it.
+let bootstrapDegradedReason: string | null = null;
+
 export async function installTauriBridge(): Promise<void> {
   // Install before any React component mounts a Tauri event listener, so the
   // StrictMode mount→unmount teardown race can't leak an unhandled rejection.
@@ -1138,6 +1165,9 @@ export async function installTauriBridge(): Promise<void> {
       "正在唤醒Hermes...",
       () => invokeCommand("get_runtime_config"),
       () => invokeCommand("runtime_info"),
+      (message) => {
+        bootstrapDegradedReason = message;
+      },
     );
     if (result.failed) {
       // Leave the overlay up — the user needs to see the message
@@ -1201,6 +1231,8 @@ export async function installTauriBridge(): Promise<void> {
     backendReady: backendRecoveryReason
       ? false
       : config.backendReady ?? Boolean(config.apiBaseUrl),
+    backendDegraded: bootstrapDegradedReason !== null,
+    backendDegradedReason: bootstrapDegradedReason ?? undefined,
     backendRecoveryReason,
     guideState: config.guideState ?? "completed",
     managedRuntimeDesiredState: config.managedRuntimeDesiredState ?? "running",

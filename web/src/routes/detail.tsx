@@ -16,7 +16,6 @@ import { pickTipRedirect } from "@/lib/session-tip-redirect";
 import {
   appendNoticeAtom,
   recoverCompletedTurnFromStoredMessagesAtom,
-  removeApprovalAtom,
 } from "@/stores/chat";
 import { useSession, useSessionMessages, useSessions } from "@/hooks/use-sessions";
 import { useSkills } from "@/hooks/use-skills";
@@ -40,7 +39,6 @@ import { parseBuiltinComposerCommand } from "@/lib/builtin-commands";
 import { resolveComposerSkillCommand } from "@/lib/composer-skills";
 import { formatCompressNotice } from "@/lib/compress-feedback";
 import { formatElapsedTimer } from "@/lib/format";
-import { getGatewayClient } from "@/lib/gateway-client";
 import { useSessionTurnStats } from "@/hooks/use-session-turn-stats";
 import {
   buildComposerContextUsage,
@@ -82,7 +80,6 @@ import { PreviewRail } from "@/components/chat/preview-rail/preview-rail";
 import { PREVIEW_PANEL_QUERY_KEY } from "@/lib/preview-rail";
 import { activeCliDelegationCount, clearFinishedCliDelegationsAtom } from "@/stores/cli-delegations";
 import { activeSubagentCount, clearFinishedSubagentsAtom } from "@/stores/subagents";
-import { ConversationWidthControl } from "@/components/chat/conversation-width-control";
 import {
   hermesUIMessagesToChatMessages,
   attachTurnStatsMetadata,
@@ -633,8 +630,6 @@ export function DetailRoute() {
     () => resolveModelContextWindow(config, contextSelection),
     [config, contextSelection],
   );
-  const pendingApproval = runtime.pendingApprovals[0] ?? null;
-
   const composerTick = useComposerTimer(runtimeIsBusy, runtime.turnStartedAt);
   // Task-level stall watchdog: detects a turn wedged on a dead provider call
   // (the connection heartbeat can't — the gateway keeps answering pings).
@@ -689,10 +684,6 @@ export function DetailRoute() {
         sub={model ? `本会话 ${model}` : undefined}
         right={
           <>
-            <ConversationWidthControl
-              value={conversationWidthMode}
-              onChange={setConversationWidthMode}
-            />
             {copyableSessionId ? (
               <TopBarActionButton
                 onClick={copySessionId}
@@ -752,11 +743,6 @@ export function DetailRoute() {
             messages={chatMessages}
             loading={isLoading && runtime.messages.length === 0}
             statusMessage={timelineStatus}
-            pendingApproval={
-              pendingApproval ? (
-                <ApprovalDialog approval={pendingApproval} />
-              ) : undefined
-            }
             turnStartedAt={runtimeIsBusy ? runtime.turnStartedAt : undefined}
             sessionUsage={runtimeIsBusy ? sessionUsage : undefined}
             progressModel={runtimeIsBusy ? model || undefined : undefined}
@@ -839,55 +825,6 @@ export function DetailRoute() {
           />
         ) : null}
 
-      </div>
-    </div>
-  );
-}
-
-/* ── Approval Dialog ──────────────────────────────────────────────────── */
-
-function ApprovalDialog({ approval }: { approval: { requestId: string; sessionId: string; command: string; reason?: string } }) {
-  const navigate = useNavigate();
-  const removeApproval = useSetAtom(removeApprovalAtom);
-  const [responding, setResponding] = useState<"approve" | "deny" | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  const respond = async (choice: "approve" | "deny") => {
-    if (responding) return;
-    setResponding(choice);
-    setError(null);
-    try {
-      await getGatewayClient().request("approval.respond", {
-        session_id: approval.sessionId,
-        request_id: approval.requestId,
-        choice,
-      });
-      removeApproval({ sessionId: approval.sessionId, requestId: approval.requestId });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error("Failed to respond to approval:", err);
-      setError(message || "审批响应发送失败");
-    } finally {
-      setResponding(null);
-    }
-  };
-
-  return (
-    <div className={s.approvalCard}>
-      <div className={s.approvalHeader}>⚠ 需要确认执行</div>
-      <div className={s.approvalCommand}>{approval.command}</div>
-      {approval.reason && <div className={s.approvalReason}>{approval.reason}</div>}
-      {error && <div className={s.approvalError}>发送失败：{error}</div>}
-      <div className={s.approvalActions}>
-        <button className={s.approvalApprove} onClick={() => respond("approve")} disabled={responding !== null}>
-          {responding === "approve" ? "发送中..." : "允许执行"}
-        </button>
-        <button className={s.approvalDeny} onClick={() => respond("deny")} disabled={responding !== null}>
-          {responding === "deny" ? "发送中..." : "拒绝"}
-        </button>
-        <button className={s.approvalSettings} onClick={() => navigate("/common#approval-mode")} disabled={responding !== null}>
-          调整审批模式
-        </button>
       </div>
     </div>
   );

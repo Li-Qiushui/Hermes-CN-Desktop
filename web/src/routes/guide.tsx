@@ -60,18 +60,18 @@ export function GuideRoute() {
         />
         <div>
           <p>Hermes Agent</p>
-          <h1>连接你的外部 Hermes</h1>
-          <span>桌面端是客户端：Hermes 后端运行在本机或远端服务器上。</span>
+          <h1>连接 Hermes 内核</h1>
+          <span>本机内核由桌面端托管；需要时也可以连到另一台机器上的远程 Hermes。</span>
         </div>
       </header>
 
       <div className={s.body}>
         <section className={s.intro} aria-labelledby="guide-choice-title">
           <div className={s.introCopy}>
-            <span className={s.stepLabel}>只需连接一次，以后可以随时更改</span>
-            <h2 id="guide-choice-title">选择后端在哪里运行</h2>
-            <p>填上已经运行的 Hermes 地址即可，默认是 http://127.0.0.1:9119。</p>
-            <p>本机其他 Hermes 接入本机已经运行的 Hermes Dashboard；远端服务器 Hermes 需要地址加 Token 或 OAuth 登录。</p>
+            <span className={s.stepLabel}>只需确认一次，以后可以随时更改</span>
+            <h2 id="guide-choice-title">内核跑在哪里</h2>
+            <p>默认用本机内核：桌面端启动时会自己接管或拉起内核（hermes serve），不用填地址。</p>
+            <p>只有要用另一台机器上的 Hermes 时，才在「远程连接」里填地址加 Token 或 OAuth 登录。</p>
           </div>
         </section>
 
@@ -82,9 +82,9 @@ export function GuideRoute() {
         >
           <div className={s.externalHeader}>
             <div>
-              <span className={s.stepLabel}>填写已有 Hermes 的连接信息</span>
-              <h2 id="external-setup-title">连接你已有的 Hermes</h2>
-              <p>选择它是在这台电脑上运行，还是在另一台电脑或服务器上运行。</p>
+              <span className={s.stepLabel}>确认本机内核与远程连接</span>
+              <h2 id="external-setup-title">确认连接目标</h2>
+              <p>本机内核一般开箱可用；远程连接会让你填地址与凭证。</p>
             </div>
           </div>
           <ConnectionSection

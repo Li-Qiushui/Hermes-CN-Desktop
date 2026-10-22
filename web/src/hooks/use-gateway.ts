@@ -19,12 +19,17 @@ import {
   SessionCompressResult,
   type GatewayEvent,
 } from "@hermes/protocol";
+import type { SessionMessage } from "@hermes/protocol";
 import { filterCnProviders } from "@/lib/cn-provider-slugs";
 import { getGatewayClient } from "@/lib/gateway-client";
+import { debugBus } from "@/lib/debug-bus";
+import { isDefinitiveMissingSessionError } from "@/lib/gateway-reconnect";
 import {
-  isDefinitiveMissingSessionError,
-  reattachAfterReconnect,
-} from "@/lib/gateway-reconnect";
+  createCoalescedTask,
+  createReconnectRecovery,
+  replaySubscribedSessions,
+} from "@/lib/gateway-replay";
+import { legacySessionMessagesToHermesUIMessages } from "@/components/chat/message-adapter";
 import {
   getCachedModelOptions,
   invalidateModelOptionsCache,
@@ -51,6 +56,7 @@ import {
   ensureChatSessionAtom,
   gwConnectionAtom,
   gwSessionIdAtom,
+  hydrateSessionTimelineAtom,
   markSessionInterruptedAtom,
   markStreamsReconnectingAtom,
   resetChatSessionAtom,
@@ -63,6 +69,7 @@ import {
 import { activeProfileAtom, sessionTipRedirectAtom } from "@/stores/ui";
 import { activeSessionIdAtom } from "@/stores/ui";
 import { recordTipRedirect } from "@/lib/session-tip-redirect";
+import { redeliverOpenRequests } from "@/lib/server-request-bridge";
 import { createDeltaCoalescer } from "@/lib/gateway-delta-coalescer";
 import { queryClient as appQueryClient } from "@/lib/query-client";
 import {
@@ -101,37 +108,64 @@ function forEachSubscriber(
   }
 }
 
-let reattachInFlight = false;
+const recoverActiveSessionOnce = createReconnectRecovery();
 
-// On a transport reconnect, re-pin the active session's live backend turn by
-// re-issuing session.resume (the gateway has no socket-level replay). Runs
-// against the default jotai store so it stays single-owner regardless of how
-// many components call useGateway(); guarded so overlapping reconnects don't
-// fire concurrent resumes. See docs/gateway-connection-overhaul.md (C2).
-async function reattachActiveSessionAfterReconnect(): Promise<void> {
-  if (reattachInFlight) return;
-  reattachInFlight = true;
+// 重连恢复只有一个入口：一次 session.resume，然后按水位判定「since 补帧」还是
+// 「用这次 resume 的 messages 快照覆盖」。旧实现里 A 补帧退化会抛 session.replay_gap
+// 再由 B 全量 resume 一次，内核重启时两条必然都走（resume 叠加 → 会话归属竞态、
+// open_requests 重投两次）。现在退化在原地用同一次 resume 的快照兜住。
+// 走默认 jotai store，保证只有一个所有者；并发重连由 createReconnectRecovery 合并。
+async function recoverAfterGatewayReconnect(): Promise<void> {
   const store = getDefaultStore();
+  const client = getGatewayClient();
   try {
-    await reattachAfterReconnect({
+    const result = await recoverActiveSessionOnce({
       getActiveSessionId: () => store.get(gwSessionIdAtom),
       resolvePersistentId: (id) => resolvePersistentSessionId(id) ?? id,
-      resume: async (persistentId) =>
-        SessionResumeResult.parse(
+      resume: async (persistentId) => {
+        const resumed = SessionResumeResult.parse(
           // Resuming can rebuild the agent server-side (minutes-scale, runs in
           // the gateway's long-handler pool) — give it far more than the
           // default request timeout; the UI already shows a transient
           // "reconnecting" state while this is pending.
-          await getGatewayClient().request(
+          await client.request(
             "session.resume",
             { session_id: persistentId },
             { timeoutMs: 300_000 },
           ),
-        ),
-      onResumed: (gatewaySessionId, persistentId) => {
-        rememberSessionMapping(gatewaySessionId, persistentId);
-        mirrorSessionWorkspaceMapping(gatewaySessionId, persistentId);
-        store.set(gwSessionIdAtom, gatewaySessionId);
+        );
+        redeliverOpenRequests((resumed as { open_requests?: unknown }).open_requests);
+        return {
+          session_id: resumed.session_id,
+          resumed: resumed.resumed,
+          messages: (resumed as { messages?: unknown[] }).messages,
+          running: (resumed as { running?: boolean }).running,
+        };
+      },
+      bind: (persistentId, runtimeSessionId) => client.bindSession(persistentId, runtimeSessionId),
+      replay: (persistentId, runtimeSessionId, onDegraded) =>
+        client.replaySession(persistentId, runtimeSessionId, {
+          onDegraded: (reason) => onDegraded?.(reason),
+        }),
+      hydrate: ({ runtimeSessionId, persistentId, messages, running }) => {
+        store.set(hydrateSessionTimelineAtom, {
+          sessionId: runtimeSessionId,
+          messages: legacySessionMessagesToHermesUIMessages(messages as SessionMessage[]),
+          running,
+        });
+        debugBus.push({
+          type: "gateway",
+          level: "info",
+          summary: `timeline restored from resume snapshot for ${persistentId}`,
+          payload: { session_id: persistentId, messages: messages.length },
+        });
+      },
+      epochGeneration: () => client.epochGeneration(),
+      consumeSnapshotRequest: (persistentId) => client.consumeSnapshotRequest(persistentId),
+      onResumed: (runtimeSessionId, persistentId) => {
+        rememberSessionMapping(runtimeSessionId, persistentId);
+        mirrorSessionWorkspaceMapping(runtimeSessionId, persistentId);
+        store.set(gwSessionIdAtom, runtimeSessionId);
       },
       onResumeFailed: (error) => {
         // A timeout or temporarily wedged backend does not mean the persistent
@@ -142,14 +176,75 @@ async function reattachActiveSessionAfterReconnect(): Promise<void> {
           store.set(terminateAllStreamsAtom);
         }
       },
+      onError: (persistentId, error) => {
+        debugBus.push({
+          type: "gateway",
+          level: "warn",
+          summary: `reconnect recovery failed for ${persistentId}: ${errorMessage(error)}`,
+          payload: { session_id: persistentId },
+        });
+      },
     });
+    if (result.status === "snapshot") {
+      debugBus.push({
+        type: "gateway",
+        level: "warn",
+        summary: `session replay untrusted after reconnect (${result.reason}); snapshot applied`,
+        payload: { session_id: result.persistentId, reason: result.reason },
+      });
+    }
   } finally {
-    reattachInFlight = false;
     void invalidateSessionListQueries(appQueryClient);
   }
 }
 
-function ensureGatewayBridge(): GatewaySubscriptionBridge {
+// 重连后不只补当前会话：所有已订阅过的会话都要先 resume 重新登记订阅，
+// 再按本地水位补帧（legacy 的运行时 session_id 换连接就失效）。
+// 重连风暴里 onState(open) 会连着触发：跑着的那一轮结束后必须再补跑一次，
+// 不能静默丢掉第二次（第二次对应的是更新的连接）。
+async function replaySubscribedSessionPass(): Promise<void> {
+  const store = getDefaultStore();
+  const client = getGatewayClient();
+  const activeNow = store.get(gwSessionIdAtom);
+  const activePersistent = activeNow ? (resolvePersistentSessionId(activeNow) ?? activeNow) : null;
+  const summary = await replaySubscribedSessions({
+    trackedSessions: () => client.trackedSessions(),
+    isActive: (sessionId) => sessionId === activePersistent,
+    resume: async (persistentId) => {
+      const result = SessionResumeResult.parse(
+        await client.request("session.resume", { session_id: persistentId }, { timeoutMs: 300_000 }),
+      );
+      redeliverOpenRequests((result as { open_requests?: unknown }).open_requests);
+      const resumed = result.resumed ?? persistentId;
+      rememberSessionMapping(result.session_id, resumed);
+      mirrorSessionWorkspaceMapping(result.session_id, resumed);
+      return result;
+    },
+    bind: (persistentId, runtimeSessionId) => client.bindSession(persistentId, runtimeSessionId),
+    replay: (persistentId, runtimeSessionId) => client.replaySession(persistentId, runtimeSessionId),
+    hydrate: ({ runtimeSessionId, messages, running }) => {
+      store.set(hydrateSessionTimelineAtom, {
+        sessionId: runtimeSessionId,
+        messages: legacySessionMessagesToHermesUIMessages(messages as SessionMessage[]),
+        running,
+      });
+    },
+    onError: (sessionId, error) => {
+      debugBus.push({
+        type: "gateway",
+        level: "info",
+        summary: `reconnect replay skipped for ${sessionId}: ${errorMessage(error)}`,
+      });
+    },
+  });
+  if (summary.replayed > 0 || summary.degraded.length > 0 || summary.failed.length > 0) {
+    void invalidateSessionListQueries(appQueryClient);
+  }
+}
+
+const replaySubscribedSessionsAfterReconnect = createCoalescedTask(replaySubscribedSessionPass);
+
+export function ensureGatewayBridge(): GatewaySubscriptionBridge {
   if (gatewayBridge) return gatewayBridge;
 
   const bridge: GatewaySubscriptionBridge = {
@@ -188,6 +283,7 @@ function ensureGatewayBridge(): GatewaySubscriptionBridge {
     forEachSubscriber(bridge, (sub) => sub.setConnectionState(state));
     if (state === "open") {
       void invalidateSessionListQueries(appQueryClient);
+      void replaySubscribedSessionsAfterReconnect();
       // First connect after page load: check if a persisted gateway session
       // ID was restored, and if so attempt to reattach the in-flight turn.
       // As a fallback, also check activeSessionIdAtom (persisted via Bug #2)
@@ -204,13 +300,13 @@ function ensureGatewayBridge(): GatewaySubscriptionBridge {
           }
         }
         if (restoredGwId) {
-          void reattachActiveSessionAfterReconnect();
+          void recoverAfterGatewayReconnect();
         }
       }
     }
     if (state === "open" && needsResumeOnReopen) {
       needsResumeOnReopen = false;
-      void reattachActiveSessionAfterReconnect();
+      void recoverAfterGatewayReconnect();
     }
   });
   bridge.unsubscribeAny = client.onAny((event) => {
@@ -280,6 +376,9 @@ async function rememberPersistentSessionKey(gatewaySessionId: string) {
     if (result.session_key) {
       rememberSessionMapping(gatewaySessionId, result.session_key);
       mirrorSessionWorkspaceMapping(gatewaySessionId, result.session_key);
+      // 创建出来的会话只有运行时 id，学到持久 id 后立刻把它绑上：水位改记在持久 id
+      // 名下，重连时不会按「运行时 id」和「持久 id」两条记录各 resume 一次。
+      getGatewayClient().bindSession(result.session_key, gatewaySessionId);
     }
   } catch {}
 }
@@ -303,6 +402,32 @@ export interface CreateBranchSessionOptions {
 export interface CreatedBranchSession {
   runtimeSessionId: string;
   storedSessionId: string;
+}
+
+/**
+ * Attach this socket to a session's event stream **without** touching the UI's
+ * "current session" state: no `gwSessionId` pin, no chat-runtime reset, no
+ * navigation. The global prompt layer uses it so approvals / clarify questions
+ * raised by turns started elsewhere (WeChat, cron, kanban) pop a card on
+ * whatever route the user is on.
+ */
+export async function subscribeSessionQuietly(persistentSessionId: string): Promise<string> {
+  ensureGatewayBridge();
+  const result = SessionResumeResult.parse(
+    await getGatewayClient().request(
+      "session.resume",
+      { session_id: persistentSessionId },
+      // Resuming can rebuild the agent server-side; the gateway runs it in its
+      // long-handler pool. Never block the caller on a wedged backend.
+      { timeoutMs: 60_000 },
+    ),
+  );
+  redeliverOpenRequests((result as { open_requests?: unknown }).open_requests);
+  const resumed = result.resumed ?? persistentSessionId;
+  rememberSessionMapping(result.session_id, resumed);
+  mirrorSessionWorkspaceMapping(result.session_id, resumed);
+  getGatewayClient().bindSession(resumed, result.session_id);
+  return result.session_id;
 }
 
 export function useGateway() {
@@ -442,8 +567,10 @@ export function useGateway() {
       "session.resume",
     );
     const resumed = result.resumed ?? persistentSessionId;
+    redeliverOpenRequests((result as { open_requests?: unknown }).open_requests);
     rememberSessionMapping(result.session_id, resumed);
     mirrorSessionWorkspaceMapping(result.session_id, resumed);
+    getGatewayClient().bindSession(resumed, result.session_id);
     setGwSessionId(result.session_id);
     resetChatSession(result.session_id);
     // Compression rotated the conversation onto a new continuation: the backend

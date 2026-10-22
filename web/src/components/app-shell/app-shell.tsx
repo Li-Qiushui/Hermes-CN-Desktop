@@ -1,8 +1,11 @@
 import type { ReactNode } from "react";
+import { useEffect } from "react";
 import { useAtom } from "jotai";
 import { PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { IconButton } from "@hermes/shared-ui";
 import { appSidebarVisibleAtom } from "@/stores/ui";
+import { startGlobalPromptPump } from "@/lib/prompt-pump";
+import { GlobalPromptLayer } from "@/components/prompts/global-prompt-layer";
 import { AppTopBar } from "./app-top-bar";
 import { AppSidebar } from "./app-sidebar";
 import { AppStatusBar } from "./app-status-bar";
@@ -17,6 +20,8 @@ interface AppShellProps {
 export function AppShell({ children }: AppShellProps) {
   const [sidebarVisible, setSidebarVisible] = useAtom(appSidebarVisibleAtom);
   const toggleLabel = sidebarVisible ? "隐藏左侧边栏" : "显示左侧边栏";
+
+  useEffect(() => startGlobalPromptPump(), []);
 
   return (
     <div className={s.shell} data-sidebar-visible={sidebarVisible ? "true" : "false"}>
@@ -53,6 +58,7 @@ export function AppShell({ children }: AppShellProps) {
       <div className={s.statusbarSlot}>
         <AppStatusBar />
       </div>
+      <GlobalPromptLayer />
       <IconButton
         className={s.sidebarRestoreButton}
         data-visible={sidebarVisible ? "false" : "true"}

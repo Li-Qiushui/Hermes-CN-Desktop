@@ -4,8 +4,8 @@
 }
 
 .dialog {
-  width: min(760px, calc(100vw - 48px));
-  max-width: min(760px, calc(100vw - 48px));
+  width: min(760px, calc(100% - 48px));
+  max-width: min(760px, calc(100% - 48px));
   max-height: min(720px, calc(100vh - 48px));
   overflow-y: auto;
   border-color: color-mix(in srgb, var(--h-accent) 24%, var(--h-line));
@@ -207,8 +207,8 @@
 
 @media (max-width: 680px) {
   .dialog {
-    width: calc(100vw - 24px);
-    max-width: calc(100vw - 24px);
+    width: calc(100% - 24px);
+    max-width: calc(100% - 24px);
     max-height: calc(100vh - 24px);
   }
 

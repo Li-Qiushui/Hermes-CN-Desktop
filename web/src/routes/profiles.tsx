@@ -55,7 +55,11 @@ export function ProfilesRoute() {
   const handleSetActive = (name: string) => {
     if (name === active) return;
     if (runtime.isAttached()) {
-      setSwitchError("当前使用外部 Hermes，桌面端不会重启或切换目标端 Profile。");
+      setSwitchError(
+        runtime.isRemote()
+          ? "当前使用远程 Hermes，桌面端不会重启或切换目标端 Profile。"
+          : "Profile 由本机内核管理，桌面端不会重启或切换已有内核的 Profile。",
+      );
       return;
     }
     setSwitchError(null);
@@ -86,7 +90,7 @@ export function ProfilesRoute() {
               leadingIcon={<Wand2 size={16} />}
               onClick={() => navigate("/profiles/new")}
             >
-              Build 向导
+              新建向导
             </Button>
             <Button
               variant="solid"
@@ -108,8 +112,19 @@ export function ProfilesRoute() {
 
       {runtime.isAttached() ? (
         <div className={s.warning}>
-          <strong>外部 Hermes 由目标端管理 Profile。</strong>
-          <span>可以查看和编辑目标端的档案内容，但桌面端不会主动切换 Profile 或重启外部进程。</span>
+          {runtime.isRemote() ? (
+            <>
+              <strong>远程 Hermes 由目标端管理 Profile。</strong>
+              <span>可以查看和编辑目标端的档案内容，但桌面端不会主动切换 Profile 或重启远程进程。</span>
+            </>
+          ) : (
+            <>
+              <strong>Profile 由本机内核管理。</strong>
+              <span>
+                当前连接的是已有本机内核，桌面端不会替它切换 Profile，也不会重启这个由其它进程启动的内核。
+              </span>
+            </>
+          )}
         </div>
       ) : runtime.platform !== "web" ? (
         <div className={s.warning}>
@@ -152,7 +167,7 @@ export function ProfilesRoute() {
         <div className={s.errorState}>
           <strong>无法读取档案列表。</strong>
           <p>
-            {errorObj instanceof Error ? errorObj.message : "未知错误"}。常见原因：dashboard 没启动，或 hermes 还没装 hermes-agent-cn fork（<code>/api/profiles/active</code> 是 fork P-008 加的）。
+            {errorObj instanceof Error ? errorObj.message : "未知错误"}。常见原因：dashboard 没启动，或当前 Hermes 版本太旧、还没有 <code>/api/profiles/active</code> 这个接口。
           </p>
         </div>
       ) : isLoading ? (

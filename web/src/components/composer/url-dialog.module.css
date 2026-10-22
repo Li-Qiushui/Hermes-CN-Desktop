@@ -12,7 +12,7 @@
 .modal {
   display: flex;
   flex-direction: column;
-  width: min(460px, calc(100vw - 32px));
+  width: min(460px, calc(100% - 32px));
   border: 1px solid var(--h-line);
   border-radius: 0;
   background: var(--h-bg-input);
@@ -107,7 +107,7 @@
   height: 72px;
   border-radius: 0;
   overflow: hidden;
-  background: var(--h-bg);
+  background: var(--h-bg-app);
   border: 1px solid var(--h-line-soft);
 }
 

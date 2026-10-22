@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { useAtomValue } from "jotai";
 import { RotateCcw } from "lucide-react";
 import { LoadingIndicator, StatusDot } from "@hermes/shared-ui";
+import { useKernelStatus } from "@/hooks/use-kernel-status";
 import { useStatus } from "@/hooks/use-status";
 import { useModelInfo } from "@/hooks/use-config";
 import { useSessions } from "@/hooks/use-sessions";
@@ -11,6 +12,11 @@ import { useRuntimeInfo } from "@/hooks/use-runtime-update";
 import { chatRuntimeBySessionAtom } from "@/stores/chat";
 import { dashboardPortFromUrl, dashboardUrlFromInputs } from "@/lib/dashboard-url";
 import { openExternalUrl } from "@/lib/external-links";
+import {
+  connectionTargetLabel,
+  isKernelDegraded,
+  kernelRestartDisabledReason,
+} from "@/lib/kernel-status";
 import { isSessionRunning, mergeLiveRuntimeSessions } from "@/lib/session-activity";
 import { formatTokens } from "@/lib/format";
 import { formatContext, formatModelShort } from "@/lib/model-label";
@@ -21,6 +27,7 @@ import {
 } from "@/lib/gateway-restart";
 import { detectHostOS, runtime } from "@/lib/runtime";
 import { buildSidebarVersionRows } from "./sidebar-version-tag";
+import { KernelDegradedStat } from "./kernel-degraded-stat";
 import s from "./app-status-bar.module.css";
 
 export function AppStatusBar() {
@@ -29,6 +36,7 @@ export function AppStatusBar() {
   const { data: sessions } = useSessions(20);
   const { data: analytics } = useAnalytics(1);
   const { data: runtimeInfo } = useRuntimeInfo();
+  const { data: kernelStatus } = useKernelStatus();
   const runtimeBySession = useAtomValue(chatRuntimeBySessionAtom);
   const gatewayRestart = useGatewayRestartAction();
 
@@ -39,7 +47,11 @@ export function AppStatusBar() {
   });
   const port = dashboardPortFromUrl(dashboardUrl);
   const gatewayOnline = !!status && !statusError;
-  const modeLabel = runtime.isRemote() ? "远端 Hermes" : "外部 Hermes";
+  const kernelRemote = kernelStatus ? kernelStatus.mode === "remote" : runtime.isRemote();
+  const modeLabel = connectionTargetLabel(kernelRemote);
+  const kernelRestartBlocked = kernelRestartDisabledReason(kernelStatus);
+  const restartBlocked = kernelRestartBlocked !== null;
+  const kernelDegraded = isKernelDegraded(kernelStatus);
 
   const modelLabel = formatModelShort(modelInfo?.model);
   const contextLabel = formatContext(
@@ -90,13 +102,13 @@ export function AppStatusBar() {
           className={s.restartButton}
           data-state={gatewayRestart.phase}
           onClick={() => void gatewayRestart.restart()}
-          disabled={gatewayRestart.locked || runtime.isAttached()}
-          title={runtime.isAttached() ? "外部 Hermes 的 Gateway 由目标端管理" : restartTitle}
-          aria-label={runtime.isAttached() ? "外部 Hermes 的 Gateway 由目标端管理" : restartTitle}
+          disabled={gatewayRestart.locked || restartBlocked}
+          title={kernelRestartBlocked ?? restartTitle}
+          aria-label={kernelRestartBlocked ?? restartTitle}
           aria-busy={gatewayRestart.busy}
         >
           {gatewayRestart.busy ? <LoadingIndicator size="xs" /> : <RotateCcw size={12} aria-hidden="true" />}
-          <span>{gatewayRestartButtonLabel(gatewayRestart.phase)}</span>
+          <span className={s.restartLabel}>{gatewayRestartButtonLabel(gatewayRestart.phase)}</span>
         </button>
         <span className={s.srOnly} aria-live="polite">
           {gatewayRestart.message ?? ""}
@@ -122,40 +134,46 @@ export function AppStatusBar() {
         )}
       </span>
       <span className={s.sep} />
-      <span className={s.stat}>
+      {kernelDegraded && (
+        <>
+          <KernelDegradedStat status={kernelStatus} />
+          <span className={s.sep} />
+        </>
+      )}
+      <span className={s.stat} data-prio="1">
         <span className={s.lbl}>模型</span>
         <span className={s.val}>{modelLabel}</span>
       </span>
       <span className={s.sep} />
-      <span className={s.stat}>
+      <span className={s.stat} data-prio="2">
         <span className={s.lbl}>上下文</span>
         <span className={s.val}>{contextLabel}</span>
       </span>
       <span className={s.sep} />
-      <span className={s.stat} title={versionRows.kernel}>
+      <span className={s.stat} data-prio="2" title={versionRows.kernel}>
         <span className={s.lbl}>内核</span>
         <span className={s.val}>{versionRows.kernelLine.version}</span>
         <span className={s.val}>{versionRows.kernelLine.commit}</span>
       </span>
       <span className={s.sep} />
-      <span className={s.stat} title={versionRows.ui}>
+      <span className={s.stat} data-prio="3" title={versionRows.ui}>
         <span className={s.lbl}>界面</span>
         <span className={s.val}>{versionRows.uiLine.version}</span>
         <span className={s.val}>{versionRows.uiLine.commit}</span>
       </span>
 
       <div className={s.right}>
-        <span className={s.stat}>
+        <span className={s.stat} data-prio="1">
           <span className={s.lbl}>进行中</span>
           <span className={s.val}>{runningCount}</span>
         </span>
         <span className={s.sep} />
-        <span className={s.stat} data-tone={errorsLast24h > 0 ? "warn" : undefined}>
+        <span className={s.stat} data-prio="2" data-tone={errorsLast24h > 0 ? "warn" : undefined}>
           <span className={s.lbl}>24H 错误</span>
           <span className={s.val}>{errorsLast24h}</span>
         </span>
         <span className={s.sep} />
-        <span className={s.stat}>
+        <span className={s.stat} data-prio="3">
           <span className={s.lbl}>今日 Tokens</span>
           <span className={s.val}>{formatTokens(todayTokens)}</span>
         </span>

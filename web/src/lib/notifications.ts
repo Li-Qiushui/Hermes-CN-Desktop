@@ -79,18 +79,29 @@ export function decideNotification(input: {
   if (!sessionId) return null;
   const payload = payloadOf(event);
 
-  if (event.type === "approval.request") {
+  if (event.type === "approval.request" || event.type === "clarify.request") {
     if (!settings.onApproval) return null;
-    const rawId = payload.request_id;
-    const requestId =
+    const rawId = payload.prompt_id ?? payload.request_id;
+    const promptId =
       typeof rawId === "string" || typeof rawId === "number" ? String(rawId) : "";
-    // 没有可靠 request_id 就无法去重，宁可不通知也不在重放时轰炸。
-    if (!requestId) return null;
-    if (prevRuntime?.pendingApprovals.some((item) => item.requestId === requestId)) {
-      return null;
-    }
-    const dedupeKey = `approval:${sessionId}:${requestId}`;
+    // 没有可靠 prompt_id 就无法去重，宁可不通知也不在重放时轰炸。
+    if (!promptId) return null;
+    const alreadyPending =
+      prevRuntime?.pendingPrompts?.some((item) => item.promptId === promptId) ??
+      prevRuntime?.pendingApprovals.some((item) => item.requestId === promptId) ??
+      false;
+    if (alreadyPending) return null;
+    const dedupeKey = `approval:${sessionId}:${promptId}`;
     if (alreadyNotified(dedupeKey)) return null;
+    if (event.type === "clarify.request") {
+      const question = firstNonEmptyString([payload.question]);
+      return {
+        dedupeKey,
+        kind: "approval",
+        title: "任务在等你回答",
+        body: truncate(question ?? "任务遇到问题，需要你选一个答案", MAX_BODY_CHARS),
+      };
+    }
     const detail = firstNonEmptyString([payload.command, payload.reason, payload.description]);
     return {
       dedupeKey,

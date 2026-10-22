@@ -7,14 +7,16 @@ import {
   summarizeExternalConnectionHealth,
 } from "@/lib/external-connection-health";
 import { runtime } from "@/lib/runtime";
+import { connectionTargetLabel } from "@/lib/kernel-status";
 import s from "./connection-target-notice.module.css";
 
 export function ConnectionTargetNotice() {
   const navigate = useNavigate();
   const attached = runtime.isAttached();
   const remote = runtime.isRemote();
+  const label = connectionTargetLabel(remote);
   const runtimeConfig = window.__HERMES_RUNTIME__;
-  const target = runtimeConfig?.dashboardApiBaseUrl ?? runtimeConfig?.apiBaseUrl ?? "外部目标";
+  const target = runtimeConfig?.dashboardApiBaseUrl ?? runtimeConfig?.apiBaseUrl ?? label;
   const desktop = window.hermesDesktop;
   const canCheck = attached && Boolean(desktop?.getConnectionConfig && desktop?.testConnectionConfig);
   const health = useQuery({
@@ -43,9 +45,9 @@ export function ConnectionTargetNotice() {
   if (!attached) return null;
 
   const summary = health.data
-    ? summarizeExternalConnectionHealth(health.data)
+    ? summarizeExternalConnectionHealth(health.data, label)
     : health.error
-      ? externalConnectionFailureSummary(health.error)
+      ? externalConnectionFailureSummary(health.error, label)
       : null;
   const failed = summary?.ok === false;
 
@@ -71,7 +73,7 @@ export function ConnectionTargetNotice() {
             className={s.iconButton}
             onClick={() => void health.refetch()}
             disabled={health.isFetching}
-            aria-label="重新检测外部 Hermes Agent"
+            aria-label={`重新检测${label}`}
             title="重新检测"
           >
             {health.isFetching

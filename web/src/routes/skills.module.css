@@ -815,13 +815,13 @@
 .emptyStateMessage {
   margin-top: 12px;
   max-width: 560px;
-  color: var(--h-text-muted);
+  color: var(--h-text-3);
   font-size: 12px;
   line-height: 20px;
 }
 
 .copyDialog {
-  width: min(520px, calc(100vw - 32px));
+  width: min(520px, calc(100% - 32px));
 }
 
 .copyDialogHeader {
@@ -838,7 +838,7 @@
 
 .copyDialogDescription {
   margin-top: 8px;
-  color: var(--h-text-muted);
+  color: var(--h-text-3);
   font-size: 13px;
   line-height: 20px;
 }

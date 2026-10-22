@@ -2037,7 +2037,7 @@
 .customProviderModal {
   display: flex;
   flex-direction: column;
-  width: min(520px, calc(100vw - 32px));
+  width: min(520px, calc(100% - 32px));
   max-height: min(640px, calc(100vh - 48px));
   border: 1px solid var(--h-line);
   border-radius: 0;
@@ -3385,6 +3385,57 @@ button.providerWebsiteButton:hover {
   font-family: var(--h-font-mono);
 }
 
+.connDegraded {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin: 12px 0 20px;
+  padding: 14px;
+  border: 1px solid var(--h-color-warning-border);
+  border-radius: 8px;
+  background: var(--h-color-warning-bg);
+  color: var(--h-color-warning-fg);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.connDegraded > svg {
+  margin-top: 2px;
+  flex-shrink: 0;
+}
+
+.connDegradedBody {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.connDegradedTitle {
+  color: var(--h-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.connDegradedText {
+  margin-top: 4px;
+  color: var(--h-text-2);
+  font-size: 13px;
+}
+
+.connDegradedError {
+  margin-top: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--h-line);
+  border-radius: 8px;
+  background: var(--h-bg-chip);
+  color: var(--h-text-2);
+  font-family: var(--h-font-mono);
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .connBrowserCompanion {
   display: flex;
   align-items: center;
@@ -3403,7 +3454,7 @@ button.providerWebsiteButton:hover {
 
 .connBrowserCompanionTitle {
   margin-bottom: 4px;
-  color: var(--h-text-1);
+  color: var(--h-text);
   font-size: 13px;
   font-weight: 650;
 }
@@ -3469,6 +3520,112 @@ button.providerWebsiteButton:hover {
   color: var(--h-text-2);
 }
 
+/* ── Connection sections (本机内核 / 远程连接 / 诊断) ────────────────── */
+.connSection {
+  margin-top: 16px;
+  padding: 16px;
+  border: 1px solid var(--h-line);
+  border-radius: 8px;
+  background: var(--h-bg-pane);
+}
+
+.connSectionHead {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin-bottom: 12px;
+}
+
+.connSectionHead svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--h-accent);
+}
+
+.connSectionHead h3 {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--h-text);
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.connSectionHead p {
+  margin: 4px 0 0;
+  color: var(--h-text-3);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.connSectionBadge {
+  padding: 2px 8px;
+  border-radius: 8px;
+  background: var(--h-bg-chip);
+  color: var(--h-text-2);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.connKvGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 10px 16px;
+  margin: 0;
+}
+
+.connKv {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.connKvLabel {
+  color: var(--h-text-3);
+  font-size: 13px;
+}
+
+.connKvValue {
+  color: var(--h-text);
+  font-family: var(--h-font-mono);
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.connKvValue[data-tone="warn"] {
+  color: var(--h-warn);
+}
+
+.connKvValue[data-tone="error"] {
+  color: var(--h-err);
+}
+
+.connSectionActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.connSectionNote {
+  margin-top: 8px;
+  color: var(--h-text-3);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+@media (max-width: 720px) {
+  .connKvGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+
 /* ── Danger zone (high-risk operations, e.g. YOLO mode) ──────────────── */
 .dangerZone {
   margin-top: 28px;
@@ -3524,7 +3681,7 @@ button.providerWebsiteButton:hover {
 .dangerDialog {
   padding: 20px 24px 20px;
   gap: 16px;
-  max-width: min(440px, calc(100vw - 32px));
+  max-width: min(440px, calc(100% - 32px));
 }
 
 .dangerDialogTitle {
