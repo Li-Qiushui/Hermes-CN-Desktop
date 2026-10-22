@@ -3,8 +3,7 @@ import { Moon, Search, Sun } from "lucide-react";
 import { useTheme } from "@hermes/shared-ui";
 import { useCommandPalette } from "@/components/command-palette";
 import { HermesLogoMark } from "@/components/brand/hermes-logo-mark";
-import { ConnectionChip } from "./connection-chip";
-import { ModelChip } from "./model-chip";
+import { StatusChip } from "./status-chip";
 import { TOP_TABS } from "./use-active-top-tab";
 import s from "./app-top-bar.module.css";
 
@@ -60,8 +59,7 @@ export function AppTopBar() {
       </button>
 
       <div className={s.actions}>
-        <ConnectionChip />
-        <ModelChip />
+        <StatusChip />
         <button
           type="button"
           className={s.iconBtn}

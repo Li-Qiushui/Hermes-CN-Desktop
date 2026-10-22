@@ -1,23 +1,28 @@
 import { useState } from "react";
-import { ChevronDown, RotateCcw, ShieldCheck } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import { ArrowRight, ChevronDown, RotateCcw, ShieldCheck } from "lucide-react";
 import { Popover, StatusDot } from "@hermes/shared-ui";
 import { useStatus } from "@/hooks/use-status";
 import { useRuntimeInfo } from "@/hooks/use-runtime-update";
 import { useGatewayRestartAction } from "@/hooks/use-gateway-restart";
+import { useModelInfo } from "@/hooks/use-config";
 import { dashboardPortFromUrl, dashboardUrlFromInputs } from "@/lib/dashboard-url";
+import { formatContext, formatModelShort } from "@/lib/model-label";
 import { runtime } from "@/lib/runtime";
 import { buildSidebarVersionRows } from "./sidebar-version-tag";
 import s from "./app-top-bar.module.css";
 
 /**
- * 顶栏连接卡：外部 / 远端内核 + 端口，点开是连接详情与两个维护动作
- * （健康检查 / 重连网关）。
+ * 顶栏状态卡：连接状态 + 端口 + 当前模型 + 上下文长度合成一枚 chip，
+ * 点开是连接详情、模型信息与两个维护动作。
  */
-export function ConnectionChip() {
+export function StatusChip() {
   const [open, setOpen] = useState(false);
+  const navigate = useNavigate();
   const { data: status, isError: statusError, isFetching, refetch } = useStatus();
   const { data: runtimeInfo } = useRuntimeInfo();
   const gatewayRestart = useGatewayRestartAction();
+  const { data: modelInfo } = useModelInfo();
 
   const dashboardUrl = dashboardUrlFromInputs({
     healthUrl: status?.gateway_health_url,
@@ -31,6 +36,18 @@ export function ConnectionChip() {
   const restartDisabled = gatewayRestart.busy || gatewayRestart.locked;
   const tone = gatewayOnline ? "success" : statusError || status ? "danger" : "neutral";
 
+  const modelLabel = formatModelShort(modelInfo?.model);
+  const hasModel = modelLabel !== "—";
+  const contextLabel = formatContext(
+    modelInfo?.effective_context_length ?? modelInfo?.auto_context_length,
+  );
+  const connectionLabel = gatewayOnline ? port : statusError ? "未连接" : "连接中";
+  const summary = [
+    `${modeLabel} ${gatewayOnline ? port : "未连接"}`,
+    hasModel ? `模型 ${modelLabel}` : null,
+    `上下文 ${contextLabel}`,
+  ].filter(Boolean).join(" · ");
+
   return (
     <Popover.Root open={open} onOpenChange={setOpen}>
       <Popover.Trigger asChild>
@@ -38,13 +55,22 @@ export function ConnectionChip() {
           type="button"
           className={s.chip}
           data-state={open ? "open" : undefined}
-          title={`${modeLabel} Hermes · ${dashboardUrl}`}
-          aria-label={`${modeLabel} Hermes 连接 ${dashboardUrl}`}
+          title={`${summary} · ${dashboardUrl}`}
+          aria-label={`${modeLabel} Hermes 连接 ${dashboardUrl}，模型 ${modelLabel}，上下文 ${contextLabel}`}
           data-no-drag
         >
           <StatusDot tone={tone} size="sm" />
-          <span>{modeLabel}</span>
-          <span className={s.chipMeta}>{port}</span>
+          <span className={s.chipStatus} data-tone={gatewayOnline ? undefined : "danger"}>
+            {connectionLabel}
+          </span>
+          <span className={s.chipSep} aria-hidden="true">·</span>
+          {hasModel ? (
+            <>
+              <span className={s.chipValue}>{modelLabel}</span>
+              <span className={s.chipSep} aria-hidden="true">·</span>
+            </>
+          ) : null}
+          <span className={s.chipMeta}>{contextLabel}</span>
           <ChevronDown size={12} className={s.chipChevron} aria-hidden="true" />
         </button>
       </Popover.Trigger>
@@ -74,6 +100,30 @@ export function ConnectionChip() {
               {gatewayOnline ? "正常" : "异常"}
             </span>
           </div>
+          <hr className={s.popDivider} />
+          <div className={s.popRow}>
+            <span className={s.popLabel}>模型</span>
+            <span className={s.popValue} title={modelLabel}>
+              {modelLabel}
+            </span>
+          </div>
+          <div className={s.popRow}>
+            <span className={s.popLabel}>上下文</span>
+            <span className={s.popValue} title={contextLabel}>
+              {contextLabel}
+            </span>
+          </div>
+          <button
+            type="button"
+            className={s.popLink}
+            onClick={() => {
+              setOpen(false);
+              navigate("/models");
+            }}
+          >
+            <span>打开 配置 · 模型</span>
+            <ArrowRight size={12} aria-hidden="true" />
+          </button>
           <hr className={s.popDivider} />
           <div className={s.popActions}>
             <button

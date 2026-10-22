@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { AlertTriangle, Cable, Globe2, RefreshCw } from "lucide-react";
+import { AlertTriangle, RefreshCw } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { LoadingIndicator } from "@hermes/shared-ui";
 import {
@@ -49,25 +49,22 @@ export function ConnectionTargetNotice() {
       : null;
   const failed = summary?.ok === false;
 
+  // 连接正常时不再占用工作台顶部横幅：右上 chip 与底部状态栏已表达同一信息。
+  // 只在真的连不上/需要重新登录时才出现告警。
+  if (!failed) return null;
+
   return (
-    <div className={s.notice} data-tone={failed ? "error" : "normal"} role={failed ? "alert" : "status"}>
-      {failed
-        ? <AlertTriangle size={16} aria-hidden="true" />
-        : remote
-          ? <Globe2 size={12} aria-hidden="true" />
-          : <Cable size={12} aria-hidden="true" />}
+    <div className={s.notice} data-tone="error" role="alert">
+      <AlertTriangle size={16} aria-hidden="true" />
       <div className={s.copy}>
         <div className={s.heading}>
-          <strong>
-            {summary?.title ?? (health.isFetching ? "正在检查外部 Hermes Agent…" : remote ? "远端服务器 Hermes" : "本机其他 Hermes")}
-          </strong>
+          <strong>{summary.title}</strong>
           <span>{target}</span>
         </div>
-        {failed && <div className={s.detail}>{summary.detail}</div>}
+        <div className={s.detail}>{summary.detail}</div>
       </div>
       <div className={s.actions}>
-        {!failed && !health.isFetching && <em>本页修改将作用于外部目标</em>}
-        {failed && <button type="button" onClick={() => navigate("/connection")}>检查连接设置</button>}
+        <button type="button" onClick={() => navigate("/connection")}>检查连接设置</button>
         {canCheck && (
           <button
             type="button"
