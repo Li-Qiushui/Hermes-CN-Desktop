@@ -139,6 +139,38 @@ async function fetchBackendVersion(apiBaseUrl?: string): Promise<BackendVersionI
   return parseBackendVersion(await response.json());
 }
 
+/**
+ * 探活容错：内核可能还在 bind，或 Rust 侧还没把地址写进状态（首次启动 / 绿色版）。
+ * 这类「连不上」的错误值得退避重试几次，别第一次失败就把界面钉死在离线壳。
+ */
+function isRetryableProbeError(error: unknown): boolean {
+  const message = (error instanceof Error ? error.message : String(error ?? "")).toLowerCase();
+  return (
+    message.includes("backend unreachable") ||
+    message.includes("builder error") ||
+    message.includes("connection refused") ||
+    message.includes("error sending request") ||
+    message.includes("client error (connect)") ||
+    message.includes("no backend address")
+  );
+}
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+async function fetchBackendVersionWithRetry(apiBaseUrl?: string, attempts = 3) {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await fetchBackendVersion(apiBaseUrl);
+    } catch (error) {
+      lastError = error;
+      if (!isRetryableProbeError(error) || attempt === attempts - 1) throw error;
+      await sleep(400 * (attempt + 1));
+    }
+  }
+  throw lastError;
+}
+
 export async function verifyBackendVersion(
   apiBaseUrl?: string,
   options: VersionCheckOptions = {},
@@ -156,7 +188,7 @@ export async function verifyBackendVersion(
   }
 
   try {
-    const info = await fetchBackendVersion(apiBaseUrl);
+    const info = await fetchBackendVersionWithRetry(apiBaseUrl);
     if (info.version !== expected) {
       state = {
         kind: "mismatch",

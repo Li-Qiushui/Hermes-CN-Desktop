@@ -86,6 +86,29 @@ describe("version-check", () => {
       expect(globalThis.fetch).not.toHaveBeenCalled();
     });
 
+    it("空地址或内核刚启动时退避重试，而不是第一次失败就判成不可达", async () => {
+      let calls = 0;
+      const request = vi.fn(async () => {
+        calls += 1;
+        if (calls < 3) {
+          throw new Error("backend unreachable: no backend address configured yet");
+        }
+        return {
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ version: EXPECTED_BACKEND_VERSION, name: "hermes-agent" }),
+        };
+      });
+      window.hermesDesktop = { ...window.hermesDesktop, windowType: "tauri", request } as never;
+
+      const state = await verifyBackendVersion(undefined, { connectionMode: "local" });
+
+      expect(calls).toBe(3);
+      expect(state.kind).toBe("ok");
+    });
+
     it("returns mismatch when backend version differs", async () => {
       stubDesktopRequest({ version: "0.18.0", name: "hermes-agent" });
 

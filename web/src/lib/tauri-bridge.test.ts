@@ -366,6 +366,19 @@ describe("isTauriDevMode", () => {
     })).toBe(false);
   });
 
+  it("外部内核启动瞬间（apiBaseUrl 仍为空）也要等 ready，别判成后端不可达", () => {
+    expect(shouldWaitForManagedRuntimeConfig({
+      apiBaseUrl: "",
+      connectionMode: "local",
+      backendReady: false,
+    })).toBe(true);
+    expect(shouldWaitForManagedRuntimeConfig({
+      apiBaseUrl: "",
+      connectionMode: "remote",
+      backendReady: false,
+    })).toBe(true);
+  });
+
   it("exposes persisted guide state command", async () => {
     await installTauriBridge();
 

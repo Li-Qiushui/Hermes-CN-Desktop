@@ -1084,6 +1084,10 @@ export function shouldWaitForManagedRuntimeConfig(config: {
 }): boolean {
   if (config.apiBaseUrl) return false;
   const connectionMode = config.connectionMode ?? "managed";
+  // 外部内核（本机 9119 / 远程）启动瞬间还没填好 apiBaseUrl：Rust 正在探活并抓
+  // session token，读到的仍是空串。必须等 ready 事件，否则版本探测拿空地址发请求，
+  // 界面会被判成「外部 Hermes 暂时无法连接」（首次启动 / 绿色版必现）。
+  if (connectionMode === "local" || connectionMode === "remote") return true;
   const managedRuntimeShouldRun =
     connectionMode === "managed" &&
     (config.managedRuntimeDesiredState ?? "running") === "running";
