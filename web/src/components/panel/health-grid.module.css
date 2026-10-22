@@ -322,7 +322,7 @@
 .itemLabel {
   min-width: 0;
   color: var(--h-text-3);
-  font-size: 11.5px;
+  font-size: 13px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -340,14 +340,14 @@
 
 .itemValue[data-mono="true"] {
   font-family: var(--h-font-mono, ui-monospace, "SF Mono", monospace);
-  font-size: 12.5px;
+  font-size: 13px;
   font-weight: 560;
 }
 
 .itemSub {
   color: var(--h-text-3);
   font-family: var(--h-font-mono, ui-monospace, "SF Mono", monospace);
-  font-size: 11px;
+  font-size: 13px;
   line-height: 1.45;
   white-space: nowrap;
   overflow: hidden;
@@ -357,7 +357,7 @@
 .itemDetail {
   margin: 0;
   color: var(--h-text-2);
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.55;
   display: -webkit-box;
   -webkit-line-clamp: 3;
@@ -371,7 +371,7 @@
   align-items: center;
   gap: 4px;
   color: var(--h-accent);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 560;
 }
 
@@ -496,7 +496,7 @@
 .asideText {
   margin: 12px 0 0;
   color: var(--h-text-2);
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.65;
 }
 
@@ -506,11 +506,17 @@
   justify-content: space-between;
   gap: 12px;
   width: 100%;
-  padding: 12px 16px;
-  margin-bottom: 12px;
+  min-height: 40px;
+  box-sizing: border-box;
+  padding: 0 16px;
+  margin-bottom: 0;
   background: var(--h-bg-pane);
   border: 1px solid var(--h-line);
   border-radius: 0;
+}
+
+.compactHead[data-expanded="true"] {
+  margin-bottom: 12px;
 }
 
 .compactHead[data-tone="warn"] {
@@ -526,19 +532,63 @@
   align-items: center;
   gap: 8px;
   min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
 }
 
 .compactTitle {
   color: var(--h-text);
-  font-size: 12.5px;
+  font-size: 13px;
   font-weight: 600;
   white-space: nowrap;
+}
+
+.compactCount {
+  flex: 0 0 auto;
+  color: var(--h-text-2);
+  font-family: var(--h-font-mono);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.compactNames {
+  min-width: 0;
+  color: var(--h-text-3);
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.compactToggle {
+  flex: 0 0 auto;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--h-text-2);
+  font-family: var(--h-font-cn);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 0.12s, background 0.12s;
+}
+
+.compactToggle:hover {
+  color: var(--h-text);
+  background: var(--h-bg-chip);
+}
+
+.compactToggle:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--h-accent) 45%, transparent);
+  outline-offset: 1px;
 }
 
 .compactSub,
 .compactMeta {
   color: var(--h-text-3);
-  font-size: 11.5px;
+  font-size: 13px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -568,7 +618,7 @@
 }
 
 .root[data-variant="compact"] .itemValue[data-mono="true"] {
-  font-size: 12px;
+  font-size: 13px;
 }
 
 @media (max-width: 1180px) {

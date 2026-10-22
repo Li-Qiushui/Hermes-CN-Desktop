@@ -1,4 +1,4 @@
-import { useMemo, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -41,6 +41,7 @@ interface HealthItem {
   id: string;
   group: HealthGroup;
   label: string;
+  short: string;
   tone: Tone;
   value: string;
   sub?: string;
@@ -288,6 +289,7 @@ function MetricCard({ metric }: { metric: HealthMetric }) {
 
 export function HealthGrid({ variant = "compact" }: HealthGridProps) {
   const navigate = useNavigate();
+  const [detailsOpen, setDetailsOpen] = useState<boolean | null>(null);
   const statusQuery = useStatus();
   const modelInfoQuery = useModelInfo();
   const configQuery = useConfig();
@@ -343,6 +345,7 @@ export function HealthGrid({ variant = "compact" }: HealthGridProps) {
     const items: HealthItem[] = [
       {
         id: "gateway",
+        short: "Dashboard",
         group: "runtime",
         label: "Dashboard / Gateway",
         tone: statusQuery.isError ? "err" : dashboardReachable ? "ok" : "warn",
@@ -362,6 +365,7 @@ export function HealthGrid({ variant = "compact" }: HealthGridProps) {
       },
       {
         id: "home",
+        short: "Home",
         group: "runtime",
         label: "Hermes Home",
         tone: status?.hermes_home ? "ok" : "warn",
@@ -374,6 +378,7 @@ export function HealthGrid({ variant = "compact" }: HealthGridProps) {
       },
       {
         id: "model",
+        short: "模型",
         group: "model",
         label: "默认模型",
         tone: modelName !== "—" ? "ok" : "warn",
@@ -388,6 +393,7 @@ export function HealthGrid({ variant = "compact" }: HealthGridProps) {
       },
       {
         id: "token",
+        short: "凭证",
         group: "model",
         label: "模型凭证",
         tone: envQuery.isError ? "err" : env ? (anyModelCredential ? "ok" : "warn") : "warn",
@@ -411,6 +417,7 @@ export function HealthGrid({ variant = "compact" }: HealthGridProps) {
       },
       {
         id: "provider",
+        short: "Provider",
         group: "model",
         label: "Provider 配置",
         tone: providersOk ? "ok" : "warn",
@@ -440,6 +447,7 @@ export function HealthGrid({ variant = "compact" }: HealthGridProps) {
       },
       {
         id: "skills",
+        short: "Skills",
         group: "extensions",
         label: "Skills",
         tone: skillsQuery.isError ? "err" : skills ? (skillsEnabled > 0 ? "ok" : "warn") : "warn",
@@ -451,15 +459,16 @@ export function HealthGrid({ variant = "compact" }: HealthGridProps) {
       },
       {
         id: "mcp",
+        short: "MCP",
         group: "extensions",
         label: "MCP 服务",
-        tone: mcpQuery.isError ? "err" : mcp ? (mcpTotal === 0 ? "warn" : "ok") : "warn",
+        tone: mcpQuery.isError ? "err" : mcp ? "ok" : "warn",
         value: mcpQuery.isError ? "未接入" : mcp ? `${mcpEnabled} / ${mcpTotal}` : "检测中",
-        sub: mcpQuery.isError ? "需重启 dashboard" : mcp ? (mcpTotal === 0 ? "未配置" : `共 ${mcpTotal} 个`) : "正在读取 MCP 列表",
+        sub: mcpQuery.isError ? "需重启 dashboard" : mcp ? (mcpTotal === 0 ? "未配置（可选）" : `共 ${mcpTotal} 个`) : "正在读取 MCP 列表",
         detail: mcpQuery.isError
           ? "Dashboard 没有返回 MCP 列表，通常由后端尚未加载或运行时状态过期导致。"
           : mcpTotal === 0
-            ? "没有 MCP 不影响基础聊天；需要外部工具时再接入。"
+            ? "零配置属正常状态：没有 MCP 不影响基础聊天，需要外部工具时再接入。"
             : "启用的 MCP 会作为外部工具能力参与任务执行。",
         mono: Boolean(mcp),
       },
@@ -519,6 +528,8 @@ export function HealthGrid({ variant = "compact" }: HealthGridProps) {
   };
 
   const attentionItems = health.items.filter((item) => item.tone !== "ok");
+  const compactExpanded = detailsOpen ?? health.counts.err > 0;
+  const compactNames = health.items.map((item) => item.short).join(" · ");
   const groups: HealthGroup[] = ["runtime", "model", "extensions"];
 
   if (variant === "page") {
@@ -653,17 +664,35 @@ export function HealthGrid({ variant = "compact" }: HealthGridProps) {
 
   return (
     <section className={s.root} data-variant="compact">
-      <div className={s.compactHead} data-tone={health.overallTone}>
+      <div
+        className={s.compactHead}
+        data-tone={health.overallTone}
+        data-expanded={compactExpanded ? "true" : undefined}
+      >
         <div className={s.compactMain}>
           <Dot tone={health.overallTone} />
           <span className={s.compactTitle}>{health.summaryLabel}</span>
-          <span className={s.compactSub}>{health.summarySub}</span>
+          <span className={s.compactCount}>
+            {health.counts.ok}/{health.items.length}
+          </span>
+          <span className={s.compactNames} title={compactNames}>
+            {compactNames}
+          </span>
         </div>
-        <span className={s.compactMeta}>实时状态</span>
+        <button
+          type="button"
+          className={s.compactToggle}
+          aria-expanded={compactExpanded}
+          onClick={() => setDetailsOpen(!compactExpanded)}
+        >
+          {compactExpanded ? "收起" : "详情"}
+        </button>
       </div>
-      <div className={s.itemGrid}>
-        {health.items.map((item) => <HealthItemCard key={item.id} item={item} onNavigate={navigate} />)}
-      </div>
+      {compactExpanded ? (
+        <div className={s.itemGrid}>
+          {health.items.map((item) => <HealthItemCard key={item.id} item={item} onNavigate={navigate} />)}
+        </div>
+      ) : null}
     </section>
   );
 }
