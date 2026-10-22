@@ -1,7 +1,8 @@
-import { useQuery, useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { useQuery, useInfiniteQuery, useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { fetchJSON, deleteJSON, postJSON } from "@/lib/transport";
 import { useActiveProfileName } from "@/hooks/use-profiles";
 import { unpinSessions } from "@/lib/session-ui-state";
+import { nextSessionPageOffset } from "@/lib/sidebar-session-lists";
 import {
   MessagesResponse,
   MutationOkResponse,
@@ -70,16 +71,24 @@ export async function fetchSessionMessages(id: string, signal?: AbortSignal): Pr
   return await fetchSessionLogMessages(id, signal) ?? result;
 }
 
+export type SessionListOrder = "created" | "recent";
+
 export interface UseSessionsOptions {
   // When true, ask the Rust proxy to keep archived sessions (annotated with
   // `archived: true`) instead of stripping them. Defaults to false so the
   // sidebar and other callers keep the active-only list. See history page.
   includeArchived?: boolean;
+  // Restrict the list to sessions whose stored cwd lives under this path.
+  // Forwarded as `cwd_prefix`; the sidebar's per-workspace view uses it.
+  cwdPrefix?: string;
+  order?: SessionListOrder;
+  enabled?: boolean;
 }
 
 interface FetchSessionsOptions extends UseSessionsOptions {
   signal?: AbortSignal;
 }
+
 
 /**
  * Machine-run session sources hidden from the workbench recents list, mirroring
@@ -93,9 +102,19 @@ interface FetchSessionsOptions extends UseSessionsOptions {
  */
 const RECENTS_EXCLUDED_SOURCES = ["acp", "cron", "kanban", "oneshot", "subagent", "tool"];
 
-function sessionsPath(limit: number, offset: number, includeArchived: boolean): string {
+function sessionsPath(
+  limit: number,
+  offset: number,
+  includeArchived: boolean,
+  cwdPrefix?: string,
+  order?: SessionListOrder,
+): string {
   const excluded = RECENTS_EXCLUDED_SOURCES.map(encodeURIComponent).join(",");
-  return `/api/sessions?limit=${limit}&offset=${offset}${includeArchived ? "&include_archived=true" : ""}&exclude_sources=${excluded}`;
+  const prefix = cwdPrefix?.trim()
+    ? `&cwd_prefix=${encodeURIComponent(cwdPrefix.trim())}`
+    : "";
+  const orderParam = order ? `&order=${order}` : "";
+  return `/api/sessions?limit=${limit}&offset=${offset}${includeArchived ? "&include_archived=true" : ""}${prefix}${orderParam}&exclude_sources=${excluded}`;
 }
 
 function normalizePageNumber(value: number, fallback: number): number {
@@ -111,10 +130,12 @@ export async function fetchSessionsList(
   const requestedLimit = normalizePageNumber(limit, 50);
   const requestedOffset = normalizePageNumber(offset, 0);
   const includeArchived = opts.includeArchived ?? false;
+  const cwdPrefix = opts.cwdPrefix?.trim() || undefined;
+  const order = opts.order;
 
   const firstLimit = Math.min(requestedLimit, SESSIONS_API_PAGE_LIMIT);
   const first = await fetchJSON(
-    sessionsPath(firstLimit, requestedOffset, includeArchived),
+    sessionsPath(firstLimit, requestedOffset, includeArchived, cwdPrefix, order),
     { signal: opts.signal },
     SessionsResponse,
   );
@@ -132,7 +153,7 @@ export async function fetchSessionsList(
   while (remaining > 0) {
     const pageLimit = Math.min(remaining, SESSIONS_API_PAGE_LIMIT);
     const page = await fetchJSON(
-      sessionsPath(pageLimit, nextOffset, includeArchived),
+      sessionsPath(pageLimit, nextOffset, includeArchived, cwdPrefix, order),
       { signal: opts.signal },
       SessionsResponse,
     );
@@ -158,9 +179,60 @@ export async function fetchSessionsList(
 export function useSessions(limit = 50, offset = 0, opts: UseSessionsOptions = {}) {
   const profile = useActiveProfileName();
   const includeArchived = opts.includeArchived ?? false;
+  const cwdPrefix = opts.cwdPrefix?.trim() ?? "";
+  const order = opts.order ?? "created";
   return useQuery<SessionsResponse>({
-    queryKey: ["sessions", profile, limit, offset, includeArchived ? "all" : "active"],
-    queryFn: ({ signal }) => fetchSessionsList(limit, offset, { includeArchived, signal }),
+    queryKey: [
+      "sessions",
+      profile,
+      limit,
+      offset,
+      includeArchived ? "all" : "active",
+      cwdPrefix,
+      order,
+    ],
+    queryFn: ({ signal }) =>
+      fetchSessionsList(limit, offset, {
+        includeArchived,
+        cwdPrefix: cwdPrefix || undefined,
+        order: opts.order,
+        signal,
+      }),
+    enabled: opts.enabled ?? true,
+  });
+}
+
+/**
+ * Offset-paged variant backing the sidebar's "加载更多". Each page is a real
+ * `limit=&offset=` request (page 1 → offset 0, page 2 → offset 20, …); pages
+ * are deduped by id because new sessions arriving at the head of the list
+ * shift the window between requests.
+ */
+export function usePagedSessions(pageSize = 20, opts: UseSessionsOptions = {}) {
+  const profile = useActiveProfileName();
+  const includeArchived = opts.includeArchived ?? false;
+  const cwdPrefix = opts.cwdPrefix?.trim() ?? "";
+  const order = opts.order ?? "";
+  return useInfiniteQuery({
+    queryKey: [
+      "sessions",
+      "paged",
+      profile,
+      pageSize,
+      includeArchived ? "all" : "active",
+      cwdPrefix,
+      order,
+    ],
+    initialPageParam: 0,
+    queryFn: ({ signal, pageParam }) =>
+      fetchSessionsList(pageSize, normalizePageNumber(Number(pageParam), 0), {
+        includeArchived,
+        cwdPrefix: cwdPrefix || undefined,
+        order: opts.order,
+        signal,
+      }),
+    getNextPageParam: (_lastPage, allPages) => nextSessionPageOffset(allPages) ?? undefined,
+    enabled: opts.enabled ?? true,
   });
 }
 

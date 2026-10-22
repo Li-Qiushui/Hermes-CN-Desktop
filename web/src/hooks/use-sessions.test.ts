@@ -163,6 +163,77 @@ describe("fetchSessionsList", () => {
       "/api/sessions?limit=50&offset=0&exclude_sources=acp,cron,kanban,oneshot,subagent,tool",
     ]);
   });
+
+  it("forwards cwd_prefix for the workspace view", async () => {
+    mockFetchJSON.mockResolvedValue(sessionsPage(["s1"], 1, 20, 0));
+
+    await fetchSessionsList(20, 0, { cwdPrefix: "D:/Project/枢纽" });
+
+    expect(mockFetchJSON.mock.calls.map((call) => call[0])).toEqual([
+      `/api/sessions?limit=20&offset=0&cwd_prefix=${encodeURIComponent("D:/Project/枢纽")}&exclude_sources=acp,cron,kanban,oneshot,subagent,tool`,
+    ]);
+  });
+
+  it("keeps cwd_prefix on every aggregated page", async () => {
+    mockFetchJSON.mockImplementation(async (path: string) => {
+      if (path.includes("offset=0")) {
+        return sessionsPage(Array.from({ length: 100 }, (_, i) => `s${i}`), 130, 100, 0);
+      }
+      return sessionsPage(Array.from({ length: 30 }, (_, i) => `s${i + 100}`), 130, 30, 100);
+    });
+
+    const result = await fetchSessionsList(130, 0, { cwdPrefix: "D:/Project/a" });
+
+    expect(result.sessions).toHaveLength(130);
+    expect(mockFetchJSON.mock.calls.map((call) => call[0])).toEqual([
+      `/api/sessions?limit=100&offset=0&cwd_prefix=${encodeURIComponent("D:/Project/a")}&exclude_sources=acp,cron,kanban,oneshot,subagent,tool`,
+      `/api/sessions?limit=30&offset=100&cwd_prefix=${encodeURIComponent("D:/Project/a")}&exclude_sources=acp,cron,kanban,oneshot,subagent,tool`,
+    ]);
+  });
+
+  it("omits cwd_prefix when the prefix is blank", async () => {
+    mockFetchJSON.mockResolvedValue(sessionsPage(["s1"], 1, 20, 0));
+
+    await fetchSessionsList(20, 0, { cwdPrefix: "   " });
+
+    expect(mockFetchJSON.mock.calls.map((call) => call[0])).toEqual([
+      "/api/sessions?limit=20&offset=0&exclude_sources=acp,cron,kanban,oneshot,subagent,tool",
+    ]);
+  });
+
+  it("forwards order=recent so buckets follow latest activity", async () => {
+    mockFetchJSON.mockResolvedValue(sessionsPage(["s1"], 1, 20, 0));
+
+    await fetchSessionsList(20, 0, { order: "recent" });
+
+    expect(mockFetchJSON.mock.calls.map((call) => call[0])).toEqual([
+      "/api/sessions?limit=20&offset=0&order=recent&exclude_sources=acp,cron,kanban,oneshot,subagent,tool",
+    ]);
+  });
+
+  it("keeps order=recent on every aggregated page", async () => {
+    mockFetchJSON.mockImplementation(async (path: string) => {
+      if (path.includes("offset=0")) {
+        return sessionsPage(Array.from({ length: 100 }, (_, i) => `s${i}`), 130, 100, 0);
+      }
+      return sessionsPage(Array.from({ length: 30 }, (_, i) => `s${i + 100}`), 130, 30, 100);
+    });
+
+    await fetchSessionsList(130, 0, { order: "recent" });
+
+    expect(mockFetchJSON.mock.calls.map((call) => call[0])).toEqual([
+      "/api/sessions?limit=100&offset=0&order=recent&exclude_sources=acp,cron,kanban,oneshot,subagent,tool",
+      "/api/sessions?limit=30&offset=100&order=recent&exclude_sources=acp,cron,kanban,oneshot,subagent,tool",
+    ]);
+  });
+
+  it("keeps the kernel default ordering when order is not requested", async () => {
+    mockFetchJSON.mockResolvedValue(sessionsPage(["s1"], 1, 20, 0));
+
+    await fetchSessionsList(20, 0);
+
+    expect(mockFetchJSON.mock.calls[0]?.[0]).not.toContain("order=");
+  });
 });
 
 describe("fetchSessionMessages 历史回退", () => {

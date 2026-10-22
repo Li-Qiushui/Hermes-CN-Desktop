@@ -8,8 +8,11 @@ import {
   drainLiveMessagesAtom,
   markSessionInterruptedAtom,
   markStreamsReconnectingAtom,
+  pendingPromptsAtom,
+  promptsOf,
   recoverCompletedTurnFromStoredMessagesAtom,
   reduceGatewayEvent,
+  removePromptAtom,
   resetStreamStateAtom,
   startPromptAtom,
   terminateAllStreamsAtom,
@@ -551,7 +554,7 @@ describe("chat runtime reducer", () => {
       {
         type: "approval.request",
         session_id: "s1",
-        payload: { request_id: "r1", command: "rm -rf tmp" },
+        payload: { prompt_id: "r1", execution_generation: 1, command: "rm -rf tmp", choices: ["once", "deny"] },
       },
       10,
     );
@@ -560,12 +563,13 @@ describe("chat runtime reducer", () => {
       {
         type: "approval.request",
         session_id: "s1",
-        payload: { request_id: "r2", command: "git push" },
+        payload: { prompt_id: "r2", execution_generation: 1, command: "git push", choices: ["once", "deny"] },
       },
       20,
     );
 
     expect(second.pendingApprovals.map((item) => item.requestId)).toEqual(["r1", "r2"]);
+    expect(promptsOf(second).map((item) => item.promptId)).toEqual(["r1", "r2"]);
   });
 
   it("gateway.disconnected resets streaming sessions to error", () => {
@@ -758,7 +762,12 @@ describe("full conversation lifecycle", () => {
     rt = reduceGatewayEvent(rt, {
       type: "approval.request",
       session_id: "s1",
-      payload: { request_id: "r1", command: "rm -rf tmp" },
+      payload: {
+        prompt_id: "r1",
+        execution_generation: 2,
+        command: "rm -rf tmp",
+        choices: ["once", "deny"],
+      },
     }, 30);
 
     expect(rt.pendingApprovals).toHaveLength(1);
@@ -1386,5 +1395,124 @@ describe("lastActivityAt (stall watchdog source)", () => {
       const assistants = runtime.messages.filter((m) => m.role === "assistant");
       expect(assistants).toHaveLength(0);
     });
+  });
+});
+
+describe("global prompts", () => {
+  const approvalEvent = (promptId: string, generation = 1) => ({
+    type: "approval.request",
+    session_id: "s1",
+    payload: {
+      kind: "approval",
+      prompt_id: promptId,
+      execution_generation: generation,
+      command: "rm -rf build",
+      description: "删除构建产物",
+      choices: ["once", "deny"],
+    },
+  });
+
+  const clarifyEvent = (promptId: string, generation = 1) => ({
+    type: "clarify.request",
+    session_id: "s1",
+    payload: {
+      kind: "clarify",
+      prompt_id: promptId,
+      execution_generation: generation,
+      question: "先做前端还是后端？",
+      choices: ["前端", "后端"],
+      multi_select: false,
+    },
+  });
+
+  it("reduces an approval.request into pendingPrompts and the legacy projection", () => {
+    const rt = reduceGatewayEvent(createEmptyChatRuntime(1), approvalEvent("p1") as any, 10);
+    expect(promptsOf(rt)).toEqual([
+      expect.objectContaining({
+        kind: "approval",
+        promptId: "p1",
+        generation: 1,
+        sessionId: "s1",
+        command: "rm -rf build",
+        description: "删除构建产物",
+        choices: ["once", "deny"],
+        receivedAt: 10,
+      }),
+    ]);
+    expect(rt.pendingApprovals).toEqual([
+      { requestId: "p1", sessionId: "s1", command: "rm -rf build", reason: "删除构建产物" },
+    ]);
+  });
+
+  it("reduces a clarify.request without polluting the approval projection", () => {
+    const rt = reduceGatewayEvent(createEmptyChatRuntime(1), clarifyEvent("q1") as any, 10);
+    expect(promptsOf(rt)).toEqual([
+      expect.objectContaining({
+        kind: "clarify",
+        promptId: "q1",
+        question: "先做前端还是后端？",
+        choices: ["前端", "后端"],
+        multiSelect: false,
+      }),
+    ]);
+    expect(rt.pendingApprovals).toEqual([]);
+  });
+
+  it("ignores a prompt event whose payload has no prompt_id", () => {
+    const rt = reduceGatewayEvent(
+      createEmptyChatRuntime(1),
+      { type: "approval.request", session_id: "s1", payload: { request_id: "legacy" } } as any,
+      10,
+    );
+    expect(promptsOf(rt)).toEqual([]);
+  });
+
+  it("removes a prompt on approval.settled / clarify.settled by prompt_id", () => {
+    let rt = reduceGatewayEvent(createEmptyChatRuntime(1), approvalEvent("p1") as any, 10);
+    rt = reduceGatewayEvent(rt, clarifyEvent("q1") as any, 20);
+    expect(promptsOf(rt)).toHaveLength(2);
+
+    rt = reduceGatewayEvent(
+      rt,
+      { type: "approval.settled", session_id: "s1", payload: { prompt_id: "p1", execution_generation: 1 } } as any,
+      30,
+    );
+    expect(promptsOf(rt).map((item) => item.promptId)).toEqual(["q1"]);
+
+    rt = reduceGatewayEvent(
+      rt,
+      { type: "clarify.settled", session_id: "s1", payload: { prompt_id: "q1", execution_generation: 1 } } as any,
+      40,
+    );
+    expect(promptsOf(rt)).toEqual([]);
+  });
+
+  it("does not replace a newer prompt with the same id twice", () => {
+    let rt = reduceGatewayEvent(createEmptyChatRuntime(1), approvalEvent("p1") as any, 10);
+    rt = reduceGatewayEvent(rt, approvalEvent("p1") as any, 20);
+    expect(promptsOf(rt)).toHaveLength(1);
+    expect(promptsOf(rt)[0].receivedAt).toBe(20);
+  });
+
+  it("aggregates pendingPromptsAtom across sessions oldest first", () => {
+    const store = createStore();
+    store.set(chatRuntimeBySessionAtom, {
+      s2: reduceGatewayEvent(createEmptyChatRuntime(1), {
+        ...clarifyEvent("q2"),
+        session_id: "s2",
+      } as any, 50),
+      s1: reduceGatewayEvent(createEmptyChatRuntime(1), approvalEvent("p1") as any, 10),
+    });
+    expect(store.get(pendingPromptsAtom).map((item) => item.promptId)).toEqual(["p1", "q2"]);
+  });
+
+  it("drops a prompt with removePromptAtom and keeps the compat projection in sync", () => {
+    const store = createStore();
+    store.set(chatRuntimeBySessionAtom, {
+      s1: reduceGatewayEvent(createEmptyChatRuntime(1), approvalEvent("p1") as any, 10),
+    });
+    store.set(removePromptAtom, { sessionId: "s1", promptId: "p1" });
+    expect(store.get(pendingPromptsAtom)).toEqual([]);
+    expect(store.get(chatRuntimeBySessionAtom).s1.pendingApprovals).toEqual([]);
   });
 });

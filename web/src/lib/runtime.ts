@@ -3,6 +3,7 @@ import {
   resetVersionCheck,
   type BackendRecoveryReason,
 } from "./version-check";
+import { debugBus } from "./debug-bus";
 import type {
   ApplyConnectionResult,
   BackupExportResult,
@@ -443,6 +444,11 @@ declare global {
       /** "managed" for desktop-owned runtime, "local"/"remote" for attached backends. */
       connectionMode?: ConnectionMode;
       backendReady?: boolean;
+      /** Kernel came up but its managed spawn failed; the app runs on the
+       *  configured fallback address and can be repaired from Settings. */
+      backendDegraded?: boolean;
+      /** Message from the `degraded` runtime-status phase, for the UI to show. */
+      backendDegradedReason?: string;
       /** Why only the offline repair shell is mounted instead of the backend UI. */
       backendRecoveryReason?: BackendRecoveryReason;
       guideState?: import("@hermes/protocol").GuideState;
@@ -476,6 +482,9 @@ declare global {
       exportSessionJson?(input: ExportSessionJsonInput): Promise<ExportSessionJsonResult>;
       exportDebugBundle?(input?: ExportDebugBundleInput): Promise<ExportDebugBundleResult>;
       environmentCheck?(): Promise<EnvironmentCheckResult>;
+      kernelStatus?(): Promise<import("./kernel-status").KernelStatusView>;
+      /** Re-run the attach-or-spawn pipeline and return the resulting kernel status. */
+      retryKernel?(): Promise<import("./kernel-status").KernelStatusView>;
       codingAgentsCheck?(): Promise<CodingAgentsCheckResult>;
       checkDesktopUpdate?(): Promise<DesktopUpdateManifestFetchResult>;
       getUpdateConfig?(): Promise<import("@hermes/protocol").UpdateConfigSnapshot>;
@@ -585,6 +594,55 @@ export function applyHostOSToDOM(os: HostOS = detectHostOS()): void {
   if (document.body) document.body.dataset.hermesHostOs = os;
 }
 
+/**
+ * web/dev 形态每次内核重启都会换 `__HERMES_SESSION_TOKEN__`（dashboard 启动时
+ * 重新生成），页面加载时抓到的那个随即失效。重连前重新取一次，否则每次升级
+ * 都被 401 拒绝，只能靠用户硬刷新才能恢复（官方桌面端也是每次拨号重新取真
+ * 凭证，见 electron/dashboard-token.ts）。
+ *
+ * 打包态没有 `/__hermes_token` 这个 dev 端点，404 就当"没有新 token"，静默退回。
+ *
+ * token fetch 挂在重连回调里：挂住就是永不重连，所以用 AbortController 卡住 8s 上界，
+ * 失败/超时只记 warn（debugBus）并退回现有 URL。
+ */
+export const TOKEN_FETCH_TIMEOUT_MS = 8_000;
+
+async function refreshWebSessionToken(): Promise<void> {
+  if (typeof window === "undefined") return;
+  if (window.__HERMES_RUNTIME__?.sessionToken) return;
+  if (typeof fetch !== "function") return;
+  const controller = typeof AbortController === "function" ? new AbortController() : null;
+  const timer = controller
+    ? setTimeout(() => controller.abort(), TOKEN_FETCH_TIMEOUT_MS)
+    : null;
+  try {
+    const response = await fetch("/__hermes_token", {
+      cache: "no-store",
+      ...(controller ? { signal: controller.signal } : {}),
+    });
+    if (!response.ok) return;
+    const body = (await response.json()) as { token?: unknown };
+    if (typeof body?.token === "string" && body.token) {
+      window.__HERMES_SESSION_TOKEN__ = body.token;
+    }
+  } catch (error) {
+    debugBus.push({
+      type: "rest",
+      level: "warn",
+      summary: `session token refresh failed: ${describeError(error)}`,
+    });
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function describeError(error: unknown): string {
+  if (error instanceof Error) {
+    return error.name === "AbortError" ? `timeout after ${TOKEN_FETCH_TIMEOUT_MS}ms` : error.message;
+  }
+  return String(error);
+}
+
 export const runtime = {
   get platform(): RuntimePlatform {
     if (window.__HERMES_RUNTIME__?.platform) return window.__HERMES_RUNTIME__.platform;
@@ -624,6 +682,11 @@ export const runtime = {
     return window.__HERMES_RUNTIME__?.backendReady ?? true;
   },
 
+  /** Kernel came up degraded (managed spawn failed, manual fallback in use). */
+  isBackendDegraded(): boolean {
+    return window.__HERMES_RUNTIME__?.backendDegraded ?? false;
+  },
+
   getGuideState(): import("@hermes/protocol").GuideState {
     return window.__HERMES_RUNTIME__?.guideState ?? "completed";
   },
@@ -638,6 +701,10 @@ export const runtime = {
       && window.__HERMES_RUNTIME__.connectionMode !== "remote") {
       resetVersionCheck();
       window.__HERMES_RUNTIME__.backendReady = result.backendReady;
+      if (result.backendReady) {
+        window.__HERMES_RUNTIME__.backendDegraded = false;
+        window.__HERMES_RUNTIME__.backendDegradedReason = undefined;
+      }
       if (!result.backendReady && result.desiredState !== "running") {
         deferBackendVersionCheckForOfflineRuntime();
         window.__HERMES_RUNTIME__.backendRecoveryReason = "managed-runtime-offline";
@@ -690,8 +757,15 @@ export const runtime = {
           }
         }
         return result.gatewayUrl;
-      } catch {}
+      } catch (error) {
+        debugBus.push({
+          type: "rest",
+          level: "warn",
+          summary: `gateway url refresh failed: ${describeError(error)}`,
+        });
+      }
     }
+    await refreshWebSessionToken();
     return this.getGatewayUrl();
   },
 

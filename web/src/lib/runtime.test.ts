@@ -1,5 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { runtime } from "./runtime";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { runtime, TOKEN_FETCH_TIMEOUT_MS } from "./runtime";
+import { debugBus } from "./debug-bus";
 import {
   deferBackendVersionCheckForOfflineRuntime,
   getVersionCheckState,
@@ -201,5 +202,76 @@ describe("managed runtime control state", () => {
       kind: "deferred",
       reason: "managed-runtime-offline",
     });
+  });
+});
+
+describe("runtime.refreshGatewayUrl 的 token 获取", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+    debugBus.clear();
+  });
+
+  function stubWebWindow(token: string) {
+    (globalThis as any).window = {
+      location: { href: "http://127.0.0.1:9545/tasks/s1", protocol: "http:" },
+      __HERMES_SESSION_TOKEN__: token,
+    };
+  }
+
+  it("token fetch 挂住时按超时放弃，退回现有 URL 不阻塞重连", async () => {
+    vi.useFakeTimers();
+    stubWebWindow("old-token");
+    let aborted = false;
+    const hang = vi.fn(
+      (_url: string, init?: { signal?: AbortSignal }) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            aborted = true;
+            const error = new Error("The operation was aborted");
+            error.name = "AbortError";
+            reject(error);
+          });
+        }),
+    );
+    vi.stubGlobal("fetch", hang);
+
+    const pending = runtime.refreshGatewayUrl();
+    await vi.advanceTimersByTimeAsync(TOKEN_FETCH_TIMEOUT_MS - 1);
+    expect(aborted).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(pending).resolves.toBe("ws://127.0.0.1:9545/api/ws?token=old-token");
+    expect(aborted).toBe(true);
+    expect(
+      debugBus.snapshot().some((entry) => entry.level === "warn" && entry.summary.includes("token refresh failed")),
+    ).toBe(true);
+  });
+
+  it("token fetch 成功时把新 token 换成拨号用的 URL", async () => {
+    stubWebWindow("old-token");
+    const ok = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ token: "rotated-token" }),
+    } as unknown as Response);
+    vi.stubGlobal("fetch", ok);
+
+    await expect(runtime.refreshGatewayUrl()).resolves.toBe(
+      "ws://127.0.0.1:9545/api/ws?token=rotated-token",
+    );
+    expect(ok).toHaveBeenCalledTimes(1);
+  });
+
+  it("桌面桥刷新失败时记 warn 并退回现有 URL", async () => {
+    (globalThis as any).window = {
+      location: { href: "http://127.0.0.1:9545/tasks/s1", protocol: "http:" },
+      __HERMES_RUNTIME__: { gatewayUrl: "ws://old/api/ws?token=old-token", sessionToken: "old-token" },
+      hermesDesktop: { refreshGatewayUrl: vi.fn().mockRejectedValue(new Error("ipc down")) },
+    };
+
+    await expect(runtime.refreshGatewayUrl()).resolves.toBe("ws://old/api/ws?token=old-token");
+    expect(
+      debugBus.snapshot().some((entry) => entry.summary.includes("gateway url refresh failed")),
+    ).toBe(true);
   });
 });

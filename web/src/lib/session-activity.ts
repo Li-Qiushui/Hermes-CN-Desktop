@@ -2,6 +2,12 @@ import type { HermesMessagePart, HermesUIMessage, SessionSummary } from "@hermes
 import { resolvePersistentSessionId, resolveSessionIdAliases } from "@/lib/session-map";
 import type { ChatRuntimeBySession, ChatSessionRuntime } from "@/stores/chat";
 
+function hasPendingPrompt(runtime: ChatSessionRuntime): boolean {
+  const prompts = runtime.pendingPrompts?.length ?? 0;
+  const approvals = runtime.pendingApprovals?.length ?? 0;
+  return prompts > 0 || approvals > 0;
+}
+
 export function isRuntimeRunning(runtime: ChatSessionRuntime | undefined): boolean {
   if (!runtime) return false;
   if (
@@ -14,7 +20,7 @@ export function isRuntimeRunning(runtime: ChatSessionRuntime | undefined): boole
   return (
     runtime.streamStatus === "connecting" ||
     runtime.streamStatus === "streaming" ||
-    runtime.pendingApprovals.length > 0 ||
+    hasPendingPrompt(runtime) ||
     runtime.messages.some((message) =>
       message.parts.some((part) => part.type === "tool" && part.state === "running"),
     )
@@ -65,7 +71,7 @@ export function streamSilenceMs(
   now: number = Date.now(),
 ): number | null {
   if (!runtime || !isRuntimeRunning(runtime)) return null;
-  if (runtime.pendingApprovals.length > 0) return null;
+  if (hasPendingPrompt(runtime)) return null;
   if (hasRunningTool(runtime)) return null;
   const last = runtime.lastActivityAt ?? runtime.turnStartedAt ?? runtime.updatedAt;
   if (typeof last !== "number" || !Number.isFinite(last)) return null;
@@ -94,7 +100,7 @@ export function isSessionRunning(
   const runtime = findRuntimeForSession(session.id, runtimeBySession);
   if (runtime) return isRuntimeRunning(runtime);
 
-  return session.is_active === true && session.message_count === 0;
+  return session.is_active === true && (session.message_count ?? 0) > 0;
 }
 
 function unixSecondsFromRuntimeMs(value: number | undefined): number {

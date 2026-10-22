@@ -36,7 +36,7 @@ describe("session activity", () => {
     __resetUiStoreForTests();
   });
 
-  it("does not treat completed recent sessions as running", () => {
+  it("treats an active session that already has messages as running", () => {
     expect(
       isSessionRunning(
         session({
@@ -44,10 +44,10 @@ describe("session activity", () => {
           message_count: 2,
         }),
       ),
-    ).toBe(false);
+    ).toBe(true);
   });
 
-  it("keeps empty active sessions in running state as a first-turn fallback", () => {
+  it("does not treat an empty active draft session as running", () => {
     expect(
       isSessionRunning(
         session({
@@ -55,7 +55,7 @@ describe("session activity", () => {
           message_count: 0,
         }),
       ),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("uses live runtime state over the API active heuristic", () => {

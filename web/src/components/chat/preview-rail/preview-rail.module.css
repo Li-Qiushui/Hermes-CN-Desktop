@@ -636,7 +636,7 @@
 }
 
 .diffLine[data-kind="del"] {
-  background: var(--h-danger-soft, var(--h-warn-soft));
+  background: var(--h-err-soft, var(--h-warn-soft));
   color: var(--h-danger);
 }
 

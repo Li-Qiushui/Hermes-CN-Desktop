@@ -16,6 +16,7 @@ import {
   imagePartFromSource,
 } from "@/lib/message-images";
 import { notifyFromGatewayEvent } from "@/lib/notifications";
+import { parsePromptEvent, type Prompt } from "@/lib/prompt-contract";
 import { resolvePersistentSessionId } from "@/lib/session-map";
 import { readUiValue, recordUiTurnStats, removeUiValue, stableTextHash, writeUiValue } from "@/lib/ui-store";
 import { routeCliDelegationGatewayEventAtom } from "@/stores/cli-delegations";
@@ -56,12 +57,71 @@ export interface PendingApproval {
   reason?: string;
 }
 
+/**
+ * One unanswered gateway prompt (blocking approval or clarify). Mirrors the
+ * kernel's `approval.request` / `clarify.request` payload plus the session it
+ * belongs to and the time it arrived; `sessionId` is the *live* gateway
+ * session id, which is what `approval.respond` / `clarify.respond` take.
+ */
+export interface PendingPrompt {
+  kind: "approval" | "clarify" | "value" | "setup";
+  promptId: string;
+  generation: number;
+  sessionId: string;
+  command?: string;
+  description?: string;
+  question?: string;
+  choices: string[];
+  multiSelect: boolean;
+  timeoutS?: number;
+  receivedAt: number;
+  /**
+   * How the prompt reached us. `"event"` prompts come in as
+   * `approval.request` / `clarify.request` notifications and answer through the
+   * `*.respond` RPC; `"server-request"` prompts are JSON-RPC requests the
+   * backend sends to an attached desktop client (the only channel a local
+   * viewer gets) and answer through the response frame.
+   */
+  transport?: "event" | "server-request";
+  /** JSON-RPC id of the blocking server request (`srq-…`). */
+  serverRequestId?: string;
+  /** `qid` of this question inside a batch clarify server request. */
+  questionId?: string;
+  /** 单值输入卡要遮蔽输入（sudo 口令 / secret / vault 提示）。 */
+  secret?: boolean;
+  /** 单值卡的多字段变体（`vault.save_login`：账号 + 密码）。 */
+  fields?: PendingPromptField[];
+  /** 值卡上的一行说明（`vault.save_login`：保存到哪个站点）。 */
+  detail?: string;
+  /** `setup_choose` 卡的类型（question / accent / theme / layout / connectors / plugins / tour / fork / machine_use）。 */
+  setupKind?: string;
+  /** `setup_choose` 卡的候选行；空表示只接受自由输入。 */
+  options?: PendingPromptOption[];
+  /** `setup_choose` 多选卡预选中的行 id。 */
+  preselected?: string[];
+}
+
+export interface PendingPromptField {
+  key: string;
+  label: string;
+  secret: boolean;
+}
+
+export interface PendingPromptOption {
+  id: string;
+  label: string;
+  detail?: string;
+}
+
 export type StreamStatus = "idle" | "connecting" | "streaming" | "complete" | "error";
 
 export interface ChatSessionRuntime {
   messages: HermesUIMessage[];
   streamStatus: StreamStatus;
+  /** Derived, backward-compatible projection of `pendingPrompts` (approvals only). */
   pendingApprovals: PendingApproval[];
+  /** Unanswered blocking prompts of any kind (approvals + clarify). */
+  pendingPrompts?: PendingPrompt[];
   statusMessage: string;
   statusKind?: string;
   statusUpdatedAt?: number;
@@ -130,9 +190,63 @@ export function createEmptyChatRuntime(now = Date.now()): ChatSessionRuntime {
     messages: [],
     streamStatus: "idle",
     pendingApprovals: [],
+    pendingPrompts: [],
     statusMessage: "",
     updatedAt: now,
   };
+}
+
+function promptAsApproval(prompt: PendingPrompt): PendingApproval {
+  return {
+    requestId: prompt.promptId,
+    sessionId: prompt.sessionId,
+    command: prompt.command ?? prompt.description ?? "需要确认操作",
+    reason: prompt.description,
+  };
+}
+
+/**
+ * Read the prompt list off a runtime, tolerating runtimes built by older code
+ * paths or tests that only carry the legacy `pendingApprovals` field.
+ */
+export function promptsOf(runtime: ChatSessionRuntime): PendingPrompt[] {
+  const prompts = runtime.pendingPrompts;
+  if (Array.isArray(prompts) && prompts.length > 0) return prompts;
+  const legacy = runtime.pendingApprovals ?? [];
+  if (legacy.length === 0) return Array.isArray(prompts) ? prompts : [];
+  return legacy.map((approval) => ({
+    kind: "approval" as const,
+    promptId: approval.requestId,
+    generation: 0,
+    sessionId: approval.sessionId,
+    command: approval.command,
+    description: approval.reason,
+    choices: ["once", "deny"],
+    multiSelect: false,
+    receivedAt: 0,
+  }));
+}
+
+function replacePrompts(
+  runtime: ChatSessionRuntime,
+  prompts: PendingPrompt[],
+): ChatSessionRuntime {
+  return {
+    ...runtime,
+    pendingPrompts: prompts,
+    pendingApprovals: prompts.filter((prompt) => prompt.kind === "approval").map(promptAsApproval),
+  };
+}
+
+function promptFromPayload(
+  kind: "approval" | "clarify",
+  payload: Record<string, any>,
+  sessionId: string,
+  now: number,
+): PendingPrompt | null {
+  const parsed: Prompt | null = parsePromptEvent(kind, payload);
+  if (!parsed) return null;
+  return { ...parsed, sessionId, receivedAt: now };
 }
 
 function assistantClientId(now: number): string {
@@ -790,7 +904,12 @@ function reduceGatewayEventInner(
         now,
         (message) => ({
           ...message,
-          parts: upsertReasoningPart(message.parts, text),
+          // 流式供应商已经把思考内容走 reasoning.delta 落进了 reasoning part；
+          // 这种情况下 reasoning.available 只是"这一轮思考结束"的信号，payload 里
+          // 带的往往是最终答案预览，再追加一次就会让推理块里出现答案副本。
+          parts: message.parts.some((part) => part.type === "reasoning")
+            ? message.parts
+            : upsertReasoningPart(message.parts, text),
         }),
       );
     }
@@ -906,28 +1025,33 @@ function reduceGatewayEventInner(
       );
     }
 
-    case "approval.request": {
-      const requestId = String(payload.request_id ?? `approval-${now}`);
-      const approval: PendingApproval = {
-        requestId,
-        sessionId,
-        command: String(payload.command ?? payload.description ?? "需要确认操作"),
-        reason:
-          typeof payload.reason === "string"
-            ? payload.reason
-            : typeof payload.description === "string"
-              ? payload.description
-              : undefined,
-      };
-      return {
-        ...runtime,
-        streamStatus: "streaming",
-        pendingApprovals: [
-          ...runtime.pendingApprovals.filter((item) => item.requestId !== requestId),
-          approval,
-        ],
-        updatedAt: now,
-      };
+    case "approval.request":
+    case "clarify.request": {
+      const kind = event.type === "clarify.request" ? "clarify" : "approval";
+      const prompt = promptFromPayload(kind, payload, sessionId, now);
+      if (!prompt) return runtime;
+      const prompts = [
+        ...promptsOf(runtime).filter((item) => item.promptId !== prompt.promptId),
+        prompt,
+      ];
+      return replacePrompts(
+        {
+          ...runtime,
+          streamStatus: "streaming",
+          updatedAt: now,
+        },
+        prompts,
+      );
+    }
+
+    case "approval.settled":
+    case "clarify.settled": {
+      const promptId = typeof payload.prompt_id === "string" ? payload.prompt_id : "";
+      if (!promptId) return runtime;
+      const current = promptsOf(runtime);
+      const prompts = current.filter((item) => item.promptId !== promptId);
+      if (prompts.length === current.length) return runtime;
+      return replacePrompts({ ...runtime, updatedAt: now }, prompts);
     }
 
     case "status.update": {
@@ -1026,6 +1150,28 @@ export const resetStreamStateAtom = atom(null, (_get, set, sessionId: string) =>
   );
 });
 
+// 全量 resume 拿到的 `messages` 快照覆盖时间线：补帧判定退化（水位超前 /
+// epoch 变化 / seq 缺口）时只有这条路径能保证时间线不缺不重。
+export const hydrateSessionTimelineAtom = atom(
+  null,
+  (_get, set, params: { sessionId: string; messages: HermesUIMessage[]; running?: boolean }) => {
+    const now = Date.now();
+    set(chatRuntimeBySessionAtom, (state) =>
+      updateSessionRuntime(state, params.sessionId, (runtime) => ({
+        ...runtime,
+        messages: params.messages,
+        streamStatus: params.running ? "streaming" : "idle",
+        statusMessage: "",
+        statusKind: undefined,
+        activeAssistantId: undefined,
+        interrupted: false,
+        updatedAt: now,
+        lastActivityAt: now,
+      })),
+    );
+  },
+);
+
 // 手动终止：立即把会话标记为非运行态，并屏蔽旧回合迟到的流式事件。
 // 故意保留 activeAssistantId / turnStartedAt，迟到的 message.complete 才能收尾正确的消息。
 export const markSessionInterruptedAtom = atom(null, (_get, set, sessionId: string) => {
@@ -1118,6 +1264,7 @@ export const recoverCompletedTurnFromStoredMessagesAtom = atom(
           messages: runtime.messages.filter((message) => message.id !== assistantId),
           streamStatus: "complete",
           pendingApprovals: [],
+          pendingPrompts: [],
           updatedAt: now,
         },
       };
@@ -1162,6 +1309,7 @@ export const startPromptAtom = atom(
         ],
         streamStatus: "streaming",
         pendingApprovals: [],
+        pendingPrompts: [],
         turnStartedAt: now,
         turnFirstTokenAt: undefined,
         activeAssistantId: assistantId,
@@ -1424,12 +1572,40 @@ export const removeApprovalAtom = atom(
   null,
   (_get, set, params: { sessionId: string; requestId: string }) => {
     set(chatRuntimeBySessionAtom, (state) =>
-      updateSessionRuntime(state, params.sessionId, (runtime) => ({
-        ...runtime,
-        pendingApprovals: runtime.pendingApprovals.filter(
-          (item) => item.requestId !== params.requestId,
+      updateSessionRuntime(state, params.sessionId, (runtime) =>
+        replacePrompts(
+          runtime,
+          promptsOf(runtime).filter((item) => item.promptId !== params.requestId),
         ),
-      })),
+      ),
+    );
+  },
+);
+
+/**
+ * Every unanswered prompt across every session, oldest first. The global
+ * prompt layer renders this so a card can pop on any route.
+ */
+export const pendingPromptsAtom = atom<PendingPrompt[]>((get) => {
+  const bySession = get(chatRuntimeBySessionAtom);
+  const all: PendingPrompt[] = [];
+  for (const runtime of Object.values(bySession)) {
+    all.push(...promptsOf(runtime));
+  }
+  return all.sort((a, b) => a.receivedAt - b.receivedAt);
+});
+
+/** Drop a prompt locally (answered elsewhere, timed out, or settled). */
+export const removePromptAtom = atom(
+  null,
+  (_get, set, params: { sessionId: string; promptId: string }) => {
+    set(chatRuntimeBySessionAtom, (state) =>
+      updateSessionRuntime(state, params.sessionId, (runtime) =>
+        replacePrompts(
+          runtime,
+          promptsOf(runtime).filter((item) => item.promptId !== params.promptId),
+        ),
+      ),
     );
   },
 );

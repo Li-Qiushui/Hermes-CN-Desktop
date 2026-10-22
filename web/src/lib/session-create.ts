@@ -3,6 +3,7 @@ import type { ReasoningEffort } from "@/lib/reasoning-effort";
 export interface SessionCreateParams extends Record<string, unknown> {
   cwd?: string;
   reasoning_effort?: ReasoningEffort;
+  source?: string;
 }
 
 /**
@@ -24,6 +25,11 @@ export function sessionCreateParams(
 ): SessionCreateParams {
   const cleanCwd = cwd?.trim();
   return {
+    // 官方桌面端在 wire 上发的就是 "desktop"（apps/desktop/src/api/canonical-protocol.ts）。
+    // 本机网关（tui_gateway）里桌面会话的判定值同样是字面量 "desktop"：
+    // session_lifecycle 的 liveness 跟踪、session_workdir 的默认目录、
+    // methods_session 的历史裁剪都以 source == "desktop" 分支，缺省则落成 "tui"。
+    source: "desktop",
     ...(cleanCwd ? { cwd: cleanCwd } : {}),
     ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
   };

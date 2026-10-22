@@ -38,7 +38,6 @@ interface MessageTimelineProps {
   messages: ChatMessage[];
   loading?: boolean;
   statusMessage?: string;
-  pendingApproval?: ReactNode;
   turnStartedAt?: number;
   sessionUsage?: SessionUsageResult | null;
   progressModel?: string;
@@ -1037,7 +1036,6 @@ export function MessageTimeline({
   messages,
   loading = false,
   statusMessage,
-  pendingApproval,
   turnStartedAt,
   sessionUsage,
   progressModel,
@@ -1457,7 +1455,7 @@ export function MessageTimeline({
         autoAnchorTimerRef.current = null;
       }, 650);
     }
-  }, [clearAutoAnchor, pendingApproval, scrollToBottom, statusMessage, turnAnchors, visibleMessages]);
+  }, [clearAutoAnchor, scrollToBottom, statusMessage, turnAnchors, visibleMessages]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -1577,7 +1575,7 @@ export function MessageTimeline({
       ) : null}
       <div ref={messagesRef} className={s.messages}>
         {loading ? <MessageSkeleton /> : null}
-        {!loading && visibleMessages.length === 0 && !statusMessage && !pendingApproval ? (
+        {!loading && visibleMessages.length === 0 && !statusMessage ? (
           <div className={s.empty}>
             <div className={s.emptyTitle}>暂无对话记录</div>
             <div className={s.emptySub}>发送一条消息开始继续这个任务。</div>
@@ -1620,7 +1618,6 @@ export function MessageTimeline({
         })}
 
         {statusMessage ? <div className={s.statusMessage}>{statusMessage}</div> : null}
-        {pendingApproval}
       </div>
     </div>
   );

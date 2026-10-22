@@ -1,64 +1,19 @@
 /**
- * Reconnect-driven session re-attach.
+ * Reconnect-driven session re-attach helpers.
  *
  * The desktop gateway (Hermes dashboard) has NO socket-level replay/resume and
  * NO server-side event buffer: when the event stream drops (laptop sleep/wake,
  * dashboard restart, flaky network) the backend session keeps running but is
  * orphaned from the dead transport and gets reaped after a grace window.
- * Recovery is purely application-level — after the transport reconnects we must
- * re-issue `session.resume` so the server re-pins the live turn to the new
- * socket and the remaining deltas stream onto the SAME assistant message.
  *
- * Without this, a mid-turn drop loses the reply (the classic "回复要切走再切回来
- * 才看得见" / frozen "连接已断开" symptom). This mirrors the official desktop's
- * use-gateway-boot + use-session-actions behavior.
- *
- * Kept as a pure, dependency-injected function so it is unit-testable without
- * the jotai store / gateway-client singletons. See
- * docs/gateway-connection-overhaul.md (C2).
+ * The re-attach itself (single `session.resume` + one replay/snapshot decision)
+ * lives in lib/gateway-replay.ts (`recoverAfterReconnect`). What stays here is
+ * the error taxonomy the caller needs to tell "the session is gone" (terminal)
+ * from "the backend was slow" (recoverable on the next reconnect).
  */
-export interface ReconnectResumeResult {
-  session_id: string;
-  resumed?: string;
-}
-
-export interface ReattachAfterReconnectDeps {
-  /** The currently active gateway session id, or null/undefined if none is open. */
-  getActiveSessionId: () => string | null | undefined;
-  /** Map a (possibly stale) gateway session id to its persistent session id. */
-  resolvePersistentId: (sessionId: string) => string;
-  /** Issue `session.resume` for the given persistent id. */
-  resume: (persistentId: string) => Promise<ReconnectResumeResult>;
-  /** Called on success with the (possibly new) gateway id + the persistent id. */
-  onResumed: (gatewaySessionId: string, persistentId: string) => void;
-  /** Called when resume rejects or yields no session (session gone) so the caller can surface an error. */
-  onResumeFailed: (error: unknown) => void;
-}
-
 /** Only explicit server-side absence is terminal; timeouts are recoverable. */
 export function isDefinitiveMissingSessionError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error ?? "");
   return /(?:session|conversation).*(?:not found|does not exist|unknown|gone|reaped)/i.test(message)
     || /(?:not found|does not exist|unknown|gone|reaped).*(?:session|conversation)/i.test(message);
-}
-
-export async function reattachAfterReconnect(deps: ReattachAfterReconnectDeps): Promise<void> {
-  const activeSessionId = deps.getActiveSessionId();
-  // Nothing open to re-pin — a fresh connect with no session is a no-op.
-  if (!activeSessionId) return;
-
-  const persistentId = deps.resolvePersistentId(activeSessionId);
-  try {
-    const result = await deps.resume(persistentId);
-    // A new conversation may have been activated while resume was in flight.
-    if (deps.getActiveSessionId() !== activeSessionId) return;
-    if (!result?.session_id) {
-      deps.onResumeFailed(new Error("session.resume returned no session_id"));
-      return;
-    }
-    deps.onResumed(result.session_id, result.resumed ?? persistentId);
-  } catch (error) {
-    if (deps.getActiveSessionId() !== activeSessionId) return;
-    deps.onResumeFailed(error);
-  }
 }

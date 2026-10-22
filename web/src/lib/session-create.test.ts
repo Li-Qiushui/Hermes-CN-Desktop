@@ -50,10 +50,16 @@ describe("session.create payload carries the composer's thinking-effort", () => 
     expect(backendResolveEffort(payload)).toBe("medium");
   });
 
+  it("always marks the session as a desktop session", () => {
+    // 内核按 source 决定 surface：缺省 tui 会丢掉 desktop_ui / catalog 工具集。
+    expect(sessionCreateParams("/work").source).toBe("desktop");
+    expect(sessionCreateParams(undefined, null).source).toBe("desktop");
+  });
+
   it("preserves the previous createSession shape when only cwd is provided", () => {
-    expect(sessionCreateParams("/work")).toEqual({ cwd: "/work" });
-    expect(sessionCreateParams("  /work  ")).toEqual({ cwd: "/work" });
-    expect(sessionCreateParams(undefined, "max")).toEqual({ reasoning_effort: "max" });
-    expect(sessionCreateParams(undefined)).toEqual({});
+    expect(sessionCreateParams("/work")).toEqual({ source: "desktop", cwd: "/work" });
+    expect(sessionCreateParams("  /work  ")).toEqual({ source: "desktop", cwd: "/work" });
+    expect(sessionCreateParams(undefined, "max")).toEqual({ source: "desktop", reasoning_effort: "max" });
+    expect(sessionCreateParams(undefined)).toEqual({ source: "desktop" });
   });
 });

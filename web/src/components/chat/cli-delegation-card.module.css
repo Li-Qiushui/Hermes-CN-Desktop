@@ -205,7 +205,7 @@
   margin: 0;
   padding: 8px 8px;
   border-radius: 0;
-  background: var(--h-bg);
+  background: var(--h-bg-app);
   border: 1px solid var(--h-line-soft);
   color: var(--h-text-2);
   font-size: 11px;

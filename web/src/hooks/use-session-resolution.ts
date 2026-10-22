@@ -68,6 +68,7 @@ export function resolveSessionRuntime(
   const isLiveSession =
     isGatewayLinked ||
     runtimeIsBusy ||
+    (runtime.pendingPrompts?.length ?? 0) > 0 ||
     runtime.pendingApprovals.length > 0 ||
     runtime.messages.length > 0;
 
