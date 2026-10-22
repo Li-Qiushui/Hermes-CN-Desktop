@@ -1,13 +1,18 @@
 [package]
 name = "hermes-agent-cn-desktop"
-version = "0.8.0-rc15"
+version = "0.8.0-rc16"
 edition = "2021"
 description = "Hermes Agent CN Desktop (Tauri)"
 authors = ["Hermes Agent CN Contributors"]
 homepage = "https://hermesagent.org.cn"
+default-run = "hermes-agent-cn-desktop"
 
 [lib]
 name = "hermes_agent_cn"
+
+[[bin]]
+name = "hermes-agent-cn-desktop"
+path = "src/main.rs"
 
 [dependencies]
 # `devtools` keeps the WebView inspector available in release builds too, so the
