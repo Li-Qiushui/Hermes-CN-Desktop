@@ -89,6 +89,9 @@ import {
   mergeHermesUIMessages,
   messagesResponseToHermesUIMessages,
 } from "@/components/chat/message-adapter";
+import { stabilizeChatMessages } from "@/components/chat/message-stability";
+import type { ChatMessage } from "@/components/chat/chat-types";
+
 import s from "./detail.module.css";
 
 interface ComposerPrefillState {
@@ -377,12 +380,18 @@ export function DetailRoute() {
     taskId,
   ]);
 
+  const stableMessagesRef = useRef<ChatMessage[] | undefined>(undefined);
   const chatMessages = useMemo(() => {
     const canonical = mergeHermesUIMessages(
       storedMessages,
       isLiveSession ? runtime.messages : [],
     );
-    return hermesUIMessagesToChatMessages(canonical);
+    const next = hermesUIMessagesToChatMessages(canonical);
+    // 流式输出每个 token 都会重建全部消息对象；内容没变的复用旧引用，
+    // 否则 MessageBubble 的 memo 全部失效，一帧要重渲染几十个气泡。
+    const stable = stabilizeChatMessages(stableMessagesRef.current, next);
+    stableMessagesRef.current = stable;
+    return stable;
   }, [
     isLiveSession,
     runtime.messages,
