@@ -30,3 +30,18 @@ it("starts in the active remote mode without transiently mounting managed contro
   expect(html).toContain("会话令牌");
   expect(html).not.toContain("MANAGED_PANEL_MOUNTED");
 });
+
+it("does not claim a live connection in browser-companion mode", () => {
+  vi.stubGlobal("window", {
+    __HERMES_RUNTIME__: {
+      platform: "web",
+      browserCompanion: true,
+    },
+  });
+
+  const html = ReactDOMServer.renderToStaticMarkup(<ConnectionSection showHeading={false} />);
+
+  expect(html).toContain("已配置（未探活）");
+  expect(html).toContain('data-ok="false"');
+  expect(html).not.toContain(">已连接<");
+});

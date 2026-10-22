@@ -3,6 +3,7 @@ import { Alert, Button, Field, Input, LoadingState, Select } from "@hermes/share
 import type { MoaConfigResponse, MoaModelSlot, MoaPresetConfig } from "@hermes/protocol";
 import { useMoaConfig, useSaveMoaConfig } from "@/hooks/use-moa-config";
 import { useModelOptions } from "@/hooks/use-model-options";
+import { moaConfigProblems, moaSaveErrorText } from "@/lib/moa-save-error";
 import { ModelCombobox } from "@/components/settings/model-combobox";
 import s from "./settings.module.css";
 
@@ -11,7 +12,7 @@ import s from "./settings.module.css";
 // - 预设新建 / 删除 / 设为默认立即保存；
 // - 参考模型与聚合器槽位的编辑先落本地，点「保存」才 PUT；
 // - 服务商选择排除 moa 自身（禁止递归 MoA，后端保存时也会拒绝）；
-// - enabled / 温度 / max_tokens 等字段不提供控件，原样 round-trip（官方同样如此）。
+// - enabled / 温度 / reasoning_effort 等字段不提供控件，原样 round-trip（官方同样如此）。
 
 const MOA_SLUG = "moa";
 
@@ -21,8 +22,10 @@ interface SlotProviderOption {
   models: string[];
 }
 
+// 槽位是 passthrough 的：克隆时整体展开，别把 reasoning_effort / enabled
+// 这类 UI 不编辑的字段丢掉（丢一次就变成保存时写回默认值）。
 function cloneSlot(slot: MoaModelSlot): MoaModelSlot {
-  return { provider: slot.provider, model: slot.model };
+  return { ...slot };
 }
 
 function clonePreset(preset: MoaPresetConfig): MoaPresetConfig {
@@ -106,6 +109,7 @@ export function MoaPanel() {
   const [selectedPreset, setSelectedPreset] = useState("");
   const [newPresetName, setNewPresetName] = useState("");
   const [error, setError] = useState("");
+  const [presetNotice, setPresetNotice] = useState("");
   const [savedFlash, setSavedFlash] = useState(false);
 
   useEffect(() => {
@@ -139,15 +143,39 @@ export function MoaPanel() {
   }, [moa, selectedPreset]);
   const currentPreset = moa && presetName ? moa.presets[presetName] : null;
   const presetNames = useMemo(() => Object.keys(moa?.presets ?? {}), [moa]);
+  const dirty = useMemo(() => {
+    if (!moa || !moaData) return false;
+    return JSON.stringify(moa) !== JSON.stringify(moaData);
+  }, [moa, moaData]);
 
-  const saveNow = async (next: MoaConfigResponse) => {
+  const switchPreset = (next: string) => {
+    const previous = presetName;
+    setSelectedPreset(next);
+    setPresetNotice(
+      dirty && previous && previous !== next
+        ? `已切到「${next}」。预设「${previous}」还有未保存的修改，切回去点「保存 MoA 配置」才会写回内核。`
+        : "",
+    );
+  };
+
+  const saveNow = async (next: MoaConfigResponse, options?: { validateSlots?: boolean }) => {
     setError("");
+    setPresetNotice("");
+    if (options?.validateSlots) {
+      const problems = moaConfigProblems(next);
+      if (problems.length > 0) {
+        const head = problems.slice(0, 3).join("；");
+        const more = problems.length > 3 ? `；另有 ${problems.length - 3} 处` : "";
+        setError(`无法保存：${head}${more}`);
+        return;
+      }
+    }
     setMoa(next);
     try {
       await saveMoaConfig.mutateAsync(next);
       setSavedFlash(true);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(moaSaveErrorText(err));
     }
   };
 
@@ -223,10 +251,10 @@ export function MoaPanel() {
     return (
       <Alert
         tone="warning"
-        title="MoA 配置不可用"
+        title="MoA 配置读取失败"
         actions={<Button variant="outline" tone="warning" onClick={() => void refetch()}>重试</Button>}
       >
-        <p>读取 /api/model/moa 失败。当前后端内核可能低于 0.18（不支持 Mixture of Agents），或 Dashboard 暂时不可达。</p>
+        <p>读取 /api/model/moa 失败。该接口需要后端内核支持 Mixture of Agents；若内核较旧（无此接口）或 Dashboard 暂时不可达，面板就无法编辑。</p>
       </Alert>
     );
   }
@@ -244,13 +272,16 @@ export function MoaPanel() {
             默认预设：<code>{moa.default_preset}</code>
             {moa.active_preset && <> · 会话激活：<code>{moa.active_preset}</code></>}
           </p>
+          <p>
+            开启方式：在聊天模型选择器的「MoA 预设」分组里选中一个预设，或在会话中输入 <code>/moa</code> 开启 / 关闭当前预设。
+          </p>
         </div>
       </div>
 
       <div className={s.auxToolbar}>
         <div className={s.providerFormGrid}>
           <Field label="预设" className={s.fieldRow}>
-            <Select value={presetName} onChange={(event) => setSelectedPreset(event.target.value)}>
+            <Select value={presetName} onChange={(event) => switchPreset(event.target.value)}>
               {presetNames.map((name) => (
                 <option key={name} value={name}>
                   {name}
@@ -301,6 +332,8 @@ export function MoaPanel() {
         </div>
       </div>
 
+      {presetNotice && <div className={s.modelPickerHint}>{presetNotice}</div>}
+
       {currentPreset.reference_models.map((slot, index) => (
         <SlotEditor
           key={`reference-${index}`}
@@ -335,7 +368,7 @@ export function MoaPanel() {
         onChange={updateAggregator}
       />
 
-      {error && <div className={s.modelPickerError}>保存失败：{error}</div>}
+      {error && <div className={s.modelPickerError}>{error}</div>}
       {savedFlash && <div className={s.auxSavedHint}>✓ MoA 配置已保存</div>}
 
       <div className={s.providerActions}>
@@ -344,12 +377,14 @@ export function MoaPanel() {
           variant="solid"
           tone="accent"
           loading={saveMoaConfig.isPending}
-          onClick={() => void saveNow(moa)}
+          onClick={() => void saveNow(moa, { validateSlots: true })}
         >
           保存 MoA 配置
         </Button>
         <div className={s.modelPickerHint}>
-          预设的新建 / 删除 / 设为默认会立即保存；参考模型与聚合器的修改需点击「保存 MoA 配置」。
+          {dirty
+            ? "有未保存的修改：参考模型与聚合器的改动点「保存 MoA 配置」才写回内核，现在离开面板会丢失。"
+            : "预设的新建 / 删除 / 设为默认会立即保存；参考模型与聚合器的修改需点击「保存 MoA 配置」。"}
         </div>
       </div>
     </div>

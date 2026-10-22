@@ -170,7 +170,7 @@ const CANCELLED_SUFFIX = ' [cancelled]';
  * path would render a blank assistant bubble.
  */
 export const NO_GROUNDING_MESSAGE =
-  'no search found — nothing relevant in memory. try /save:<text> or /dialogue:<transcript> to store memories first.';
+  '没有检索到相关内容 — 记忆库里没有匹配的条目。可以先发 /save:<文本> 或 /dialogue:<对话记录> 存一点记忆，再问一次。';
 
 export interface WanderMemoryChatStreamHandle {
   /** Start a turn: appends the user message + an empty streaming assistant

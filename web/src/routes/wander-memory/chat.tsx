@@ -17,7 +17,7 @@ import { useAtomValue, useSetAtom } from "jotai";
 import { Alert, Badge, Button, Input } from "@hermes/shared-ui";
 import { WanderMemoryLayout } from "@/components/wander-memory/layout";
 import { useWanderMemoryChatStream } from "@/hooks/use-wander-memory";
-import { getWanderMemoryClient } from "@/lib/wander-memory";
+import { getWanderMemoryClient, wanderErrorLine } from "@/lib/wander-memory";
 import type { ConnectionState } from "@/lib/wander-memory";
 import {
   clearWanderMemoryChatAtom,
@@ -63,15 +63,15 @@ function ChatPage() {
   const streamBadge =
     mode === "demo" ? (
       <Badge tone="warning" variant="outline" size="sm">
-        simulated stream
+        模拟流式
       </Badge>
     ) : wsState === "open" ? (
       <Badge tone="success" variant="outline" size="sm">
-        ws streaming
+        WS 流式
       </Badge>
     ) : (
       <Badge tone="warning" variant="outline" size="sm">
-        stream unavailable — using REST
+        流式不可用 — 改用 REST
       </Badge>
     );
 
@@ -79,9 +79,9 @@ function ChatPage() {
     <div className={s.page}>
       <div className={s.inner}>
         <div className={s.header}>
-        <span className={s.title}>chat</span>
+        <span className={s.title}>聊天</span>
         {streamBadge}
-        <span className={s.hint}>Esc cancels client-side · LLM · ~seconds</span>
+        <span className={s.hint}>Esc 只中断前端显示，服务端还会继续生成（一般几秒）</span>
         <span className={s.spacer} />
         <Button
           type="button"
@@ -97,7 +97,7 @@ function ChatPage() {
       <div ref={scrollRef} className={s.feed}>
         {messages.length === 0 ? (
           <p className={s.empty}>
-            ask something — the reply is grounded on LLM-generated keywords + lexical recall
+            问点什么 — 回答基于 LLM 生成的关键词 + 词法召回
           </p>
         ) : (
           messages.map((msg, i) => (
@@ -113,7 +113,7 @@ function ChatPage() {
 
                 {msg.error ? (
                   <Alert tone="danger" size="sm" className={s.msgError}>
-                    {msg.error.code}: {msg.error.message}
+                    {wanderErrorLine(msg.error)}
                   </Alert>
                 ) : null}
 
@@ -121,9 +121,9 @@ function ChatPage() {
                   msg.dreamed && msg.dreamed.length > 0 ? (
                     <div className={s.grounding}>
                       <div className={s.keywords}>
-                        keywords: {msg.dreamed.join(" · ")}
+                        关键词：{msg.dreamed.join(" · ")}
                         {msg.groundedCount !== undefined
-                          ? ` → grounded on ${msg.groundedCount} memories`
+                          ? ` → 命中 ${msg.groundedCount} 条记忆`
                           : ""}
                       </div>
                       {msg.groundedSnippets && msg.groundedSnippets.length > 0 ? (
@@ -136,7 +136,7 @@ function ChatPage() {
                     </div>
                   ) : (
                     <div className={s.groundingPlain}>
-                      grounded on plain lexical recall (keyword parse failed)
+                      仅基于词法召回（关键词解析失败）
                     </div>
                   )
                 ) : null}
@@ -156,7 +156,7 @@ function ChatPage() {
           }}
           disabled={isStreaming}
           placeholder={
-            isStreaming ? "waiting for reply… (Esc to cancel client-side)" : "type a message…"
+            isStreaming ? "等待回复…（Esc 仅取消前端）" : "输入消息…"
           }
           mono
         />
@@ -178,7 +178,7 @@ function ChatPage() {
 
 export function WanderMemoryChatRoute() {
   return (
-    <WanderMemoryLayout title="对话" sub="MemOS · Chat">
+    <WanderMemoryLayout title="对话" sub="MemOS · 聊天">
       <ChatPage />
     </WanderMemoryLayout>
   );

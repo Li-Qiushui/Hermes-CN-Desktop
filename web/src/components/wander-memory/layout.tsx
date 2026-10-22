@@ -20,7 +20,7 @@ export interface WanderMemoryLayoutProps {
 
 export function WanderMemoryLayout({
   title = "记忆工作台",
-  sub = "MemOS Workbench",
+  sub = "MemOS 记忆工作台",
   right,
   children,
 }: WanderMemoryLayoutProps) {

@@ -1,6 +1,6 @@
 // errors.test.ts — §5.4 code → treatment exhaustiveness + toApiError coercion.
 import { describe, expect, it } from 'vitest';
-import { ApiError, COLLISION_ERROR_CODES, toApiError, treatmentFor } from './errors';
+import { ApiError, COLLISION_ERROR_CODES, toApiError, treatmentFor, wanderErrorLine } from './errors';
 
 describe('treatmentFor (§5.4)', () => {
   it.each([
@@ -22,11 +22,11 @@ describe('treatmentFor (§5.4)', () => {
     expect(t.text.length).toBeGreaterThan(0);
   });
 
-  it('collision error cards are fail-closed ("memory was NOT stored")', () => {
+  it('collision error cards are fail-closed ("记忆未存储")', () => {
     for (const code of COLLISION_ERROR_CODES) {
       const t = treatmentFor(new ApiError(code, 'x', null));
       expect(t.kind).toBe('card');
-      expect(t.text).toContain('NOT stored');
+      expect(t.text).toContain('记忆未存储');
     }
   });
 
@@ -70,5 +70,19 @@ describe('toApiError', () => {
   it('coerces null/undefined into an unknown ApiError', () => {
     expect(toApiError(null).code).toBe('unknown');
     expect(toApiError(undefined).code).toBe('unknown');
+  });
+});
+
+describe('wanderErrorLine', () => {
+  it('shows a Chinese explanation plus the code, never the raw English message', () => {
+    const line = wanderErrorLine(new ApiError('llm_unavailable', 'websocket not connected', null));
+    expect(line).toBe('错误码 llm_unavailable：LLM 服务不可用，请检查模型配置');
+    expect(line).not.toContain('websocket');
+  });
+
+  it('falls back to a diagnostic hint for codes it does not know', () => {
+    const line = wanderErrorLine(new ApiError('some_future_code', 'boom', 500));
+    expect(line).toContain('错误码 some_future_code');
+    expect(line).toContain('未收录');
   });
 });

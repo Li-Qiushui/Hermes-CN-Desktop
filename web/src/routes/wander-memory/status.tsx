@@ -39,6 +39,7 @@ import {
   resolveEndpoints,
   resolveEndpointsAsync,
   toApiError,
+  wanderErrorLine,
 } from "@/lib/wander-memory";
 import type { ApiError, WanderMemoryEndpoints } from "@/lib/wander-memory";
 import s from "./status.module.css";
@@ -56,21 +57,21 @@ export function serverStatusPresentation({
   hasData,
   hasError,
 }: ServerStatusPresentationInput): {
-  label: "checking" | "offline" | "live" | "demo";
+  label: "检查中" | "离线" | "在线" | "演示";
   tone: "neutral" | "danger" | "success" | "warning";
 } {
-  if (mode === "demo") return { label: "demo", tone: "warning" };
-  if (hasError) return { label: "offline", tone: "danger" };
-  if (hasData) return { label: "live", tone: "success" };
-  if (loading) return { label: "checking", tone: "neutral" };
-  return { label: "offline", tone: "danger" };
+  if (mode === "demo") return { label: "演示", tone: "warning" };
+  if (hasError) return { label: "离线", tone: "danger" };
+  if (hasData) return { label: "在线", tone: "success" };
+  if (loading) return { label: "检查中", tone: "neutral" };
+  return { label: "离线", tone: "danger" };
 }
 
 export function wanderStatusErrorText(error: ApiError): string {
   if (error.code === "network_failure") {
-    return "offline — start MemOS or update endpoint settings below";
+    return "离线 — 请启动 MemOS，或在下方更新端点设置";
   }
-  return `${error.code}: ${error.message}`;
+  return wanderErrorLine(error);
 }
 
 function StatusPage() {
@@ -129,32 +130,32 @@ function StatusPage() {
     <div className={s.page}>
       <div className={s.inner}>
         <div className={s.headRow}>
-        <span className={s.title}>server status</span>
+        <span className={s.title}>服务状态</span>
         {modeBadge}
-        <span className={s.headHint}>health re-probes every 30 s</span>
+        <span className={s.headHint}>健康状态每 30 秒重新探测</span>
       </div>
 
       {/* ── health / models / backends cards ── */}
       <div className={s.cardsGrid}>
         <section className={s.card}>
-          <h3 className={s.cardTitle}>health</h3>
+          <h3 className={s.cardTitle}>健康</h3>
           {health.isLoading && !health.data ? (
-            <p className={s.cardMuted}>loading…</p>
+            <p className={s.cardMuted}>加载中…</p>
           ) : health.error ? (
             <p className={s.cardError}>{wanderStatusErrorText(health.error)}</p>
           ) : health.data ? (
             <dl className={s.defList}>
               <div className={s.defRow}>
-                <dt className={s.defTerm}>status</dt>
+                <dt className={s.defTerm}>状态</dt>
                 <dd className={`${s.defValue} ${s.okValue}`}>{health.data.status}</dd>
               </div>
               <div className={s.defRow}>
-                <dt className={s.defTerm}>model</dt>
+                <dt className={s.defTerm}>模型</dt>
                 <dd className={s.defValue}>{health.data.model}</dd>
               </div>
               {health.data.backend !== undefined ? (
                 <div className={s.defRow}>
-                  <dt className={s.defTerm}>backend</dt>
+                  <dt className={s.defTerm}>后端</dt>
                   <dd className={s.defValue}>{health.data.backend}</dd>
                 </div>
               ) : null}
@@ -166,55 +167,55 @@ function StatusPage() {
               ))}
             </dl>
           ) : (
-            <p className={s.cardMuted}>unavailable</p>
+            <p className={s.cardMuted}>不可用</p>
           )}
         </section>
 
         <section className={s.card}>
-          <h3 className={s.cardTitle}>models</h3>
+          <h3 className={s.cardTitle}>模型</h3>
           {models.isLoading && !models.data ? (
-            <p className={s.cardMuted}>loading…</p>
+            <p className={s.cardMuted}>加载中…</p>
           ) : models.error ? (
             <p className={s.cardError}>{wanderStatusErrorText(models.error)}</p>
           ) : models.data ? (
             <>
               <dl className={s.defList}>
                 <div className={s.defRow}>
-                  <dt className={s.defTerm}>model</dt>
+                  <dt className={s.defTerm}>模型</dt>
                   <dd className={s.defValue}>{models.data.model}</dd>
                 </div>
                 <div className={s.defRow}>
-                  <dt className={s.defTerm}>reasoning</dt>
+                  <dt className={s.defTerm}>推理</dt>
                   <dd className={s.defValue}>{models.data.reasoning}</dd>
                 </div>
               </dl>
               {models.data.reasoning !== "off" ? (
                 <Alert tone="warning" size="sm" className={s.modelWarning}>
-                  warning: reasoning is expected to be "off"
+                  警告：reasoning 预期应为 "off"
                 </Alert>
               ) : null}
             </>
           ) : (
-            <p className={s.cardMuted}>unavailable</p>
+            <p className={s.cardMuted}>不可用</p>
           )}
         </section>
 
         <section className={s.card}>
-          <h3 className={s.cardTitle}>backends</h3>
+          <h3 className={s.cardTitle}>后端</h3>
           {backends.isLoading && !backends.data ? (
-            <p className={s.cardMuted}>loading…</p>
+            <p className={s.cardMuted}>加载中…</p>
           ) : backends.error ? (
             <p className={s.cardError}>{wanderStatusErrorText(backends.error)}</p>
           ) : backends.data ? (
             backends.data.remote || backends.data.devices.length === 0 ? (
-              <p className={s.cardMuted}>remote backend — no llama.cpp devices</p>
+              <p className={s.cardMuted}>远程后端 — 没有 llama.cpp 设备</p>
             ) : (
               <table className={s.deviceTable}>
                 <thead>
                   <tr>
-                    <th className={s.th}>backend</th>
-                    <th className={s.th}>idx</th>
-                    <th className={s.th}>name</th>
+                    <th className={s.th}>后端</th>
+                    <th className={s.th}>序号</th>
+                    <th className={s.th}>名称</th>
                     <th className={`${s.th} ${s.thRight}`}>MiB</th>
                   </tr>
                 </thead>
@@ -231,22 +232,22 @@ function StatusPage() {
               </table>
             )
           ) : (
-            <p className={s.cardMuted}>unavailable</p>
+            <p className={s.cardMuted}>不可用</p>
           )}
         </section>
       </div>
 
       {introspectError ? (
         <Alert tone="danger" size="sm">
-          introspection failed: {wanderStatusErrorText(introspectError)}
+          自检失败：{wanderStatusErrorText(introspectError)}
         </Alert>
       ) : null}
 
       {/* ── maintenance ── */}
-      <WanderMemorySection title="maintenance" hint="POST /v1/maintenance — re-validate the whole store">
+      <WanderMemorySection title="维护" hint="POST /v1/maintenance — 重新校验整个记忆库">
         <div className={s.maintRow}>
           <div>
-            <p className={s.maintDesc}>Re-validate every stored memory; reports total + per-item errors.</p>
+            <p className={s.maintDesc}>重新校验每一条已存记忆；返回总数与逐条错误。</p>
           </div>
           <Button
             type="button"
@@ -256,45 +257,45 @@ function StatusPage() {
             loading={maintenance.isPending}
             className={s.maintButton}
           >
-            {maintenance.isPending ? "running…" : "run maintenance"}
+            {maintenance.isPending ? "运行中…" : "运行维护"}
           </Button>
         </div>
         {maintenance.isPending ? (
           <div className={s.maintRunning}>
-            <LoadingState label="validating store…" variant="block" />
+            <LoadingState label="正在校验记忆库…" variant="block" />
           </div>
         ) : null}
         {maintenance.data ? (
           <div className={s.maintResult}>
-            total: <span className={s.maintNum}>{maintenance.data.total}</span> · errors:{" "}
+            总数：<span className={s.maintNum}>{maintenance.data.total}</span> · 错误：{" "}
             {maintenance.data.errors.length === 0 ? (
-              <span className={s.okValue}>none</span>
+              <span className={s.okValue}>无</span>
             ) : (
               <span className={s.errValue}>{maintenance.data.errors.join("; ")}</span>
             )}
           </div>
         ) : null}
         {maintenance.error ? (
-          <p className={s.maintError}>{maintenance.error.code}: {maintenance.error.message}</p>
+          <p className={s.maintError}>{wanderErrorLine(maintenance.error)}</p>
         ) : null}
       </WanderMemorySection>
 
       {/* ── endpoint settings / discovery ── */}
       <WanderMemorySection
-        title="endpoint settings"
-        hint="env → ui-store overrides → port-shift discovery → defaults"
+        title="端点设置"
+        hint="环境变量 → ui-store 覆盖 → 端口漂移探测 → 默认值"
       >
         <dl className={s.defList}>
           <div className={s.defRow}>
-            <dt className={s.defTerm}>API base URL (REST)</dt>
+            <dt className={s.defTerm}>API 基础地址（REST）</dt>
             <dd className={`${s.defValue} ${s.endpointValue}`}>{eps.apiOrigin}</dd>
           </div>
           <div className={s.defRow}>
-            <dt className={s.defTerm}>WebSocket URL</dt>
+            <dt className={s.defTerm}>WebSocket 地址</dt>
             <dd className={`${s.defValue} ${s.endpointValue}`}>{eps.wsUrl}</dd>
           </div>
           <div className={s.defRow}>
-            <dt className={s.defTerm}>FS origin (mem_filesys)</dt>
+            <dt className={s.defTerm}>文件服务地址（mem_filesys）</dt>
             <dd className={`${s.defValue} ${s.endpointValue}`}>{eps.fsOrigin}</dd>
           </div>
         </dl>
@@ -306,10 +307,10 @@ function StatusPage() {
             onClick={() => void rediscover()}
             loading={discovering}
           >
-            {discovering ? "discovering…" : "重新发现端点"}
+            {discovering ? "探测中…" : "重新发现端点"}
           </Button>
           <span className={s.discoverHint}>
-            re-probes ports 18400–18409 (and the ports file) then reconnects the client
+            重新探测 18400–18409 端口（以及端口文件），然后重连客户端
           </span>
         </div>
         {discoverError ? (
@@ -325,7 +326,7 @@ function StatusPage() {
 
 export function WanderMemoryStatusRoute() {
   return (
-    <WanderMemoryLayout title="状态" sub="MemOS · Status">
+    <WanderMemoryLayout title="状态" sub="MemOS · 状态">
       <WanderMemoryToastProvider>
         <StatusPage />
       </WanderMemoryToastProvider>

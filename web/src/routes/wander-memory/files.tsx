@@ -30,7 +30,7 @@ import type { CollisionSummary, MemoryItem } from "@/lib/wander-memory";
 import s from "./files.module.css";
 
 function formatBytes(n: number): string {
-  return `${n.toLocaleString()} bytes`;
+  return `${n.toLocaleString()} 字节`;
 }
 
 function fileHasMemory(file: ScannedFile, memories: MemoryItem[]): boolean {
@@ -165,7 +165,7 @@ function FilesPage() {
     setStoreCollision(null);
     try {
       const res: UpdateIngestResponse = await fsClient.updateIngest(root, selected.rel_path, text);
-      toast.push("success", `已存储 ${selected.rel_path} 的 ingest`);
+      toast.push("success", `已存储 ${selected.rel_path} 的记忆`);
       setStoreCollision(res.collision);
       setAllMemories((prev) => (prev ? [res.memory, ...prev] : [res.memory]));
       setCustomText("");
@@ -179,33 +179,33 @@ function FilesPage() {
   const modeBadge =
     fsClient.mode === "live" ? (
       <Badge tone="success" variant="outline" size="sm">
-        live
+        实时
       </Badge>
     ) : (
       <Badge tone="warning" variant="outline" size="sm">
-        demo
+        演示
       </Badge>
     );
 
   const healthBadge =
     fsHealthError !== null ? (
       <Badge tone="danger" variant="outline" size="sm" title={fsHealthError.message}>
-        fs api: unreachable
+        文件服务：不可达
       </Badge>
     ) : fsHealth === null ? (
       <Badge tone="neutral" variant="outline" size="sm">
-        fs api: probing…
+        文件服务：探测中…
       </Badge>
     ) : (
       <Badge tone="success" variant="outline" size="sm">
-        fs api: {fsHealth.status}
+        文件服务：{fsHealth.status}
       </Badge>
     );
 
   return (
     <div className={s.page}>
       <div className={s.headRow}>
-        <span className={s.title}>file explorer</span>
+        <span className={s.title}>文件浏览器</span>
         {modeBadge}
         {healthBadge}
       </div>
@@ -218,7 +218,7 @@ function FilesPage() {
             onKeyDown={(e) => {
               if (e.key === "Enter") void doScan();
             }}
-            placeholder="directory path…"
+            placeholder="目录路径…"
             mono
             className={s.scanInput}
           />
@@ -230,7 +230,7 @@ function FilesPage() {
             loading={scanning}
             disabled={!directory.trim()}
           >
-            {scanning ? "…" : "open"}
+            {scanning ? "…" : "打开"}
           </Button>
           <Button
             type="button"
@@ -238,7 +238,7 @@ function FilesPage() {
             onClick={() => void doReload()}
             disabled={scanning || !root}
           >
-            reload
+            重新扫描
           </Button>
         </div>
         {scanError ? (
@@ -253,7 +253,7 @@ function FilesPage() {
         <section className={s.panel}>
           {files.length === 0 ? (
             <p className={s.panelEmpty}>
-              {root ? "no files found" : "open a directory to browse files"}
+              {root ? "未找到文件" : "打开一个目录以浏览文件"}
             </p>
           ) : (
             <div className={s.fileList}>
@@ -273,7 +273,7 @@ function FilesPage() {
                         {file.rel_path}
                       </span>
                       {hasMemory ? (
-                        <span className={s.ingestDot} title="has ingested memories" />
+                        <span className={s.ingestDot} title="已有抽取记忆" />
                       ) : null}
                     </div>
                     <div className={s.fileRowMeta}>
@@ -290,7 +290,7 @@ function FilesPage() {
         {/* ── right: file detail / ingest editor ── */}
         <section className={s.panel}>
           {!selected ? (
-            <p className={s.panelEmpty}>select a file to view details and ingest</p>
+            <p className={s.panelEmpty}>选择一个文件，查看详情并生成记忆</p>
           ) : (
             <div className={s.detail}>
               <div>
@@ -302,13 +302,13 @@ function FilesPage() {
                   <span className={s.fileSize}>{formatBytes(selected.size)}</span>
                   {selectedHasMemories ? (
                     <Badge tone="success" variant="outline" size="sm">
-                      ingested
+                      已生成
                     </Badge>
                   ) : null}
                 </div>
               </div>
 
-              <WanderMemorySection title="ingested memories">
+              <WanderMemorySection title="已生成的记忆">
                 <div className={s.memoriesHead}>
                   <span className={s.memoriesHint}>
                     {fileMemories.length} 条 · 按 metadata.path 匹配
@@ -320,7 +320,7 @@ function FilesPage() {
                     onClick={() => void loadMemories()}
                     loading={loadingMemories}
                   >
-                    {loadingMemories ? "loading…" : "load memories"}
+                    {loadingMemories ? "加载中…" : "重新加载"}
                   </Button>
                 </div>
                 {memoriesError ? (
@@ -328,11 +328,11 @@ function FilesPage() {
                     {memoriesError.code}: {memoriesError.message}
                   </Alert>
                 ) : loadingMemories ? (
-                  <LoadingState label="loading memories…" variant="block" />
+                  <LoadingState label="正在加载记忆…" variant="block" />
                 ) : fileMemories.length === 0 ? (
                   <EmptyState
-                    title="no ingested memories for this file"
-                    description="use the custom ingest editor below to store a memory bound to this path."
+                    title="这个文件还没有生成记忆"
+                    description="用下面的「自定义记忆内容」把一条记忆绑定到这个路径。"
                   />
                 ) : (
                   <div className={s.memoryList}>
@@ -345,7 +345,7 @@ function FilesPage() {
 
               <div className={s.ingestEditor}>
                 <label htmlFor="custom-ingest" className={s.ingestLabel}>
-                  custom ingest
+                  自定义记忆内容
                 </label>
                 {storeError ? (
                   <Alert tone="danger" size="sm">
@@ -357,7 +357,7 @@ function FilesPage() {
                   value={customText}
                   onChange={(e) => setCustomText(e.target.value)}
                   rows={5}
-                  placeholder="type customized memory text for this file…"
+                  placeholder="输入这个文件对应的自定义记忆文本…"
                   className={s.ingestTextarea}
                 />
                 <div className={s.ingestActions}>
@@ -369,7 +369,7 @@ function FilesPage() {
                     loading={storing}
                     disabled={!customText.trim()}
                   >
-                    {storing ? "storing…" : "store ingest"}
+                    {storing ? "存储中…" : "存储记忆"}
                   </Button>
                 </div>
                 {storeCollision ? (
@@ -388,7 +388,7 @@ function FilesPage() {
 
 export function WanderMemoryFilesRoute() {
   return (
-    <WanderMemoryLayout title="文件" sub="MemOS · Files">
+    <WanderMemoryLayout title="文件" sub="MemOS · 文件">
       <WanderMemoryToastProvider>
         <FilesPage />
       </WanderMemoryToastProvider>

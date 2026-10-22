@@ -38,8 +38,8 @@ function ContextPage() {
 
   return (
     <WanderMemorySection
-      title="context preview"
-      hint="POST /v1/context — exactly the date-prefixed block that would be injected into a prompt"
+      title="上下文预览"
+      hint="POST /v1/context — 与注入提示词中的日期前缀块完全一致"
     >
       <div className={s.buildRow}>
         <Input
@@ -48,7 +48,7 @@ function ContextPage() {
           onKeyDown={(e) => {
             if (e.key === "Enter") void run();
           }}
-          placeholder="query…"
+          placeholder="查询内容…"
           mono
           className={s.queryInput}
         />
@@ -56,7 +56,7 @@ function ContextPage() {
           value={topK}
           onChange={(e) => setTopK(e.target.value.replace(/[^0-9]/g, ""))}
           placeholder="top_k"
-          title="top_k — leave empty to use the server default"
+          title="top_k — 留空则使用服务端默认值"
           mono
           className={s.topK}
         />
@@ -68,7 +68,7 @@ function ContextPage() {
           loading={build.isPending}
           disabled={!query.trim()}
         >
-          build
+          生成
         </Button>
       </div>
 
@@ -80,15 +80,15 @@ function ContextPage() {
             retry={() => void run()}
           />
         ) : build.isPending ? (
-          <LoadingState label="building context…" variant="block" />
+          <LoadingState label="正在生成上下文…" variant="block" />
         ) : context === null ? null : context === "" ? (
-          <EmptyState title="no memories matched — the API returned an empty string" />
+          <EmptyState title="没有匹配的记忆 — 接口返回了空字符串" />
         ) : (
           <div className={s.contextBlock}>
             <div className={s.contextHead}>
-              <span className={s.contextLabel}>context</span>
+              <span className={s.contextLabel}>上下文</span>
               <CopyButton text={context} variant="outline" size="xs" copiedLabel="已复制">
-                copy
+                复制
               </CopyButton>
             </div>
             <pre className={s.contextText}>{context}</pre>
@@ -101,7 +101,7 @@ function ContextPage() {
 
 export function WanderMemoryContextRoute() {
   return (
-    <WanderMemoryLayout title="上下文预览" sub="MemOS · Context">
+    <WanderMemoryLayout title="上下文预览" sub="MemOS · 上下文">
       <ContextPage />
     </WanderMemoryLayout>
   );

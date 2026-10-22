@@ -134,7 +134,7 @@ export class MemOsWsClient {
     this.setState('closed');
     this.socket = null;
     // fail (never replay) pending requests — §5.3
-    const err = new ApiError('llm_unavailable', 'websocket connection lost', null);
+    const err = new ApiError('llm_unavailable', '与记忆服务的实时通道已断开', null);
     this.pending.forEach((p) => p.reject(err));
     this.pending.clear();
   }
@@ -214,7 +214,7 @@ export class MemOsWsClient {
   private call<T>(op: string, payload: Record<string, unknown>, onDelta?: (d: string) => void): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
-        reject(new ApiError('llm_unavailable', 'websocket not connected', null));
+        reject(new ApiError('llm_unavailable', '实时通道还没连上', null));
         return;
       }
       const id = this.nextId++;
@@ -232,7 +232,7 @@ export class MemOsWsClient {
     const p = this.pending.get(id);
     if (p) {
       this.pending.delete(id);
-      p.reject(new ApiError('cancelled', 'cancelled client-side', null));
+      p.reject(new ApiError('cancelled', '已在客户端取消', null));
     }
   }
 

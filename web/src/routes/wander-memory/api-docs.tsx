@@ -29,22 +29,22 @@ const REST_ROWS: RestRow[] = [
     method: "GET",
     path: "/v1/health",
     returns: '{ status: "ok", backends: Record<string, boolean>, model: string, backend?: string }',
-    notes: "backends is {} in remote mode / probe failure; backend (client_type) only in remote mode",
+    notes: "远程模式或探测失败时 backends 为 {}；backend（client_type）仅远程模式出现",
   },
   {
     method: "GET",
     path: "/v1/backends",
     returns: "{ devices: [{ backend, index, name, total_mib }], remote?: boolean }",
-    notes: "devices: [] with remote: true in remote mode",
+    notes: "远程模式下 devices 为 [] 且 remote: true",
   },
-  { method: "GET", path: "/v1/models", returns: "{ model: string, reasoning: string }", notes: 'expect reasoning: "off"' },
+  { method: "GET", path: "/v1/models", returns: "{ model: string, reasoning: string }", notes: 'reasoning 预期为 "off"' },
   {
     method: "POST",
     path: "/v1/dialogues",
     body: "{ dialogue: string }",
     returns: "{ stored: MemoryItem[], collisions: CollisionSummary[], total: number }",
     llm: true,
-    notes: "collisions[] is index-aligned with stored[]; dialogue may also be a JSON array string of {role, content}",
+    notes: "collisions[] 与 stored[] 按顺序一一对应；dialogue 也可为 {role, content} 数组的 JSON 字符串",
   },
   {
     method: "POST",
@@ -52,22 +52,22 @@ const REST_ROWS: RestRow[] = [
     body: "{ text: string, metadata?: object }",
     returns: "{ memory: MemoryItem, collision: CollisionSummary }",
     llm: true,
-    notes: "collision is ALWAYS present",
+    notes: "collision 始终存在",
   },
   {
     method: "GET",
     path: "/v1/memories?q=&top_k=",
     returns: "{ results: MemoryItem[] }",
-    notes: "omit q for the full inventory; omit top_k for the server default",
+    notes: "不传 q 返回全量；不传 top_k 用服务端默认值",
   },
-  { method: "GET", path: "/v1/memories/{id}", returns: "{ memory: MemoryItem }", notes: "404 not_found when absent" },
-  { method: "DELETE", path: "/v1/memories/{id}", returns: "204 No Content (empty body)", notes: "404 not_found when absent" },
+  { method: "GET", path: "/v1/memories/{id}", returns: "{ memory: MemoryItem }", notes: "不存在时返回 404 not_found" },
+  { method: "DELETE", path: "/v1/memories/{id}", returns: "204 No Content（空响应体）", notes: "不存在时返回 404 not_found" },
   {
     method: "POST",
     path: "/v1/context",
     body: "{ query: string, top_k?: number }",
     returns: "{ context: string }",
-    notes: "empty string when nothing matches",
+    notes: "无匹配时返回空字符串",
   },
   {
     method: "POST",
@@ -75,7 +75,7 @@ const REST_ROWS: RestRow[] = [
     body: "{ query: string }",
     returns: "{ reply: string }",
     llm: true,
-    notes: "non-streaming; use WS chat with stream: true for deltas",
+    notes: "非流式；需要增量请用 WS chat 并设 stream: true",
   },
   { method: "POST", path: "/v1/maintenance", returns: "{ total: number, errors: string[] }" },
 ];
@@ -94,11 +94,11 @@ const WS_OPS_ROWS: WsOpRow[] = [
   { op: "memories.add", payload: "{ text, metadata? }", result: "AddMemoryResponse" },
   { op: "memories.search", payload: "{ query, top_k? }", result: "{ results }" },
   { op: "memories.list", payload: "{}", result: "{ results }" },
-  { op: "memories.get", payload: "{ id }", result: "{ memory }", notes: "id is a payload field, not a path segment" },
+  { op: "memories.get", payload: "{ id }", result: "{ memory }", notes: "id 是载荷字段，不是路径片段" },
   { op: "memories.delete", payload: "{ id }", result: "null" },
   { op: "dialogues.add", payload: "{ dialogue }", result: "AddDialogueResponse" },
   { op: "context.build", payload: "{ query, top_k? }", result: "{ context }" },
-  { op: "chat", payload: "{ query, stream: true }", result: "delta* frames, then done { reply }", notes: "omit stream for a single result frame" },
+  { op: "chat", payload: "{ query, stream: true }", result: "先 delta* 帧，最后 done { reply }", notes: "不传 stream 则只返回单个结果帧" },
   { op: "maintenance.run", payload: "{}", result: "{ total, errors }" },
 ];
 
@@ -109,17 +109,17 @@ interface ErrorRow {
 }
 
 const ERROR_ROWS: ErrorRow[] = [
-  { code: "bad_request", http: "400", meaning: "malformed request body / failed validation" },
-  { code: "not_found", http: "404", meaning: "no memory with that id" },
-  { code: "unknown_op", http: "400", meaning: "WS op not in the documented vocabulary — client bug" },
-  { code: "conflict", http: "409", meaning: "memory system not started" },
-  { code: "collision_conflict", http: "409", meaning: "concurrent write — retry" },
-  { code: "llm_unavailable", http: "503", meaning: "LLM server unreachable; chat/dialogue fail until health recovers" },
-  { code: "backend_probe_failed", http: "503", meaning: "device probe failed (non-blocking)" },
-  { code: "collision_parse_failed", http: "502", meaning: "fail-closed: memory was NOT stored" },
-  { code: "collision_validation_failed", http: "502", meaning: "fail-closed: memory was NOT stored" },
-  { code: "collision_apply_failed", http: "500", meaning: "fail-closed: store restored to pre-operation state" },
-  { code: "internal", http: "500", meaning: "unexpected server error" },
+  { code: "bad_request", http: "400", meaning: "请求体格式错误 / 校验失败" },
+  { code: "not_found", http: "404", meaning: "没有该 id 对应的记忆" },
+  { code: "unknown_op", http: "400", meaning: "WS 操作不在文档词表内 — 客户端缺陷" },
+  { code: "conflict", http: "409", meaning: "记忆系统尚未启动" },
+  { code: "collision_conflict", http: "409", meaning: "并发写入 — 请重试" },
+  { code: "llm_unavailable", http: "503", meaning: "LLM 服务不可达；在健康恢复前 chat/dialogue 都会失败" },
+  { code: "backend_probe_failed", http: "503", meaning: "设备探测失败（不阻塞）" },
+  { code: "collision_parse_failed", http: "502", meaning: "失败即封闭：记忆未被存储" },
+  { code: "collision_validation_failed", http: "502", meaning: "失败即封闭：记忆未被存储" },
+  { code: "collision_apply_failed", http: "500", meaning: "失败即封闭：存储回滚到操作前状态" },
+  { code: "internal", http: "500", meaning: "服务端意外错误" },
 ];
 
 const TYPES_SNIPPET = `interface MemoryItem {
@@ -215,9 +215,9 @@ function CodeBlock({ code, title }: { code: string; title?: string }) {
   return (
     <div className={s.codeBlock}>
       <div className={s.codeHead}>
-        <span className={s.codeTitle}>{title ?? "code"}</span>
+        <span className={s.codeTitle}>{title ?? "代码"}</span>
         <CopyButton text={code} variant="plain" size="xs" copiedLabel="已复制">
-          copy
+          复制
         </CopyButton>
       </div>
       <pre className={s.codeText}>{code}</pre>
@@ -235,9 +235,9 @@ function ApiDocsPage() {
       <div className={s.inner}>
         <div className={s.pageHead}>
         <div>
-          <h1 className={s.pageTitle}>Memory Service API</h1>
+          <h1 className={s.pageTitle}>记忆服务 API</h1>
           <p className={s.pageSub}>
-            REST http://127.0.0.1:18400/v1 · WebSocket ws://127.0.0.1:18401/v1/ws · single-user, loopback-only
+            REST http://127.0.0.1:18400/v1 · WebSocket ws://127.0.0.1:18401/v1/ws · 单用户，仅监听回环地址
           </p>
         </div>
         <div className={s.tabs} role="tablist" aria-label="API 参考章节">
@@ -251,7 +251,7 @@ function ApiDocsPage() {
               onClick={() => setTab(t)}
               className={s.tab}
             >
-              {t === "rest" ? "REST reference" : t === "ws" ? "WebSocket protocol" : "connecting the backend"}
+              {t === "rest" ? "REST 参考" : t === "ws" ? "WebSocket 协议" : "连接后端"}
             </button>
           ))}
         </div>
@@ -259,20 +259,20 @@ function ApiDocsPage() {
 
       {tab === "rest" ? (
         <div className={s.sections}>
-          <WanderMemorySection title="Shared types">
-            <CodeBlock code={TYPES_SNIPPET} title="types (§3.1, §4.1)" />
+          <WanderMemorySection title="公共类型">
+            <CodeBlock code={TYPES_SNIPPET} title="类型（§3.1、§4.1）" />
           </WanderMemorySection>
 
-          <WanderMemorySection title="Endpoints">
+          <WanderMemorySection title="接口列表">
             <div className={s.tableWrap}>
               <table className={s.table}>
                 <thead>
                   <tr>
-                    <th className={s.th}>method</th>
-                    <th className={s.th}>path</th>
-                    <th className={s.th}>body</th>
-                    <th className={s.th}>returns</th>
-                    <th className={s.th}>notes</th>
+                    <th className={s.th}>方法</th>
+                    <th className={s.th}>路径</th>
+                    <th className={s.th}>请求体</th>
+                    <th className={s.th}>返回</th>
+                    <th className={s.th}>说明</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -283,7 +283,7 @@ function ApiDocsPage() {
                       </td>
                       <td className={`${s.td} ${s.monoCell}`}>
                         {r.path}
-                        {r.llm ? <span className={s.llmChip}>LLM ~seconds</span> : null}
+                        {r.llm ? <span className={s.llmChip}>LLM 约数秒</span> : null}
                       </td>
                       <td className={`${s.td} ${s.monoCell}`}>{r.body ?? "—"}</td>
                       <td className={`${s.td} ${s.monoCell}`}>{r.returns}</td>
@@ -294,20 +294,19 @@ function ApiDocsPage() {
               </table>
             </div>
             <p className={s.note}>
-              Client rules: 10 s timeout on no-LLM endpoints; no client timeout on /dialogues and /chat. Encode
-              queries with URLSearchParams. DELETE returns 204 with an empty body — treat it as success, not a parse
-              error.
+              客户端规则：不涉及 LLM 的接口 10 秒超时；/dialogues 与 /chat 不设客户端超时。查询参数用
+              URLSearchParams 编码。DELETE 返回 204 且响应体为空 — 按成功处理，不要当解析错误。
             </p>
           </WanderMemorySection>
 
-          <WanderMemorySection title="Error codes">
+          <WanderMemorySection title="错误码">
             <div className={s.tableWrap}>
               <table className={s.table}>
                 <thead>
                   <tr>
-                    <th className={s.th}>code</th>
+                    <th className={s.th}>错误码</th>
                     <th className={s.th}>http</th>
-                    <th className={s.th}>meaning</th>
+                    <th className={s.th}>含义</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -323,7 +322,7 @@ function ApiDocsPage() {
             </div>
           </WanderMemorySection>
 
-          <WanderMemorySection title="Examples">
+          <WanderMemorySection title="示例">
             <CodeBlock code={CURL_SNIPPET} title="curl" />
           </WanderMemorySection>
         </div>
@@ -331,24 +330,23 @@ function ApiDocsPage() {
 
       {tab === "ws" ? (
         <div className={s.sections}>
-          <WanderMemorySection title="Frame shapes">
+          <WanderMemorySection title="帧结构">
             <CodeBlock code={WS_SNIPPET} title="ws://127.0.0.1:18401/v1/ws (§4.2)" />
             <p className={s.note}>
-              Requests carry a monotonically increasing id; the matching frame resolves them. Frames with id: null are
-              server-control (pong). Whitespace caveat: server chunking drops whitespace at chunk boundaries — display
-              deltas verbatim but treat the done frame's reply as authoritative.
+              请求携带单调递增的 id，对应帧据此匹配返回。id: null 的帧属于服务端控制帧（pong）。空白字符需注意：服务端分块会丢
+              失块边界的空白 — 增量按原样显示，但以 done 帧的 reply 为最终结果。
             </p>
           </WanderMemorySection>
 
-          <WanderMemorySection title="Ops">
+          <WanderMemorySection title="操作">
             <div className={s.tableWrap}>
               <table className={s.table}>
                 <thead>
                   <tr>
-                    <th className={s.th}>op</th>
-                    <th className={s.th}>payload</th>
-                    <th className={s.th}>result</th>
-                    <th className={s.th}>notes</th>
+                    <th className={s.th}>操作</th>
+                    <th className={s.th}>载荷</th>
+                    <th className={s.th}>结果</th>
+                    <th className={s.th}>说明</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -365,19 +363,17 @@ function ApiDocsPage() {
             </div>
           </WanderMemorySection>
 
-          <WanderMemorySection title="Connection lifecycle">
+          <WanderMemorySection title="连接生命周期">
             <ul className={s.list}>
               <li>
-                Keepalive: client sends <code className={s.inlineCode}>{"{\"type\":\"ping\"}"}</code> every 25 s;
-                server answers pong.
+                保活：客户端每 25 秒发送 <code className={s.inlineCode}>{"{\"type\":\"ping\"}"}</code>；服务端回 pong。
               </li>
               <li>
-                Dead-socket detection: no frame of any kind for 60 s while a request is pending → reconnect and fail
-                pending requests with llm_unavailable.
+                死连接检测：有请求挂起时 60 秒内没有任何帧 → 重连，并以 llm_unavailable 让挂起请求失败。
               </li>
-              <li>Reconnect: exponential backoff 250 ms → 8 s with jitter, automatic on close/error.</li>
-              <li>Pending requests are failed, never replayed — writes are not idempotent and the collision pipeline is stateful.</li>
-              <li>One shared socket per page; the server runs blocking memory calls in worker threads, so ops interleave.</li>
+              <li>重连：指数退避 250 毫秒 → 8 秒，带抖动，close/error 时自动触发。</li>
+              <li>挂起请求只会失败，绝不重放 — 写入不幂等，且冲突判定流程是有状态的。</li>
+              <li>每个页面共用一个 socket；服务端把阻塞的记忆调用放在工作线程里跑，所以各操作会交错。</li>
             </ul>
           </WanderMemorySection>
         </div>
@@ -385,37 +381,35 @@ function ApiDocsPage() {
 
       {tab === "connect" ? (
         <div className={s.sections}>
-          <WanderMemorySection title="Topology">
+          <WanderMemorySection title="拓扑">
             <p className={s.note}>
-              In production the memory API server itself serves this SPA, so REST calls are same-origin and no CORS
-              machinery is needed. The WebSocket lives on a different port (18401) — a different origin — but the WS
-              handshake is not subject to same-origin policy and the server enforces no Origin allowlist, so the SPA
-              connects cross-port without any server change.
+              生产环境下由记忆 API 服务自身托管这个单页应用，因此 REST 调用同源，不需要任何 CORS 机制。WebSocket 在另一个端口
+              （18401），属于不同源 — 但 WS 握手不受同源策略约束，服务端也未做 Origin 白名单，所以单页应用可以跨端口连接，
+              无需改动服务端。
             </p>
             <CodeBlock code={BACKEND_SNIPPET} title="run" />
           </WanderMemorySection>
 
-          <WanderMemorySection title="Server-side serving (small, additive)">
+          <WanderMemorySection title="服务端静态托管（小幅增量）">
             <CodeBlock code={PYTHON_SNIPPET} title="src/memory/api.py" />
           </WanderMemorySection>
 
-          <WanderMemorySection title="Pointing this UI at your backend">
+          <WanderMemorySection title="把界面指向你的后端">
             <ul className={s.list}>
               <li>
-                Default endpoints: REST <code className={s.inlineCode}>http://127.0.0.1:18400/v1</code>, WS{" "}
-                <code className={s.inlineCode}>ws://127.0.0.1:18401/v1/ws</code>.
+                默认端点：REST <code className={s.inlineCode}>http://127.0.0.1:18400/v1</code>，WS{" "}
+                <code className={s.inlineCode}>ws://127.0.0.1:18401/v1/ws</code>。
               </li>
               <li>
-                Served on port 18400, the UI derives both from location.host automatically (port substitution 18400 →
-                18401).
+                当页面由 18400 端口提供时，界面会自动从 location.host 推导两者（端口替换 18400 → 18401）。
               </li>
               <li>
-                Overrides: <code className={s.inlineCode}>?api=</code> query param, or the Status → endpoint settings
-                row (ui-store keys <code className={s.inlineCode}>wander-memory.apiOrigin</code> /{" "}
-                <code className={s.inlineCode}>wander-memory.wsUrl</code>).
+                覆盖方式：<code className={s.inlineCode}>?api=</code> 查询参数，或「状态 → 端点设置」那一行（ui-store 键{" "}
+                <code className={s.inlineCode}>wander-memory.apiOrigin</code> /{" "}
+                <code className={s.inlineCode}>wander-memory.wsUrl</code>）。
               </li>
-              <li>No auth headers anywhere. Binding stays 127.0.0.1 — if you re-bind the API to LAN, the SPA inherits that exposure.</li>
-              <li>The remote-backend api_key never leaves the server; the frontend never sees it.</li>
+              <li>任何地方都不带鉴权头。绑定固定在 127.0.0.1 — 若把 API 重新绑定到局域网，单页应用会继承同样的暴露面。</li>
+              <li>远程后端的 api_key 永远不离开服务端；前端看不到它。</li>
             </ul>
           </WanderMemorySection>
         </div>

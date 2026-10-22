@@ -8,9 +8,9 @@ import { MoaConfigResponse } from "@hermes/protocol";
 // model-settings）：编辑器读写 REST /api/model/moa，preset 列表在模型选择器里
 // 则来自 gateway model.options 的虚拟 `moa` provider 行——两条数据路径。
 //
-// 注意：后端 PUT 的 MoaConfigPayload 只接受 reference_models / aggregator /
-// 温度 / max_tokens / enabled；reference_max_tokens、fanout 等字段保存后会被
-// 归一化回默认值。官方桌面端同样如此，属后端 payload 限制，非本端缺陷。
+// 注意：后端 PUT 的 MoaConfigPayload 只声明 reference_models / aggregator /
+// 温度 / fanout / enabled 等字段（web_routers/models.py `_MOA_PRESET_FIELDS`）；
+// 未声明的键（如 reference_max_tokens）保存时会被内核丢掉。官方桌面端同样如此。
 
 export function useMoaConfig() {
   const profile = useActiveProfileName();

@@ -69,7 +69,7 @@ function DialoguePage() {
     setFailError(null);
     setResult(null);
     if (!text.trim()) {
-      setInlineError("field 'dialogue' must be a non-empty string");
+      setInlineError("字段 'dialogue' 不能为空字符串");
       return;
     }
     setRunning(true);
@@ -77,7 +77,7 @@ function DialoguePage() {
       // Sent verbatim (may be a transcript string or a JSON message array).
       const res = await dialogue.mutateAsync({ dialogue: text });
       setResult(res);
-      toast.push("success", `imported ${res.stored.length} memories — inventory total: ${res.total}`);
+      toast.push("success", `已导入 ${res.stored.length} 条记忆 — 记忆库共 ${res.total} 条`);
     } catch (err) {
       const apiErr = toApiError(err);
       if ((COLLISION_ERROR_CODES as readonly string[]).includes(apiErr.code)) {
@@ -96,21 +96,21 @@ function DialoguePage() {
     <div className={s.dialogueGrid}>
       {/* ── left: dialogue import ── */}
       <WanderMemorySection
-        title="dialogue import"
-        hint="extraction + N collision LLM calls · the longest path in the app · no client timeout"
+        title="对话导入"
+        hint="抽取 + N 次冲突判定 LLM 调用 · 全应用最慢的路径 · 客户端不设超时"
       >
         <Textarea
           value={text}
           onChange={(e) => setText(e.target.value)}
           rows={14}
           placeholder={
-            "paste a transcript (one utterance per line)…\n\nuser: 我对花生过敏\nassistant: 已记下\n\n…or a JSON array of {\"role\",\"content\"} messages — it is sent verbatim."
+            "粘贴对话记录（一行一句）…\n\nuser: 我对花生过敏\nassistant: 已记下\n\n…或粘贴 {\"role\",\"content\"} 消息数组的 JSON — 会原样发送。"
           }
           mono
           className={s.dialogueTextarea}
         />
         {looksLikeJson ? (
-          <p className={s.jsonHint}>✓ detected a JSON message array — will be sent verbatim</p>
+          <p className={s.jsonHint}>✓ 已识别为 JSON 消息数组 — 将原样发送</p>
         ) : null}
         {inlineError ? <p className={s.inlineError}>{inlineError}</p> : null}
 
@@ -123,15 +123,15 @@ function DialoguePage() {
             loading={running}
             disabled={running || degraded}
           >
-            {running ? "extracting + colliding…" : "import dialogue"}
+            {running ? "抽取与冲突判定中…" : "导入对话"}
           </Button>
-          {degraded ? <span className={s.degradedHint}>disabled — LLM unavailable</span> : null}
+          {degraded ? <span className={s.degradedHint}>已禁用 — LLM 不可用</span> : null}
         </div>
 
         {running ? (
           <div className={s.runningBox}>
             <LoadingState
-              label="running extraction and collision pipeline — this can take a while (1 + N LLM calls)"
+              label="正在运行抽取与冲突判定流程 — 可能要等一会儿（1 + N 次 LLM 调用）"
               variant="block"
             />
           </div>
@@ -143,17 +143,17 @@ function DialoguePage() {
         ) : null}
 
         <p className={s.footnote}>
-          fail-closed: on any collision_* error, nothing from this dialogue was stored.
+          失败即封闭：出现任何 collision_* 错误时，这段对话的内容一条都不会被存储。
         </p>
       </WanderMemorySection>
 
       {/* ── right: results ── */}
-      <WanderMemorySection title="import results">
+      <WanderMemorySection title="导入结果">
         {result ? (
           <>
             <h3 className={s.resultSummary}>
-              stored <span className={s.resultNum}>{result.stored.length}</span> · total{" "}
-              <span className={s.resultNum}>{result.total}</span>
+              已存储 <span className={s.resultNum}>{result.stored.length}</span> 条 · 共{" "}
+              <span className={s.resultNum}>{result.total}</span> 条
             </h3>
             <div className={s.resultsList}>
               {result.stored.map((item, i) => (
@@ -163,8 +163,8 @@ function DialoguePage() {
           </>
         ) : !running ? (
           <EmptyState
-            title="import results appear here"
-            description="each stored memory with its index-aligned collision summary"
+            title="导入结果会显示在这里"
+            description="每条已存记忆及其按顺序对齐的冲突摘要"
           />
         ) : null}
       </WanderMemorySection>
@@ -174,7 +174,7 @@ function DialoguePage() {
 
 export function WanderMemoryDialogueRoute() {
   return (
-    <WanderMemoryLayout title="对话导入" sub="MemOS · Dialogue">
+    <WanderMemoryLayout title="对话导入" sub="MemOS · 对话导入">
       <WanderMemoryToastProvider>
         <DialoguePage />
       </WanderMemoryToastProvider>

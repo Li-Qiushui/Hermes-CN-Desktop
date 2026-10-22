@@ -70,7 +70,7 @@ export function adaptTransportError(err: unknown, hint?: string): ApiError {
   if (err instanceof ApiError) return err;
   if (err instanceof Error) {
     if (isAbortLike(err)) {
-      return new ApiError('network_failure', 'request timed out — aborted client-side', null);
+      return new ApiError('network_failure', '请求超时 — 已在客户端中断', null);
     }
     const m = /^HTTP (\d+): ([\s\S]*)$/.exec(err.message);
     if (m) {
@@ -79,7 +79,7 @@ export function adaptTransportError(err: unknown, hint?: string): ApiError {
       if (status === 0 || status === 408) {
         return new ApiError(
           'network_failure',
-          'MemOS service is offline — start MemOS or update endpoint settings below',
+          '连不上 MemOS 记忆服务 — 请先启动 MemOS，或更新下方的端点设置',
           null,
         );
       }

@@ -12,25 +12,25 @@ describe("Wander Memory server status presentation", () => {
       loading: true,
       hasData: false,
       hasError: false,
-    })).toEqual({ label: "checking", tone: "neutral" });
+    })).toEqual({ label: "检查中", tone: "neutral" });
     expect(serverStatusPresentation({
       mode: "live",
       loading: false,
       hasData: false,
       hasError: true,
-    })).toEqual({ label: "offline", tone: "danger" });
+    })).toEqual({ label: "离线", tone: "danger" });
     expect(serverStatusPresentation({
       mode: "live",
       loading: false,
       hasData: true,
       hasError: false,
-    })).toEqual({ label: "live", tone: "success" });
+    })).toEqual({ label: "在线", tone: "success" });
     expect(serverStatusPresentation({
       mode: "demo",
       loading: false,
       hasData: true,
       hasError: false,
-    })).toEqual({ label: "demo", tone: "warning" });
+    })).toEqual({ label: "演示", tone: "warning" });
   });
 
   it("turns network failures into actionable offline copy", () => {
@@ -38,6 +38,6 @@ describe("Wander Memory server status presentation", () => {
       "network_failure",
       "no response from server",
       null,
-    ))).toBe("offline — start MemOS or update endpoint settings below");
+    ))).toBe("离线 — 请启动 MemOS，或在下方更新端点设置");
   });
 });

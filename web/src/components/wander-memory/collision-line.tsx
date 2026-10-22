@@ -36,7 +36,7 @@ export function CollisionLine({
   if (clean) {
     return (
       <p className={s.clean} role="status">
-        collision: none — 已直接存储
+        无冲突 — 已直接存储
       </p>
     );
   }

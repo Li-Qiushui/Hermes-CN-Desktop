@@ -12,6 +12,8 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { ServerOff } from "lucide-react";
 import { Button, Dialog, EmptyState, Input, LoadingState, Textarea } from "@hermes/shared-ui";
 import { CollisionLine } from "@/components/wander-memory/collision-line";
 import { ErrorCard } from "@/components/wander-memory/error-card";
@@ -25,12 +27,14 @@ import {
   WanderMemoryToastProvider,
   useWanderMemoryToast,
 } from "@/components/wander-memory/toast";
-import { useWanderMemoryAdd, useWanderMemoryDelete } from "@/hooks/use-wander-memory";
+import { useWanderMemoryAdd, useWanderMemoryDelete, useWanderMemoryHealth } from "@/hooks/use-wander-memory";
 import {
   ApiError,
   COLLISION_ERROR_CODES,
   getWanderMemoryClient,
+  isWanderMemoryOffline,
   toApiError,
+  wanderMemoryListPhase,
 } from "@/lib/wander-memory";
 import type { CollisionSummary, MemoryItem } from "@/lib/wander-memory";
 import s from "./memories.module.css";
@@ -50,14 +54,17 @@ function parseMetadata(text: string): Record<string, unknown> | null {
 
 function MemoriesPage() {
   const toast = useWanderMemoryToast();
+  const navigate = useNavigate();
   const add = useWanderMemoryAdd();
   const del = useWanderMemoryDelete();
+  const health = useWanderMemoryHealth();
 
   const [query, setQuery] = useState("");
   const [topK, setTopK] = useState("");
   const [results, setResults] = useState<MemoryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [searching, setSearching] = useState(false);
+  const [offline, setOffline] = useState(false);
   const [listError, setListError] = useState<ApiError | null>(null);
   const [inlineError, setInlineError] = useState<string | null>(null);
 
@@ -85,11 +92,17 @@ function MemoriesPage() {
       if (seq !== reqSeq.current) return; // superseded by a newer request/write
       setResults(res.results);
       setListError(null);
+      setOffline(false);
     } catch (err) {
       if (seq !== reqSeq.current) return;
       const apiErr = toApiError(err);
-      // network_failure is handled centrally (demo fall-over) — no noisy toast.
-      if (apiErr.code !== "network_failure") setListError(apiErr);
+      if (isWanderMemoryOffline(apiErr)) {
+        setOffline(true);
+        setListError(null);
+      } else {
+        setOffline(false);
+        setListError(apiErr);
+      }
     } finally {
       if (seq === reqSeq.current) setLoading(false);
     }
@@ -116,10 +129,13 @@ function MemoriesPage() {
       const res = await getWanderMemoryClient().search(q, k);
       if (seq !== reqSeq.current) return; // superseded by a newer request/write
       setResults(res.results);
+      setOffline(false);
     } catch (err) {
       if (seq !== reqSeq.current) return;
       const apiErr = toApiError(err);
-      if (apiErr.code === "bad_request") setInlineError(apiErr.message);
+      if (isWanderMemoryOffline(apiErr)) {
+        setOffline(true);
+      } else if (apiErr.code === "bad_request") setInlineError(apiErr.message);
       else toast.push("error", `${apiErr.code}: ${apiErr.message}`);
     } finally {
       if (seq === reqSeq.current) setSearching(false);
@@ -131,12 +147,12 @@ function MemoriesPage() {
     setAddError(null);
     setAddCollision(null);
     if (!newText.trim()) {
-      setInlineError("field 'memory' must be a non-empty string");
+      setInlineError("字段 'memory' 不能为空字符串");
       return;
     }
     const meta = newMeta.trim() ? parseMetadata(newMeta) : {};
     if (meta === null) {
-      setInlineError("metadata must be key=value lines (e.g. type=fact)");
+      setInlineError("metadata 需为每行一条 key=value（例如 type=fact）");
       return;
     }
     try {
@@ -172,7 +188,7 @@ function MemoriesPage() {
     } catch (err) {
       const apiErr = toApiError(err);
       if (apiErr.code === "not_found") {
-        toast.push("error", "memory not found — the list may be stale");
+        toast.push("error", "找不到该记忆 — 列表可能已过期");
         void refresh();
       } else {
         toast.push("error", `${apiErr.code}: ${apiErr.message}`);
@@ -196,7 +212,7 @@ function MemoriesPage() {
     } catch (err) {
       const apiErr = toApiError(err);
       if (apiErr.code === "not_found") {
-        toast.push("error", "memory not found — the list may be stale");
+        toast.push("error", "找不到该记忆 — 列表可能已过期");
         void refresh();
       } else {
         toast.push("error", `${apiErr.code}: ${apiErr.message}`);
@@ -210,11 +226,17 @@ function MemoriesPage() {
   };
 
   const busy = loading || searching;
+  const isOffline = offline || isWanderMemoryOffline(health.error);
+  const phase = wanderMemoryListPhase({
+    offline: isOffline,
+    hasError: listError !== null,
+    resultCount: results.length,
+  });
 
   return (
     <PageGrid>
       {/* ── left: search + results ── */}
-      <WanderMemorySection title="检索与库存" hint="empty query lists the full inventory">
+      <WanderMemorySection title="检索与库存" hint="空查询即列出全部记忆">
         <div className={s.searchRow}>
           <Input
             value={query}
@@ -222,7 +244,7 @@ function MemoriesPage() {
             onKeyDown={(e) => {
               if (e.key === "Enter") void doSearch();
             }}
-            placeholder="search memories… (empty query lists the full inventory)"
+            placeholder="搜索记忆…（空查询即列出全部记忆）"
             mono
             className={s.searchInput}
           />
@@ -230,7 +252,7 @@ function MemoriesPage() {
             value={topK}
             onChange={(e) => setTopK(e.target.value.replace(/[^0-9]/g, ""))}
             placeholder="top_k"
-            title="top_k — leave empty to use the server default"
+            title="top_k — 留空则使用服务端默认值"
             mono
             className={s.topK}
           />
@@ -247,18 +269,38 @@ function MemoriesPage() {
         {inlineError ? <p className={s.inlineError}>{inlineError}</p> : null}
 
         <div className={s.results}>
-          {listError ? (
+          {busy ? (
+            <LoadingState label="正在加载记忆…" variant="block" />
+          ) : phase === "offline" ? (
+            <EmptyState
+              icon={<ServerOff size={20} aria-hidden="true" />}
+              title="记忆服务未连接"
+              description="没连上 MemOS 记忆服务（默认 18400 / 18401 / 18402），所以这里没有任何数据。启动 MemOS 后点重试，或去状态页检查端点设置。"
+              actions={
+                <div className={s.emptyActions}>
+                  <Button type="button" variant="outline" tone="accent" size="sm" onClick={() => void refresh()}>
+                    重试
+                  </Button>
+                  <Button type="button" variant="ghost" size="sm" onClick={() => navigate("/wander-memory/status")}>
+                    去设置
+                  </Button>
+                </div>
+              }
+            />
+          ) : phase === "failed" && listError ? (
             <ErrorCard
               error={listError}
               onDismiss={() => setListError(null)}
               retry={() => void refresh()}
             />
-          ) : busy ? (
-            <LoadingState label="loading inventory…" variant="block" />
-          ) : results.length === 0 ? (
+          ) : phase === "empty" ? (
             <EmptyState
-              title="no memories matched"
-              description="search again with a different query, or add a memory on the right."
+              title="还没有匹配的记忆"
+              description={
+                query.trim()
+                  ? "没有搜到相关内容，换个关键词重新搜索，或在右侧添加一条记忆。"
+                  : "记忆库还是空的，在右侧添加第一条记忆。"
+              }
             />
           ) : (
             results.map((m) => (
@@ -275,20 +317,20 @@ function MemoriesPage() {
       </WanderMemorySection>
 
       {/* ── right: add memory ── */}
-      <WanderMemorySection title="添加记忆" hint="0–1 LLM calls · ~seconds">
+      <WanderMemorySection title="添加记忆" hint="0–1 次 LLM 调用 · 约数秒">
         <div className={s.addPanel}>
           <Textarea
             value={newText}
             onChange={(e) => setNewText(e.target.value)}
             rows={4}
-            placeholder="memory text…"
+            placeholder="记忆内容…"
             className={s.addTextarea}
           />
           <Textarea
             value={newMeta}
             onChange={(e) => setNewMeta(e.target.value)}
             rows={2}
-            placeholder={"metadata (optional, key=value per line)\ntype=fact"}
+            placeholder={"metadata（可选，每行一条 key=value）\ntype=fact"}
             mono
             className={s.addTextarea}
           />
@@ -302,7 +344,7 @@ function MemoriesPage() {
             disabled={add.isPending}
             className={s.addButton}
           >
-            {add.isPending ? "storing…" : "store memory"}
+            {add.isPending ? "存储中…" : "存储记忆"}
           </Button>
 
           <div className={s.addFeedback}>
@@ -316,8 +358,8 @@ function MemoriesPage() {
           </div>
 
           <p className={s.footnote}>
-            fail-closed: on collision_parse_failed / collision_validation_failed / collision_apply_failed
-            the memory was NOT stored. There is no update endpoint — the write path is add + collision merge only.
+            失败即封闭：出现 collision_parse_failed / collision_validation_failed / collision_apply_failed
+            时，这条记忆不会被存储。系统没有更新接口 — 写入只有「新增 + 冲突合并」一条路径。
           </p>
         </div>
       </WanderMemorySection>
@@ -362,8 +404,7 @@ function MemoriesPage() {
           <Dialog.Content className={s.dialogContent}>
             <Dialog.Title>删除记忆</Dialog.Title>
             <Dialog.Description className={s.dialogDesc}>
-              Delete memory {deleteId?.slice(0, 8)}…? This calls DELETE /v1/memories/{`{id}`} and cannot be
-              undone.
+              确定删除记忆 {deleteId?.slice(0, 8)}…？此操作会调用 DELETE /v1/memories/{`{id}`}，且无法撤销。
             </Dialog.Description>
             <div className={s.dialogActions}>
               <Button type="button" variant="outline" onClick={() => setDeleteId(null)} disabled={deletingId !== null}>
@@ -389,7 +430,7 @@ function MemoriesPage() {
 
 export function WanderMemoryMemoriesRoute() {
   return (
-    <WanderMemoryLayout title="记忆" sub="MemOS · Memories">
+    <WanderMemoryLayout title="记忆" sub="MemOS · 记忆库">
       <WanderMemoryToastProvider>
         <MemoriesPage />
       </WanderMemoryToastProvider>

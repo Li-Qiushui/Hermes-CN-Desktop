@@ -21,7 +21,7 @@ describe("CollisionLine", () => {
       <CollisionLine collision={{ deleted: 0, merged: 0, stored_new: true, reason: "" }} />,
     );
 
-    expect(screen.getByText(/collision: none/)).toBeTruthy();
+    expect(screen.getByText(/无冲突/)).toBeTruthy();
     expect(screen.getByText(/已直接存储/)).toBeTruthy();
   });
 

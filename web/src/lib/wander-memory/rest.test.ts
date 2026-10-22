@@ -220,8 +220,8 @@ describe('error + edge-body handling', () => {
     const err = await new MemOsRestClient('http://api.test').health().catch((e) => e);
     expect(err).toBeInstanceOf(ApiError);
     expect(err).toMatchObject({ code: 'network_failure', status: null });
-    expect(err.message).toContain('start MemOS');
-    expect(err.message).toContain('endpoint settings');
+    expect(err.message).toContain('启动 MemOS');
+    expect(err.message).toContain('端点设置');
   });
 
   it('DELETE with an empty 204 body (SyntaxError from transport) is success-with-no-payload', async () => {

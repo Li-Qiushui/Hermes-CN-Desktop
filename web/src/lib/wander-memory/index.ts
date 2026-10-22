@@ -39,6 +39,7 @@ export {
   treatmentFor,
   toApiError,
   COLLISION_ERROR_CODES,
+  wanderErrorLine,
 } from './errors';
 export type { ErrorTreatment } from './errors';
 
@@ -85,3 +86,7 @@ export type { FileSystemClient } from './fs-client';
 
 // demo — offline simulation
 export { DemoWanderMemoryClient } from './demo';
+
+// empty-state — list/search empty-vs-offline phase
+export { isWanderMemoryOffline, wanderMemoryListPhase } from './empty-state';
+export type { WanderMemoryListPhase, WanderMemoryListPhaseInput } from './empty-state';
