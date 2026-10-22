@@ -21,6 +21,7 @@ import {
   sessionIdMatches,
 } from "@/lib/session-activity";
 import { sessionDisplayTitle } from "@/lib/session-title";
+import { getSourceMeta } from "@/lib/source-meta";
 import {
   readPinnedSessionIds,
   readSessionTitleOverrides,
@@ -94,7 +95,7 @@ interface SessionRowProps {
   session: SessionSummary;
   state: "live" | "ok" | "err" | "idle";
   active: boolean;
-  meta: string;
+  time: string;
   projectName?: string;
   pinned: boolean;
   menuDisabled?: boolean;
@@ -109,7 +110,7 @@ function SessionRow({
   session,
   state,
   active,
-  meta,
+  time,
   projectName,
   pinned,
   menuDisabled = false,
@@ -122,12 +123,14 @@ function SessionRow({
   const title = sessionDisplayTitle(session);
   const dotState = state === "idle" ? undefined : state;
   const dotTone: StatusDotTone | null = dotState === "live"
-    ? "success"
+    ? "accent"
     : dotState === "ok"
-      ? "warning"
+      ? "neutral"
       : dotState === "err"
         ? "danger"
         : null;
+  const source = session.source?.trim() ? getSourceMeta(session.source).label : null;
+  const model = session.model ? modelShort(session.model) : null;
   const actionMenuDisabled = menuDisabled || actions.isDeleting || branching;
   return (
     // role=button (not a real <button>) so the "⋯" trigger can nest inside it.
@@ -148,17 +151,23 @@ function SessionRow({
       title={title}
     >
       <div className={s.rowMain}>
-        <div className={s.ttl}>
-          {dotTone ? <StatusDot tone={dotTone} size="xs" /> : <span className={s.dotPlaceholder} />}
+        <div className={s.rowTop}>
           <span className={s.ttlText}>{title}</span>
+          {dotTone ? <StatusDot tone={dotTone} size="sm" className={s.rowDot} /> : null}
         </div>
-        <div className={s.meta}>
-          <span className={s.metaText}>{meta}</span>
+        <div className={s.rowBottom}>
+          {source ? <span className={s.sourceChip}>{source}</span> : null}
+          {model ? (
+            <span className={s.rowModel} title={model}>
+              {model}
+            </span>
+          ) : null}
           {projectName ? (
-            <span className={s.metaProject} title={projectName}>
+            <span className={s.rowProject} title={projectName}>
               {projectName}
             </span>
           ) : null}
+          <span className={s.rowTime}>{time}</span>
         </div>
       </div>
       <Popover.Root
@@ -397,7 +406,7 @@ export function WorkbenchSidebar() {
                 session={sess}
                 state="live"
                 active={sessionIdMatches(sess.id, activeSessionId)}
-                meta={`${modelShort(sess.model)} · ${elapsed(sess.started_at, now)}`}
+                time={elapsed(sess.started_at, now)}
                 projectName={projectNameBySessionId.get(sess.id)}
                 pinned={pinnedSessionIds.has(sess.id)}
                 menuDisabled
@@ -432,7 +441,7 @@ export function WorkbenchSidebar() {
                   session={sess}
                   state={state}
                   active={sessionIdMatches(sess.id, activeSessionId)}
-                  meta={running ? `${modelShort(sess.model)} · ${elapsed(sess.started_at, now)}` : relTime(ts, now)}
+                  time={running ? elapsed(sess.started_at, now) : relTime(ts, now)}
                   projectName={projectNameBySessionId.get(sess.id)}
                   pinned={pinnedSessionIds.has(sess.id)}
                   menuDisabled={running}
@@ -496,14 +505,14 @@ export function WorkbenchSidebar() {
             recent.map((sess) => {
               const state: "ok" | "err" =
                 sess.end_reason === "error" || sess.end_reason === "interrupted" ? "err" : "ok";
-              const meta = relTime(sess.ended_at ?? sess.started_at, now);
+              const time = relTime(sess.ended_at ?? sess.started_at, now);
               return (
                 <SessionRow
                   key={sess.id}
                   session={sess}
                   state={state}
                   active={sessionIdMatches(sess.id, activeSessionId)}
-                  meta={meta}
+                  time={time}
                   projectName={projectNameBySessionId.get(sess.id)}
                   pinned={pinnedSessionIds.has(sess.id)}
                   actions={rowActions}
