@@ -194,6 +194,57 @@ fn coerce_config(
     })
 }
 
+/// Decide whether a live kernel endpoint should replace the persisted URL.
+/// Only a legacy `local`/`managed` config tracks the address of the kernel
+/// this desktop started. An `external` config is the user's own URL (a pinned
+/// 127.0.0.1:9119 dashboard included) and is never rewritten under them.
+fn managed_endpoint_update(
+    mode: connection::PersistedMode,
+    current_url: Option<&str>,
+    candidate: &str,
+) -> Option<String> {
+    if mode != connection::PersistedMode::Local {
+        return None;
+    }
+    let candidate = candidate.trim().trim_end_matches('/');
+    if candidate.is_empty() {
+        return None;
+    }
+    if connection::mode_for_url(candidate) != ConnectionMode::Local {
+        return None;
+    }
+    if current_url.map(|url| url.trim().trim_end_matches('/')) == Some(candidate) {
+        return None;
+    }
+    Some(candidate.to_string())
+}
+
+/// Persist the endpoint of the kernel bootstrap/supervision adopted, so a
+/// later boot can find it without the ledger. Only the URL field changes; the
+/// token, auth mode and OAuth session carry over untouched. A failed write is
+/// logged and swallowed — the desktop keeps running on the in-memory endpoint.
+pub fn record_managed_endpoint(url: &str) {
+    if connection::env_override_active() {
+        return;
+    }
+    let current = connection::read_config();
+    let Some(next_url) =
+        managed_endpoint_update(connection::persisted_mode(), current.url.as_deref(), url)
+    else {
+        return;
+    };
+    let mut next = current;
+    next.url = Some(next_url.clone());
+    match connection::write_config(&next) {
+        Ok(()) => log::info!("connection.json 托管内核地址已更新为 {}", next_url),
+        Err(err) => log::warn!(
+            "connection.json 回写托管内核地址 {} 失败（不影响启动）：{}",
+            next_url,
+            err
+        ),
+    }
+}
+
 fn reject_env_override() -> AppResult<()> {
     if connection::env_override_active() {
         return Err(AppError::InvalidRequest(format!(
@@ -907,6 +958,63 @@ mod tests {
             ..Default::default()
         };
         assert!(coerce_config(&ConnectionConfig::default(), &bad_url).is_err());
+    }
+
+    #[test]
+    fn managed_endpoint_only_rewrites_a_legacy_local_config() {
+        use connection::PersistedMode;
+        assert_eq!(
+            managed_endpoint_update(
+                PersistedMode::Local,
+                Some("http://127.0.0.1:9119"),
+                "http://127.0.0.1:53211"
+            )
+            .as_deref(),
+            Some("http://127.0.0.1:53211")
+        );
+        assert_eq!(
+            managed_endpoint_update(PersistedMode::Local, None, "http://127.0.0.1:53211").as_deref(),
+            Some("http://127.0.0.1:53211")
+        );
+    }
+
+    #[test]
+    fn managed_endpoint_never_rewrites_an_external_config() {
+        use connection::PersistedMode;
+        assert_eq!(
+            managed_endpoint_update(
+                PersistedMode::External,
+                Some("http://127.0.0.1:9119"),
+                "http://127.0.0.1:53211"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn managed_endpoint_skips_an_unchanged_url() {
+        use connection::PersistedMode;
+        assert_eq!(
+            managed_endpoint_update(
+                PersistedMode::Local,
+                Some("http://127.0.0.1:53211/"),
+                "http://127.0.0.1:53211"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn managed_endpoint_rejects_a_non_loopback_candidate() {
+        use connection::PersistedMode;
+        assert_eq!(
+            managed_endpoint_update(PersistedMode::Local, None, "http://host:9221"),
+            None
+        );
+        assert_eq!(
+            managed_endpoint_update(PersistedMode::Local, None, "   "),
+            None
+        );
     }
 
     #[test]

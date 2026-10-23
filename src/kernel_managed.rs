@@ -40,6 +40,19 @@ static PROBE_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
         .expect("valid kernel probe client")
 });
 
+static APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
+
+/// Remember the desktop's AppHandle so the supervisor can republish the
+/// endpoint of a kernel it restarted (it runs in a detached task with no
+/// handle of its own).
+pub fn register_app_handle(app: &tauri::AppHandle) {
+    let _ = APP_HANDLE.set(app.clone());
+}
+
+fn registered_app_handle() -> Option<&'static tauri::AppHandle> {
+    APP_HANDLE.get()
+}
+
 static LOOPBACK_URL_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"http://(?:127\.0\.0\.1|localhost|\[::1\]):(\d{1,5})")
         .expect("valid loopback url regex")
@@ -562,6 +575,13 @@ async fn handshake(host: &str, port: u16) -> Option<String> {
     None
 }
 
+/// Attach to a kernel another process already registered in the ledger, if one
+/// answers. Used as a fallback when a fresh start fails: a live kernel we can
+/// reach is a normal attach, not a degradation.
+pub async fn attach_existing_kernel() -> Option<KernelHandle> {
+    attach_first().await
+}
+
 async fn attach_first() -> Option<KernelHandle> {
     let mut dead_pids: Vec<u32> = Vec::new();
     let mut attached: Option<KernelHandle> = None;
@@ -824,8 +844,7 @@ pub fn spawn_serve_with_log(port: u16, log_dir: &Path) -> AppResult<(tokio::proc
     }
     #[cfg(windows)]
     {
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(CREATE_NO_WINDOW);
+        crate::process_ext::hide_console_window_tokio(&mut command);
     }
 
     let child = command
@@ -1065,6 +1084,11 @@ impl ManagedKernel {
                         status.port_fallback =
                             port_fallback_flag(port_before_restart, self.handle.port);
                         set_kernel_status(status);
+                        let base_url = self.handle.base_url();
+                        if let Some(app) = registered_app_handle() {
+                            crate::bootstrap::adopt_kernel_endpoint(app, &base_url);
+                        }
+                        crate::commands::connection::record_managed_endpoint(&base_url);
                         break;
                     }
                     Err(err) => {
@@ -1195,15 +1219,9 @@ async fn spawn_owned_kernel(
 
 #[cfg(target_os = "windows")]
 pub fn kill_owned_tree(pid: u32) -> AppResult<()> {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let mut command = std::process::Command::new("taskkill");
-    command
-        .arg("/PID")
-        .arg(pid.to_string())
-        .arg("/T")
-        .arg("/F")
-        .creation_flags(CREATE_NO_WINDOW);
+    command.arg("/PID").arg(pid.to_string()).arg("/T").arg("/F");
+    crate::process_ext::hide_console_window(&mut command);
     let output = command
         .output()
         .map_err(|err| AppError::Internal(format!("taskkill 执行失败：{}", err)))?;

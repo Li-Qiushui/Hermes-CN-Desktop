@@ -76,6 +76,42 @@ pub fn clear_runtime_degraded(app: &tauri::AppHandle) {
     drop(state);
 }
 
+/// Point the live AppState at a kernel base URL. Bootstrap's attach path and
+/// the supervisor's post-restart path both land here so the renderer never
+/// keeps proxying to a port the kernel has already left. The token is carried
+/// over from the current attachment (a loopback kernel hands out a fresh one at
+/// connect time), so only the address changes.
+pub fn adopt_kernel_endpoint(app: &tauri::AppHandle, base_url: &str) {
+    use tauri::Manager;
+    let state = app.state::<AppState>();
+    let mut inner = match state.inner.lock() {
+        Ok(inner) => inner,
+        Err(err) => {
+            log::warn!(
+                "adopt kernel endpoint {}: state lock poisoned: {}",
+                base_url,
+                err
+            );
+            return;
+        }
+    };
+    let token = inner.session_token.clone().or_else(|| {
+        inner
+            .dashboard_handle
+            .as_ref()
+            .and_then(|handle| handle.session_token.clone())
+    });
+    inner.api_base_url = base_url.to_string();
+    inner.gateway_url = dashboard::build_gateway_url(base_url, token.as_deref());
+    inner.dashboard_handle = Some(DashboardHandle::local(base_url.to_string(), token));
+    drop(inner);
+    // Remember the address the kernel actually bound to (its port is random),
+    // so the next cold start probes a live endpoint instead of the configured
+    // one. Same-value writes are skipped inside record_runtime_endpoint and a
+    // failure never blocks the boot.
+    crate::connection::record_runtime_endpoint(base_url);
+}
+
 /// Attach to the resolved backend. An unreachable kernel is deliberately NOT a
 /// bootstrap error: an "error" runtime-status would stop the React app from
 /// ever mounting, locking the user out of the Settings page where a bad saved
@@ -107,6 +143,7 @@ pub async fn connect_managed_local_backend(
     fallback_url: &str,
 ) -> DashboardHandle {
     emit_runtime_status(app, "starting-dashboard", "正在准备本机 Hermes Agent...");
+    kernel_managed::register_app_handle(app);
     match kernel_managed::ensure_kernel(None, &kernel_log_dir()).await {
         Ok((kernel, ownership)) => {
             log::info!(
@@ -118,20 +155,47 @@ pub async fn connect_managed_local_backend(
             );
             clear_runtime_degraded(app);
             kernel_managed::set_kernel_status(KernelStatus::from_handle(&kernel, ownership, 0));
-            connect_local_backend(app, &kernel.base_url()).await.0
+            let base_url = kernel.base_url();
+            adopt_kernel_endpoint(app, &base_url);
+            crate::commands::connection::record_managed_endpoint(&base_url);
+            connect_local_backend(app, &base_url).await.0
         }
         Err(err) => {
             log::warn!(
-                "Local kernel {} did not come up; probing the configured address {}: {}",
+                "Local kernel {} did not come up; walking the endpoint fallback chain before {}: {}",
                 kernel_log_dir().display(),
                 fallback_url,
                 err
             );
-            let (handle, reachable) = connect_local_backend(app, fallback_url).await;
+            // A start failure is not the same as "no kernel on this machine":
+            // another process (or an earlier boot) may already serve one on a
+            // random port. Level (a) probes the ledger, level (b) the endpoint
+            // this desktop recorded last run, level (c) the configured URL —
+            // otherwise a live kernel gets reported as degraded because the
+            // configured address is stale.
+            let ledger_url = kernel_managed::attach_existing_kernel()
+                .await
+                .map(|kernel| kernel.base_url());
+            let runtime_url = if ledger_url.is_some() {
+                None
+            } else {
+                live_runtime_endpoint().await
+            };
+            let (attach_url, endpoint_source) =
+                pick_fallback_endpoint(ledger_url, runtime_url, fallback_url);
+            let (handle, reachable) = connect_local_backend(app, &attach_url).await;
             match fallback_outcome(reachable) {
                 KernelFallback::Attached => {
+                    log::info!(
+                        "Local kernel start failed but {} answers (endpoint source: {})",
+                        attach_url,
+                        endpoint_source.as_str()
+                    );
                     clear_runtime_degraded(app);
-                    mark_attached(fallback_url, None);
+                    mark_attached(&attach_url, None);
+                    if endpoint_source != FallbackEndpointSource::Config {
+                        crate::connection::record_runtime_endpoint(&attach_url);
+                    }
                     handle
                 }
                 KernelFallback::Degraded => {
@@ -148,6 +212,64 @@ pub async fn connect_managed_local_backend(
                 }
             }
         }
+    }
+}
+
+/// Where the fallback chain found the endpoint it attached to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FallbackEndpointSource {
+    /// The spawn ledger: a kernel this or another process already started.
+    Ledger,
+    /// `runtime-endpoint.json`: the endpoint adopted on a previous run.
+    RuntimeEndpoint,
+    /// The URL saved in `connection.json` (last resort, may end up degraded).
+    Config,
+}
+
+impl FallbackEndpointSource {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Ledger => "ledger",
+            Self::RuntimeEndpoint => "runtime-endpoint",
+            Self::Config => "connection.json",
+        }
+    }
+}
+
+/// Level order of the fallback chain, kept pure so it is testable without an
+/// `AppHandle`: the ledger wins over the recorded runtime endpoint, and the
+/// configured URL is only the last resort.
+pub fn pick_fallback_endpoint(
+    ledger_url: Option<String>,
+    runtime_url: Option<String>,
+    configured_url: &str,
+) -> (String, FallbackEndpointSource) {
+    if let Some(url) = ledger_url.filter(|url| !url.trim().is_empty()) {
+        return (url, FallbackEndpointSource::Ledger);
+    }
+    if let Some(url) = runtime_url.filter(|url| !url.trim().is_empty()) {
+        return (url, FallbackEndpointSource::RuntimeEndpoint);
+    }
+    (configured_url.to_string(), FallbackEndpointSource::Config)
+}
+
+/// Endpoint recorded on a previous run, probed with the same attached-dashboard
+/// probe the normal local attach uses, so a dead port costs one probe instead
+/// of a second bespoke HTTP path.
+async fn live_runtime_endpoint() -> Option<String> {
+    let endpoint = crate::connection::read_runtime_endpoint()?;
+    if dashboard::probe_attached_dashboard(&endpoint.url).await {
+        log::info!(
+            "Recorded runtime endpoint {} is still answering",
+            endpoint.url
+        );
+        Some(endpoint.url)
+    } else {
+        log::info!(
+            "Recorded runtime endpoint {} is gone; falling back to the configured URL",
+            endpoint.url
+        );
+        None
     }
 }
 
@@ -346,5 +468,60 @@ mod tests {
     fn a_live_fallback_kernel_is_an_attach_not_a_degradation() {
         assert_eq!(fallback_outcome(true), KernelFallback::Attached);
         assert_eq!(fallback_outcome(false), KernelFallback::Degraded);
+    }
+
+    fn pick(ledger: Option<&str>, runtime: Option<&str>) -> (String, FallbackEndpointSource) {
+        pick_fallback_endpoint(
+            ledger.map(str::to_string),
+            runtime.map(str::to_string),
+            "http://127.0.0.1:9119",
+        )
+    }
+
+    #[test]
+    fn ledger_wins_over_every_other_level() {
+        assert_eq!(
+            pick(
+                Some("http://127.0.0.1:51234"),
+                Some("http://127.0.0.1:60001")
+            ),
+            (
+                "http://127.0.0.1:51234".to_string(),
+                FallbackEndpointSource::Ledger
+            )
+        );
+    }
+
+    #[test]
+    fn recorded_runtime_endpoint_beats_the_configured_url() {
+        assert_eq!(
+            pick(None, Some("http://127.0.0.1:60001")),
+            (
+                "http://127.0.0.1:60001".to_string(),
+                FallbackEndpointSource::RuntimeEndpoint
+            )
+        );
+    }
+
+    #[test]
+    fn configured_url_is_the_last_resort() {
+        assert_eq!(
+            pick(None, None),
+            (
+                "http://127.0.0.1:9119".to_string(),
+                FallbackEndpointSource::Config
+            )
+        );
+        assert_eq!(pick(Some("  "), None).1, FallbackEndpointSource::Config);
+    }
+
+    #[test]
+    fn endpoint_sources_are_labelled_for_the_log() {
+        assert_eq!(FallbackEndpointSource::Ledger.as_str(), "ledger");
+        assert_eq!(
+            FallbackEndpointSource::RuntimeEndpoint.as_str(),
+            "runtime-endpoint"
+        );
+        assert_eq!(FallbackEndpointSource::Config.as_str(), "connection.json");
     }
 }

@@ -207,6 +207,7 @@ pub async fn ssh_probe(target: SshTargetInput) -> AppResult<SshProbeResult> {
         command.stdin(Stdio::null());
         command.stdout(Stdio::piped());
         command.stderr(Stdio::piped());
+        crate::process_ext::hide_console_window(&mut command);
         let child = match command.spawn() {
             Ok(child) => child,
             Err(error) => return Err(format!("无法启动 ssh 客户端：{error}")),
@@ -286,11 +287,14 @@ pub async fn ssh_tunnel_open(input: SshTunnelOpenInput) -> AppResult<SshTunnelRe
     args.insert(4, forward.clone());
     args.push(host_arg);
 
-    let child = Command::new("ssh")
+    let mut command = Command::new("ssh");
+    command
         .args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    crate::process_ext::hide_console_window(&mut command);
+    let child = command
         .spawn()
         .map_err(|error| AppError::InvalidRequest(format!("无法启动 ssh 客户端：{error}")))?;
     let pid = child.id();

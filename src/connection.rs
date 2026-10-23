@@ -203,6 +203,45 @@ impl ConnectionConfig {
     }
 }
 
+/// Shape of the persisted file: the legacy `local`/`managed` entry held the
+/// address of the kernel this desktop started, while the current `external`
+/// entry holds a URL the user picked. Only the legacy shape derives its URL
+/// from the running kernel, so only it may be rewritten on attach.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PersistedMode {
+    Local,
+    External,
+}
+
+#[derive(Deserialize)]
+struct PersistedModeProbe {
+    #[serde(default)]
+    mode: String,
+}
+
+/// Persisted shape of `connection.json`. Anything unreadable, missing, or not
+/// a legacy local/managed file counts as `External`, which is never rewritten.
+pub fn persisted_mode() -> PersistedMode {
+    persisted_mode_from(&config_path())
+}
+
+fn persisted_mode_from(path: &PathBuf) -> PersistedMode {
+    let Ok(content) = fs::read_to_string(path) else {
+        return PersistedMode::External;
+    };
+    match serde_json::from_str::<PersistedModeProbe>(&content) {
+        Ok(probe)
+            if matches!(
+                probe.mode.trim().to_ascii_lowercase().as_str(),
+                "local" | "managed"
+            ) =>
+        {
+            PersistedMode::Local
+        }
+        _ => PersistedMode::External,
+    }
+}
+
 pub fn mode_for_url(url: &str) -> ConnectionMode {
     match url::Url::parse(url) {
         Ok(parsed) if is_loopback_host(&parsed) => ConnectionMode::Local,
@@ -423,6 +462,108 @@ fn write_config_to(path: &PathBuf, config: &ConnectionConfig) -> AppResult<()> {
     }
     fs::rename(&tmp_path, path)?;
     Ok(())
+}
+
+// --- Runtime endpoint -------------------------------------------------------
+
+/// Cache of the endpoint a kernel actually bound to on the previous run.
+/// `connection.json` stays the user's own intent (a pinned external URL is
+/// never rewritten); this file is the desktop's own memo so the next cold
+/// start can probe the real port instead of a dead configured one. It holds no
+/// token and no auth material.
+pub const RUNTIME_ENDPOINT_FILE: &str = "runtime-endpoint.json";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeEndpoint {
+    pub url: String,
+    #[serde(default)]
+    pub updated_at: u64,
+}
+
+pub fn runtime_endpoint_path() -> PathBuf {
+    data_dir::data_dir().join(RUNTIME_ENDPOINT_FILE)
+}
+
+fn normalize_endpoint_url(raw: &str) -> Option<String> {
+    let url = raw.trim().trim_end_matches('/');
+    if url.is_empty() {
+        None
+    } else {
+        Some(url.to_string())
+    }
+}
+
+/// Parse a runtime-endpoint file. Malformed JSON, or a file without a usable
+/// `url`, yields `None` so the fallback chain moves on instead of probing
+/// garbage; a missing `updated_at` is tolerated and reads as 0.
+fn parse_runtime_endpoint(content: &str) -> Option<RuntimeEndpoint> {
+    let file: RuntimeEndpoint = serde_json::from_str(content).ok()?;
+    let url = normalize_endpoint_url(&file.url)?;
+    Some(RuntimeEndpoint {
+        url,
+        updated_at: file.updated_at,
+    })
+}
+
+/// Whether a freshly adopted endpoint has to be written. Same value ⇒ no
+/// rewrite, so a supervisor restarting a kernel on the same port does not
+/// churn the file (and `updated_at` keeps meaning "last real change").
+pub fn runtime_endpoint_changed(current: Option<&RuntimeEndpoint>, url: &str) -> bool {
+    let Some(url) = normalize_endpoint_url(url) else {
+        return false;
+    };
+    current.map(|endpoint| endpoint.url.as_str()) != Some(url.as_str())
+}
+
+pub fn read_runtime_endpoint() -> Option<RuntimeEndpoint> {
+    read_runtime_endpoint_from(&runtime_endpoint_path())
+}
+
+fn read_runtime_endpoint_from(path: &PathBuf) -> Option<RuntimeEndpoint> {
+    let content = fs::read_to_string(path).ok()?;
+    parse_runtime_endpoint(&content)
+}
+
+fn write_runtime_endpoint_to(path: &PathBuf, endpoint: &RuntimeEndpoint) -> AppResult<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| AppError::FileError(format!("no parent dir for {}", path.display())))?;
+    fs::create_dir_all(parent)?;
+    let json = serde_json::to_string_pretty(endpoint)
+        .map_err(|e| AppError::Internal(format!("serialize runtime endpoint: {}", e)))?;
+    let tmp_path = path.with_extension("json.tmp");
+    fs::write(&tmp_path, format!("{}\n", json))?;
+    fs::rename(&tmp_path, path)?;
+    Ok(())
+}
+
+/// Record the endpoint a live kernel answered on. Best effort by design: a
+/// failed write only costs the next cold start one wasted probe, so it is
+/// logged and swallowed instead of failing the boot.
+pub fn record_runtime_endpoint(url: &str) {
+    let Some(url) = normalize_endpoint_url(url) else {
+        return;
+    };
+    let path = runtime_endpoint_path();
+    if !runtime_endpoint_changed(read_runtime_endpoint_from(&path).as_ref(), &url) {
+        return;
+    }
+    let endpoint = RuntimeEndpoint {
+        url: url.clone(),
+        updated_at: now_ms() / 1000,
+    };
+    match write_runtime_endpoint_to(&path, &endpoint) {
+        Ok(()) => log::info!(
+            "runtime-endpoint.json 已记录运行时端点 {}（{}）",
+            url,
+            path.display()
+        ),
+        Err(err) => log::warn!(
+            "写入 runtime-endpoint.json {} 失败（不影响启动）：{}",
+            path.display(),
+            err
+        ),
+    }
 }
 
 /// Normalize an external gateway base URL: http/https only, query and hash
@@ -918,5 +1059,93 @@ mod tests {
         assert!(require_local_filesystem(ConnectionMode::Local, "files").is_ok());
         let remote = require_local_filesystem(ConnectionMode::Remote, "files").unwrap_err();
         assert!(remote.to_string().contains("远端 Hermes"));
+    }
+
+    fn endpoint(url: &str, updated_at: u64) -> RuntimeEndpoint {
+        RuntimeEndpoint {
+            url: url.to_string(),
+            updated_at,
+        }
+    }
+
+    #[test]
+    fn runtime_endpoint_survives_a_serialize_parse_round_trip() {
+        let saved = endpoint("http://127.0.0.1:51234", 1_700_000_000);
+        let json = serde_json::to_string(&saved).unwrap();
+        assert_eq!(parse_runtime_endpoint(&json), Some(saved));
+    }
+
+    #[test]
+    fn runtime_endpoint_parsing_tolerates_broken_files() {
+        assert_eq!(parse_runtime_endpoint("not json at all"), None);
+        assert_eq!(parse_runtime_endpoint("{}"), None);
+        assert_eq!(parse_runtime_endpoint(r#"{"url":"   "}"#), None);
+        assert_eq!(parse_runtime_endpoint(r#"{"url":42}"#), None);
+        assert_eq!(
+            parse_runtime_endpoint(r#"{"url":"http://127.0.0.1:51234/"}"#),
+            Some(endpoint("http://127.0.0.1:51234", 0))
+        );
+        assert_eq!(
+            parse_runtime_endpoint(r#"{"url":"http://127.0.0.1:51234","updated_at":7}"#),
+            Some(endpoint("http://127.0.0.1:51234", 7))
+        );
+    }
+
+    #[test]
+    fn runtime_endpoint_file_round_trips_and_holds_no_secret() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(RUNTIME_ENDPOINT_FILE);
+        let saved = endpoint("http://127.0.0.1:51234", 1_700_000_000);
+        write_runtime_endpoint_to(&path, &saved).unwrap();
+        assert_eq!(read_runtime_endpoint_from(&path), Some(saved));
+        let raw = fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("\"url\""));
+        assert!(raw.contains("\"updated_at\""));
+        assert!(!raw.contains("token"));
+        assert!(!raw.contains("auth"));
+        assert!(!path.with_extension("json.tmp").exists());
+    }
+
+    #[test]
+    fn unchanged_endpoint_is_not_rewritten() {
+        let current = endpoint("http://127.0.0.1:51234", 1_700_000_000);
+        assert!(runtime_endpoint_changed(None, "http://127.0.0.1:51234"));
+        assert!(!runtime_endpoint_changed(
+            Some(&current),
+            "http://127.0.0.1:51234/"
+        ));
+        assert!(runtime_endpoint_changed(
+            Some(&current),
+            "http://127.0.0.1:51235"
+        ));
+        assert!(!runtime_endpoint_changed(Some(&current), "   "));
+        assert!(!runtime_endpoint_changed(None, ""));
+    }
+
+    #[test]
+    #[serial]
+    fn record_runtime_endpoint_skips_an_unchanged_value() {
+        let dir = TempDir::new().unwrap();
+        std::env::set_var("HERMES_DESKTOP_RUNTIME_ROOT", dir.path());
+        let path = runtime_endpoint_path();
+        assert_eq!(path, dir.path().join(RUNTIME_ENDPOINT_FILE));
+
+        record_runtime_endpoint("http://127.0.0.1:51234/");
+        let first = fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            parse_runtime_endpoint(&first).map(|e| e.url),
+            Some("http://127.0.0.1:51234".to_string())
+        );
+
+        record_runtime_endpoint("http://127.0.0.1:51234");
+        assert_eq!(fs::read_to_string(&path).unwrap(), first);
+
+        record_runtime_endpoint("http://127.0.0.1:51235");
+        assert_eq!(
+            read_runtime_endpoint().map(|e| e.url),
+            Some("http://127.0.0.1:51235".to_string())
+        );
+        assert!(!path.with_extension("json.tmp").exists());
+        std::env::remove_var("HERMES_DESKTOP_RUNTIME_ROOT");
     }
 }

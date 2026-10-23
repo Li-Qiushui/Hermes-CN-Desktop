@@ -192,12 +192,7 @@ fn command(program: &str, cwd: &Path) -> Command {
     }
     // The app is a windowed subsystem; without this every git/gh call flashes a
     // console window on Windows (same as process/dashboard.rs, process/gateway.rs).
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
+    crate::process_ext::hide_console_window(&mut cmd);
     cmd
 }
 
