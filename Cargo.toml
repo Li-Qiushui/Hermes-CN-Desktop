@@ -1,6 +1,6 @@
 [package]
 name = "hermes-agent-cn-desktop"
-version = "0.8.0-rc16"
+version = "0.8.0-rc22"
 edition = "2021"
 description = "Hermes Agent CN Desktop (Tauri)"
 authors = ["Hermes Agent CN Contributors"]
@@ -92,6 +92,7 @@ embedded-python = ["dep:pyo3"]
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",
+    "Win32_Security_Cryptography",
     "Win32_System_JobObjects",
     "Win32_System_Threading",
 ] }

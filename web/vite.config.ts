@@ -458,6 +458,11 @@ export default defineConfig({
           if (id.includes("qrcode")) return "vendor-qrcode";
           if (id.includes("@dnd-kit")) return "vendor-dnd";
           if (id.includes("lucide-react")) return "vendor-icons";
+          if (id.includes("shiki") || id.includes("@streamdown/code")) {
+            if (/[\/]shiki[\/]dist[\/](langs|themes)[\/]/.test(id)) return undefined;
+            if (id.includes("@shikijs/langs") || id.includes("@shikijs/themes")) return undefined;
+            return "vendor-shiki";
+          }
           if (id.includes("katex") || id.includes("streamdown") || id.includes("rehype") || id.includes("remark") || id.includes("unified")) return "vendor-markdown";
           return undefined;
         },

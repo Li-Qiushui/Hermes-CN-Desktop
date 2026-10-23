@@ -11,7 +11,7 @@
 // The core logic is exported so scripts/sync-release-version.mjs can drive the
 // same writes for the unified cross-repo version bump.
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -82,6 +82,8 @@ export async function syncDesktopVersion({ version, write = true } = {}) {
   };
 
   const updateText = (relativePath, updater) => {
+    // 文件可能已在分支里被删掉（如 591e62b 移除的多平台发布文档），跳过而不是崩。
+    if (!existsSync(pathOf(relativePath))) return;
     const before = readText(relativePath);
     const after = updater(before);
     if (after === before) return;
