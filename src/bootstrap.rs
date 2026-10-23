@@ -76,6 +76,62 @@ pub fn clear_runtime_degraded(app: &tauri::AppHandle) {
     drop(state);
 }
 
+/// Cheap read of the degraded marker (no fail-closed: a poisoned lock reports
+/// "not degraded" so the recovery loop simply stops instead of spinning).
+fn runtime_degraded(app: &tauri::AppHandle) -> bool {
+    use tauri::Manager;
+    let state = app.state::<AppState>();
+    let guard = state.inner.lock();
+    match guard {
+        Ok(inner) => inner.backend_degraded,
+        Err(_) => false,
+    }
+}
+
+/// Background recovery for a degraded boot. A degraded start is almost always a
+/// race — the managed kernel was still binding its port, or the spawn ledger
+/// held a dead pid — so keep retrying the local kernel and flip the app back to
+/// `ready` the moment one answers, instead of leaving the red badge until the
+/// user clicks 重试启动.
+fn spawn_degraded_recovery(app: tauri::AppHandle) {
+    const ATTEMPTS: usize = 12;
+    const INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
+    tauri::async_runtime::spawn(async move {
+        for _ in 0..ATTEMPTS {
+            tokio::time::sleep(INTERVAL).await;
+            if !runtime_degraded(&app) {
+                return;
+            }
+            let (kernel, ownership) = match kernel_managed::ensure_kernel(None, &kernel_log_dir()).await
+            {
+                Ok(pair) => pair,
+                Err(err) => {
+                    log::debug!("degraded recovery: ensure_kernel failed: {}", err);
+                    continue;
+                }
+            };
+            let base_url = kernel.base_url();
+            let (_, reachable) = connect_local_backend(&app, &base_url).await;
+            if !reachable {
+                log::debug!("degraded recovery: {} not reachable yet", base_url);
+                continue;
+            }
+            log::info!(
+                "degraded recovery: kernel answered at {} (pid {:?}), promoting back to ready",
+                base_url,
+                kernel.pid
+            );
+            clear_runtime_degraded(&app);
+            kernel_managed::set_kernel_status(KernelStatus::from_handle(&kernel, ownership, 0));
+            adopt_kernel_endpoint(&app, &base_url);
+            crate::commands::connection::record_managed_endpoint(&base_url);
+            emit_runtime_status(&app, "ready", "");
+            return;
+        }
+    });
+}
+
 /// Point the live AppState at a kernel base URL. Bootstrap's attach path and
 /// the supervisor's post-restart path both land here so the renderer never
 /// keeps proxying to a port the kernel has already left. The token is carried
@@ -199,15 +255,36 @@ pub async fn connect_managed_local_backend(
                     handle
                 }
                 KernelFallback::Degraded => {
-                    let message = format!(
-                        "本机 Hermes 内核启动失败，配置地址 {} 也不可达：{}",
-                        fallback_url, err
-                    );
-                    record_runtime_degraded(app, message);
+                    // "No kernel binary on this machine" is not a start failure:
+                    // it is a missing component. Say so, and skip the retry loop
+                    // (spawning the same missing binary 12 times helps nobody).
+                    let kernel_missing = kernel_managed::kernel_bin_missing();
+                    let message = if kernel_missing {
+                        format!(
+                            "本机未安装 Hermes 内核（找不到 hermes 可执行文件），配置地址 {} 也不可达：{}",
+                            fallback_url, err
+                        )
+                    } else {
+                        format!(
+                            "本机 Hermes 内核启动失败，配置地址 {} 也不可达：{}",
+                            fallback_url, err
+                        )
+                    };
+                    record_runtime_degraded(app, message.clone());
                     kernel_managed::set_kernel_status(KernelStatus::degraded(
                         fallback_url,
                         err.to_string(),
                     ));
+                    if kernel_missing {
+                        emit_runtime_status(app, "kernel-missing", &message);
+                    } else {
+                        // A degraded boot is usually a race (kernel still
+                        // starting, or a stale ledger entry), so keep probing in
+                        // the background and promote back to ready on our own
+                        // instead of leaving the red badge until the user hits
+                        // 重试.
+                        spawn_degraded_recovery(app.clone());
+                    }
                     handle
                 }
             }

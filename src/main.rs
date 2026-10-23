@@ -181,8 +181,45 @@ fn build_hermesui_response(
     empty_hermesui_response(404)
 }
 
+/// stderr + `<data root>/desktop.log`. The packaged app has no console, so
+/// without the file a degraded boot leaves no trace to diagnose afterwards.
+struct LogTee(std::fs::File);
+
+impl std::io::Write for LogTee {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let _ = std::io::Write::write_all(&mut std::io::stderr(), buf);
+        std::io::Write::write_all(&mut self.0, buf)?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        let _ = std::io::stderr().flush();
+        self.0.flush()
+    }
+}
+
+/// Install the logger. Keeps stderr (dev) and appends to `desktop.log` capped at
+/// ~5 MB, so a support report can always answer "why did it degrade".
+fn init_logging() {
+    let path = data_dir::data_dir().join("desktop.log");
+    if let Ok(meta) = fs::metadata(&path) {
+        if meta.len() > 5 * 1024 * 1024 {
+            let _ = fs::remove_file(&path);
+        }
+    }
+    let mut builder = env_logger::Builder::from_env(
+        // The packaged app has no console: without a default level the file only
+        // ever records errors and the boot trail (attach/spawn/degraded) is lost.
+        env_logger::Env::default().default_filter_or("info"),
+    );
+    if let Ok(file) = fs::OpenOptions::new().create(true).append(true).open(&path) {
+        builder.target(env_logger::Target::Pipe(Box::new(LogTee(file))));
+    }
+    let _ = builder.try_init();
+}
+
 fn main() {
-    env_logger::init();
+    init_logging();
 
     // Windows: keep the WebView2 user-data folder (network cache, IndexedDB,
     // service workers, GPU cache — all of which grow over time) under the

@@ -770,6 +770,13 @@ fn spawn_create_time(pid: u32) -> Option<f64> {
         .or_else(|| process_start_time(pid))
 }
 
+/// True when no `hermes` executable can be found at all — the machine simply
+/// has no local kernel installed, which is a different story from "it failed to
+/// start" and deserves different wording in the UI.
+pub fn kernel_bin_missing() -> bool {
+    resolve_hermes_bin().is_none()
+}
+
 pub fn resolve_hermes_bin() -> Option<PathBuf> {
     if let Some(explicit) = std::env::var_os(KERNEL_BIN_ENV).filter(|v| !v.is_empty()) {
         return Some(PathBuf::from(explicit));

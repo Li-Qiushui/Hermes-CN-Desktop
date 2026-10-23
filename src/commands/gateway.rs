@@ -22,6 +22,10 @@ pub struct RuntimeConfig {
     pub connection_mode: String,
     /// Whether REST/Gateway requests can currently reach a configured backend.
     pub backend_ready: bool,
+    /// Degraded *and* no local kernel binary at all: the machine has no Hermes
+    /// kernel installed, so the UI should offer install/remote guidance instead
+    /// of "start failed, retry".
+    pub kernel_missing: bool,
     pub guide_state: String,
     /// Kept for the renderer contract: an external kernel is always "running"
     /// from the desktop's point of view (it is not ours to stop).
@@ -45,6 +49,7 @@ pub fn get_runtime_config(state: State<'_, AppState>) -> Result<RuntimeConfig, A
         backend_ready: inner.dashboard_handle.is_some()
             && !inner.api_base_url.trim().is_empty()
             && !inner.backend_degraded,
+        kernel_missing: inner.backend_degraded && crate::kernel_managed::kernel_bin_missing(),
         guide_state: control.guide_state.as_str().to_string(),
         managed_runtime_desired_state: "running".to_string(),
         managed_runtime_lifecycle_state: "running".to_string(),
