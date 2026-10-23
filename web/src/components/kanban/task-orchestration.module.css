@@ -1,0 +1,265 @@
+.wrap {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--h-line);
+  border-radius: 0;
+  background: var(--h-bg-soft);
+}
+
+.block {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--h-line);
+  border-radius: 0;
+  background: var(--h-bg-pane);
+}
+
+.block h3 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--h-text);
+  font-family: var(--h-font-cn);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.hint {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0;
+  color: var(--h-text-3);
+  font-family: var(--h-font-cn);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.rows {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--h-line-soft);
+  border-radius: 0;
+  background: var(--h-bg-pane);
+}
+
+.role {
+  padding: 1px 6px;
+  border: 1px solid var(--h-line);
+  border-radius: 0;
+  color: var(--h-text-2);
+  font-family: var(--h-font-cn);
+  font-size: 12.5px;
+}
+
+.role[data-role="parent"] {
+  border-color: var(--h-accent-border);
+  color: var(--h-accent);
+}
+
+.rowTitle {
+  overflow: hidden;
+  color: var(--h-text);
+  font-family: var(--h-font-cn);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rowStatus {
+  color: var(--h-text-3);
+  font-family: var(--h-font-cn);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.rowAction {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--h-line-soft);
+  border-radius: 0;
+  background: transparent;
+  color: var(--h-text-3);
+  cursor: pointer;
+}
+
+.rowAction:hover:not(:disabled) {
+  border-color: var(--h-err-border);
+  color: var(--h-err);
+}
+
+.rowAction:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.select,
+.input {
+  flex: 1 1 150px;
+  min-width: 0;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--h-line-soft);
+  border-radius: 0;
+  background: var(--h-bg-input, var(--h-bg-pane));
+  color: var(--h-text);
+  font-family: var(--h-font-cn);
+  font-size: 13px;
+}
+
+.select:focus,
+.input:focus {
+  outline: none;
+  border-color: var(--h-accent);
+}
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--h-line);
+  border-radius: 0;
+  background: var(--h-bg-chip, var(--h-bg-pane));
+  color: var(--h-text);
+  font-family: var(--h-font-cn);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.button:hover:not(:disabled) {
+  border-color: var(--h-accent-border);
+  color: var(--h-accent);
+}
+
+.button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--h-text-2);
+  font-family: var(--h-font-cn);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.blockedBox {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+  padding: 8px;
+  border: 1px solid var(--h-warn-border);
+  border-radius: 0;
+  background: var(--h-warn-soft);
+}
+
+.blockedReason {
+  margin: 0;
+  color: var(--h-text);
+  font-family: var(--h-font-cn);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.result {
+  display: grid;
+  gap: 4px;
+  padding: 8px;
+  border: 1px solid var(--h-line);
+  border-radius: 0;
+  background: var(--h-bg-soft);
+}
+
+.result[data-tone="ok"] {
+  border-color: var(--h-ok-border);
+}
+
+.result[data-tone="err"] {
+  border-color: var(--h-err-border);
+  background: var(--h-err-soft);
+}
+
+.resultText {
+  margin: 0;
+  color: var(--h-text);
+  font-family: var(--h-font-cn);
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.resultMeta {
+  margin: 0;
+  color: var(--h-text-3);
+  font-family: var(--h-font-mono);
+  font-size: 12.5px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.error {
+  margin: 0;
+  color: var(--h-err);
+  font-family: var(--h-font-cn);
+  font-size: 12.5px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.upload {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px dashed var(--h-line);
+  border-radius: 0;
+  color: var(--h-text-2);
+  font-family: var(--h-font-cn);
+  font-size: 13px;
+  cursor: pointer;
+  justify-self: start;
+}
+
+.upload:hover {
+  border-color: var(--h-accent-border);
+  color: var(--h-accent);
+}
+
+.fileInput {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}

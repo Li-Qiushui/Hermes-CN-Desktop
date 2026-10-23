@@ -1,13 +1,25 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { deleteJSON, fetchJSON, patchJSON, postJSON } from "@/lib/transport";
 import { requestKanbanDispatch } from "@/lib/kanban-dispatch";
+import { uploadKanbanAttachment } from "@/lib/kanban-upload";
+import type { KanbanUploadResult } from "@/lib/kanban-upload";
+import {
+  attachmentDeletePath,
+  attachmentUploadPath,
+  buildArchiveBoardPath,
+  buildLinkBody,
+  buildReassignBody,
+} from "@/lib/kanban-orchestration";
 import type {
   KanbanAssigneesResponse,
   KanbanBoardResponse,
   KanbanBoardView,
   KanbanBoardsResponse,
   KanbanBulkResponse,
+  KanbanDecomposeResponse,
   KanbanDiagnosticsResponse,
+  KanbanProfilesResponse,
+  KanbanReassignResponse,
   KanbanTask,
   KanbanTaskDetailResponse,
   KanbanTaskLogResponse,
@@ -18,6 +30,7 @@ export const kanbanKeys = {
   boards: ["kanban", "boards"] as const,
   workflow: ["kanban", "workflow"] as const,
   assignees: ["kanban", "assignees"] as const,
+  profiles: ["kanban", "profiles"] as const,
   boardAll: (slug: string) => ["kanban", "board", slug] as const,
   board: (slug: string, view: KanbanBoardView = "active") => ["kanban", "board", slug, view] as const,
   task: (slug: string, id: string) => ["kanban", "task", slug, id] as const,
@@ -227,6 +240,145 @@ export function useBulkKanbanTasks(slug: string) {
       queryClient.invalidateQueries({ queryKey: kanbanKeys.boardAll(slug) });
       queryClient.invalidateQueries({ queryKey: kanbanKeys.boards });
       requestKanbanDispatch(slug);
+    },
+  });
+}
+
+export function useKanbanProfiles() {
+  return useQuery<KanbanProfilesResponse>({
+    queryKey: kanbanKeys.profiles,
+    queryFn: ({ signal }) => fetchJSON<KanbanProfilesResponse>("/api/plugins/kanban/profiles", { signal }),
+    staleTime: 5 * 60_000,
+    retry: 1,
+  });
+}
+
+function invalidateTaskGraph(queryClient: ReturnType<typeof useQueryClient>, slug: string, taskId: string): void {
+  queryClient.invalidateQueries({ queryKey: kanbanKeys.task(slug, taskId) });
+  queryClient.invalidateQueries({ queryKey: kanbanKeys.boardAll(slug) });
+  queryClient.invalidateQueries({ queryKey: kanbanKeys.diagnostics(slug) });
+}
+
+export interface AddKanbanLinkInput {
+  parentId: string;
+  childId: string;
+  taskId: string;
+}
+
+export function useAddKanbanLink(slug: string) {
+  const queryClient = useQueryClient();
+  return useMutation<{ ok: boolean; gated?: unknown }, Error, AddKanbanLinkInput>({
+    mutationFn: ({ parentId, childId }) =>
+      postJSON<{ ok: boolean; gated?: unknown }>(
+        `/api/plugins/kanban/links?${boardQuery(slug)}`,
+        buildLinkBody(parentId, childId) ?? {},
+      ),
+    onSuccess: (_result, variables) => invalidateTaskGraph(queryClient, slug, variables.taskId),
+  });
+}
+
+export function useRemoveKanbanLink(slug: string) {
+  const queryClient = useQueryClient();
+  return useMutation<{ ok: boolean }, Error, AddKanbanLinkInput>({
+    mutationFn: ({ parentId, childId }) =>
+      deleteJSON<{ ok: boolean }>(
+        `/api/plugins/kanban/links?${boardQuery(slug)}&parent_id=${encodeURIComponent(parentId)}&child_id=${encodeURIComponent(childId)}`,
+      ),
+    onSuccess: (_result, variables) => invalidateTaskGraph(queryClient, slug, variables.taskId),
+  });
+}
+
+export interface ReassignKanbanTaskInput {
+  taskId: string;
+  profile: string;
+  reclaimFirst?: boolean;
+  reason?: string;
+}
+
+export function useReassignKanbanTask(slug: string) {
+  const queryClient = useQueryClient();
+  return useMutation<KanbanReassignResponse, Error, ReassignKanbanTaskInput>({
+    mutationFn: ({ taskId, profile, reclaimFirst, reason }) =>
+      postJSON<KanbanReassignResponse>(
+        `/api/plugins/kanban/tasks/${encodeURIComponent(taskId)}/reassign?${boardQuery(slug)}`,
+        buildReassignBody({ profile, reclaimFirst, reason }) ?? { profile: null },
+      ),
+    onSuccess: (_result, variables) => {
+      invalidateTaskGraph(queryClient, slug, variables.taskId);
+      requestKanbanDispatch(slug);
+    },
+  });
+}
+
+export function useReclaimKanbanTask(slug: string) {
+  const queryClient = useQueryClient();
+  return useMutation<{ ok: boolean }, Error, { taskId: string; reason?: string }>({
+    mutationFn: ({ taskId, reason }) =>
+      postJSON<{ ok: boolean }>(
+        `/api/plugins/kanban/tasks/${encodeURIComponent(taskId)}/reclaim?${boardQuery(slug)}`,
+        { reason: reason ?? null },
+      ),
+    onSuccess: (_result, variables) => invalidateTaskGraph(queryClient, slug, variables.taskId),
+  });
+}
+
+export function useDecomposeKanbanTask(slug: string) {
+  const queryClient = useQueryClient();
+  return useMutation<KanbanDecomposeResponse, Error, { taskId: string }>({
+    mutationFn: ({ taskId }) =>
+      postJSON<KanbanDecomposeResponse>(
+        `/api/plugins/kanban/tasks/${encodeURIComponent(taskId)}/decompose?${boardQuery(slug)}`,
+        { author: "dashboard" },
+      ),
+    onSuccess: (_result, variables) => {
+      invalidateTaskGraph(queryClient, slug, variables.taskId);
+      requestKanbanDispatch(slug);
+    },
+  });
+}
+
+export function useUploadKanbanAttachment(slug: string) {
+  const queryClient = useQueryClient();
+  return useMutation<KanbanUploadResult, Error, { taskId: string; file: File }>({
+    mutationFn: async ({ taskId, file }) => {
+      const result = await uploadKanbanAttachment(attachmentUploadPath(taskId, slug), file);
+      if (!result.ok) throw new Error(result.error ?? "上传失败");
+      return result;
+    },
+    onSuccess: (_result, variables) => invalidateTaskGraph(queryClient, slug, variables.taskId),
+  });
+}
+
+export function useDeleteKanbanAttachment(slug: string) {
+  const queryClient = useQueryClient();
+  return useMutation<unknown, Error, { taskId: string; attachmentId: number }>({
+    mutationFn: ({ attachmentId }) =>
+      deleteJSON(`${attachmentDeletePath(attachmentId)}?${boardQuery(slug)}`),
+    onSuccess: (_result, variables) => invalidateTaskGraph(queryClient, slug, variables.taskId),
+  });
+}
+
+export interface CreateKanbanBoardVariables {
+  body: Record<string, unknown>;
+}
+
+export function useCreateKanbanBoard() {
+  const queryClient = useQueryClient();
+  return useMutation<{ board?: { slug?: string } | null; current?: string | null }, Error, CreateKanbanBoardVariables>({
+    mutationFn: ({ body }) => postJSON("/api/plugins/kanban/boards", body),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: kanbanKeys.boards });
+    },
+  });
+}
+
+export function useArchiveKanbanBoard() {
+  const queryClient = useQueryClient();
+  return useMutation<unknown, Error, { slug: string }>({
+    mutationFn: ({ slug }) =>
+      deleteJSON(`${buildArchiveBoardPath(slug)}?delete=false`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: kanbanKeys.boards });
     },
   });
 }

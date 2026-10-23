@@ -159,4 +159,49 @@ describe("TaskDrawer 四块", () => {
     renderDrawer({ detail: detailOf({ runs: [] }), log: null });
     expect(screen.queryByText("日志尾")).toBeNull();
   });
+  it("没有编排回调时不渲染编排区（端点缺失时优雅隐藏）", () => {
+    renderDrawer();
+    expect(screen.queryByLabelText("编排")).toBeNull();
+  });
+
+  it("带编排回调时渲染依赖/阻塞/重派/附件，且诊断动作可点", () => {
+    const onDiagnosticAction = vi.fn();
+    renderDrawer({
+      profiles: ["writer"],
+      detail: detailOf({
+        links: { parents: ["t_parent"], children: [] },
+        link_tasks: [{ id: "t_parent", title: "前置卡", status: "done" }],
+        attachments: [{ id: 3, task_id: "t_f40272a6", filename: "a.txt", size: 10 }],
+      }),
+      diagnostics: [
+        {
+          kind: "completion_blocked_hallucination",
+          severity: "error",
+          title: "完成被拒",
+          detail: "引用了不存在的卡",
+          data: { phantom_ids: ["t_dead"] },
+          actions: [{ kind: "reclaim", label: "回收任务", payload: {} }],
+        },
+      ],
+      onBlock: vi.fn(),
+      onUnblock: vi.fn(),
+      onAddLink: vi.fn(),
+      onRemoveLink: vi.fn(),
+      onReassign: vi.fn(),
+      onDecompose: vi.fn(),
+      onUploadAttachment: vi.fn(),
+      onDeleteAttachment: vi.fn(),
+      onDiagnosticAction,
+    });
+    const orchestration = screen.getByLabelText("编排");
+    expect(orchestration.textContent).toContain("前置卡");
+    expect(orchestration.textContent).toContain("重派");
+    expect(orchestration.textContent).toContain("a.txt");
+
+    const callout = screen.getByLabelText("诊断");
+    expect(callout.textContent).toContain("完成被拒");
+    expect(callout.textContent).toContain("t_dead");
+    fireEvent.click(screen.getByText("回收任务"));
+    expect(onDiagnosticAction).toHaveBeenCalledWith("reclaim", {});
+  });
 });

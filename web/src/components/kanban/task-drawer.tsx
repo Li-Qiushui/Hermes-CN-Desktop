@@ -15,6 +15,15 @@ import {
   type KanbanTaskLogResponse,
   type KanbanWorkflowColumn,
 } from "@/lib/kanban";
+import {
+  diagnosticActions,
+  diagnosticCommand,
+  diagnosticText as diagnosticHeadline,
+  phantomIdsOf,
+  type DecomposeOutcome,
+  type LinkCandidate,
+} from "@/lib/kanban-orchestration";
+import { TaskOrchestration } from "./task-orchestration";
 import s from "./task-drawer.module.css";
 
 const ACTIVITY_PAGE_SIZE = 20;
@@ -33,9 +42,23 @@ export interface TaskDrawerProps {
   columns: KanbanWorkflowColumn[];
   assignees: string[];
   saving: boolean;
+  profiles?: string[];
+  boardTasks?: LinkCandidate[];
+  orchestrationBusy?: string | null;
+  orchestrationError?: string | null;
+  decompose?: DecomposeOutcome | null;
   onClose: () => void;
   onSave: (patch: { status?: string; assignee?: string; title?: string }) => void;
   onAddComment?: (body: string) => boolean | void | Promise<boolean | void>;
+  onAddLink?: (role: "parent" | "child", otherId: string) => void;
+  onRemoveLink?: (role: "parent" | "child", otherId: string) => void;
+  onBlock?: (reason: string) => void;
+  onUnblock?: () => void;
+  onDecompose?: () => void;
+  onReassign?: (profile: string, reclaimFirst: boolean) => void;
+  onUploadAttachment?: (file: File) => void;
+  onDeleteAttachment?: (attachmentId: number) => void;
+  onDiagnosticAction?: (kind: string, payload?: Record<string, unknown> | null) => void;
 }
 
 function severityLabel(severity: string | null | undefined): string {
@@ -43,12 +66,6 @@ function severityLabel(severity: string | null | undefined): string {
   if (severity === "error") return "错误";
   if (severity === "warning") return "警告";
   return severity || "提示";
-}
-
-function diagnosticText(item: KanbanDiagnostic): string {
-  const message = (item.message ?? item.detail ?? "").trim();
-  if (message) return message;
-  return item.kind;
 }
 
 function diagnosticAdvice(item: KanbanDiagnostic): string | null {
@@ -70,9 +87,23 @@ export function TaskDrawer({
   columns,
   assignees,
   saving,
+  profiles = [],
+  boardTasks = [],
+  orchestrationBusy = null,
+  orchestrationError = null,
+  decompose = null,
   onClose,
   onSave,
   onAddComment,
+  onAddLink,
+  onRemoveLink,
+  onBlock,
+  onUnblock,
+  onDecompose,
+  onReassign,
+  onUploadAttachment,
+  onDeleteAttachment,
+  onDiagnosticAction,
 }: TaskDrawerProps) {
   const current = detail?.task ?? task;
   const [title, setTitle] = useState("");
@@ -131,6 +162,7 @@ export function TaskDrawer({
   const body = detail?.task?.body ?? current.body;
   const failure = current.last_failure_error;
   const hasLog = runs.length > 0 || Boolean(log?.exists);
+  const orchestrationWired = Boolean(onBlock || onAddLink || onUnblock || onReassign || onUploadAttachment);
 
   const submit = () => {
     const patch: { status?: string; assignee?: string; title?: string } = {};
@@ -172,15 +204,61 @@ export function TaskDrawer({
                 诊断 · {taskDiagnostics.length} 条
               </div>
               <ul className={s.calloutList}>
-                {taskDiagnostics.map((item, index) => (
-                  <li key={`${item.kind}-${index}`}>
-                    <span className={s.calloutSeverity}>{severityLabel(item.severity)}</span>
-                    <span className={s.calloutText}>{diagnosticText(item)}</span>
-                    {diagnosticAdvice(item) ? (
-                      <span className={s.calloutAdvice}>建议：{diagnosticAdvice(item)}（需手动处理）</span>
-                    ) : null}
-                  </li>
-                ))}
+                {taskDiagnostics.map((item, index) => {
+                  const phantoms = phantomIdsOf(item);
+                  const actions = diagnosticActions(item);
+                  return (
+                    <li key={`${item.kind}-${index}`}>
+                      <span className={s.calloutSeverity}>{severityLabel(item.severity)}</span>
+                      <span className={s.calloutText}>{diagnosticHeadline(item)}</span>
+                      {diagnosticAdvice(item) ? (
+                        <span className={s.calloutAdvice}>建议：{diagnosticAdvice(item)}（需手动处理）</span>
+                      ) : null}
+                      {phantoms.length > 0 ? (
+                        <span className={s.phantomRow} aria-label="幻影任务 id">
+                          <span className={s.phantomLabel}>幻影 id：</span>
+                          {phantoms.map((id) => (
+                            <code key={id} className={s.phantomChip}>
+                              {id}
+                            </code>
+                          ))}
+                        </span>
+                      ) : null}
+                      {actions.length > 0 && onDiagnosticAction ? (
+                        <span className={s.actionRow}>
+                          {actions.map((action, actionIndex) => {
+                            const command = diagnosticCommand(action);
+                            if (command) {
+                              return (
+                                <code key={`${action.kind}-${actionIndex}`} className={s.phantomChip}>
+                                  {command}
+                                </code>
+                              );
+                            }
+                            if (action.kind === "comment" || action.kind === "open_docs") {
+                              return (
+                                <span key={`${action.kind}-${actionIndex}`} className={s.actionHint}>
+                                  {action.label}
+                                </span>
+                              );
+                            }
+                            return (
+                              <button
+                                key={`${action.kind}-${actionIndex}`}
+                                type="button"
+                                className={s.actionButton}
+                                data-suggested={action.suggested ? "true" : undefined}
+                                onClick={() => onDiagnosticAction(action.kind, action.payload ?? null)}
+                              >
+                                {action.label}
+                              </button>
+                            );
+                          })}
+                        </span>
+                      ) : null}
+                    </li>
+                  );
+                })}
               </ul>
             </section>
           ) : null}
@@ -269,6 +347,26 @@ export function TaskDrawer({
               </h3>
               <pre className={s.pre}>{failure}</pre>
             </section>
+          ) : null}
+
+          {orchestrationWired ? (
+            <TaskOrchestration
+              task={current}
+              detail={detail}
+              profiles={profiles}
+              boardTasks={boardTasks}
+              busy={orchestrationBusy}
+              error={orchestrationError}
+              decompose={decompose}
+              onAddLink={(role, otherId) => onAddLink?.(role, otherId)}
+              onRemoveLink={(role, otherId) => onRemoveLink?.(role, otherId)}
+              onBlock={(reason) => onBlock?.(reason)}
+              onUnblock={() => onUnblock?.()}
+              onDecompose={() => onDecompose?.()}
+              onReassign={(profile, reclaimFirst) => onReassign?.(profile, reclaimFirst)}
+              onUploadAttachment={(file) => onUploadAttachment?.(file)}
+              onDeleteAttachment={(attachmentId) => onDeleteAttachment?.(attachmentId)}
+            />
           ) : null}
 
           <section className={s.section} aria-label="评论">

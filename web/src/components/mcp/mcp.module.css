@@ -82,6 +82,7 @@
 /* ── 服务 / 目录卡片 ── */
 .card {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   gap: 12px;
   padding: 16px;
@@ -224,4 +225,376 @@
 
 .link:hover {
   opacity: 0.85;
+}
+
+/* ── 服务详情（工具开关 / 日志 / 原始 JSON）── */
+.detailPanel {
+  flex-basis: 100%;
+  width: 100%;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--h-line);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.detailTabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.detailTab {
+  font-size: 12.5px;
+  padding: 5px 12px;
+  border-radius: 0;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--h-text-3);
+  cursor: pointer;
+}
+
+.detailTab[data-active="1"] {
+  border-color: var(--h-line);
+  background: var(--h-bg-soft);
+  color: var(--h-text);
+}
+
+.detailTab:hover:not([data-active="1"]) {
+  color: var(--h-text);
+}
+
+.detailCost {
+  margin-left: auto;
+  font-size: 12.5px;
+  color: var(--h-text-3);
+}
+
+.detailEmpty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--h-text-3);
+  line-height: 1.6;
+}
+
+.detailEmpty p {
+  margin: 0;
+}
+
+/* ── 工具开关 ── */
+.toolPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.toolPanelHead {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.toolPanelTitle {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--h-text);
+}
+
+.toolPanelHint {
+  font-family: var(--h-font-mono);
+  font-size: 12.5px;
+  color: var(--h-text-3);
+  word-break: break-all;
+}
+
+.toolReadonly {
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--h-line);
+  background: var(--h-bg-soft);
+  font-size: 12.5px;
+  color: var(--h-text-2);
+  line-height: 1.6;
+}
+
+.toolRows {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--h-line);
+}
+
+.toolRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--h-line);
+}
+
+.toolRow:last-child {
+  border-bottom: none;
+}
+
+.toolRow[data-enabled="0"] {
+  background: var(--h-bg-soft);
+}
+
+.toolRow[data-enabled="0"] .toolName {
+  color: var(--h-text-3);
+  text-decoration: line-through;
+}
+
+.toolSwitch {
+  position: relative;
+  flex-shrink: 0;
+  width: 32px;
+  height: 18px;
+  padding: 0;
+  border-radius: 0;
+  border: 1px solid var(--h-line);
+  background: var(--h-bg-pane);
+  cursor: pointer;
+}
+
+.toolSwitch[data-on="1"] {
+  background: var(--h-accent);
+  border-color: var(--h-accent);
+}
+
+.toolSwitch:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.toolSwitchKnob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 0;
+  background: var(--h-text-3);
+}
+
+.toolSwitch[data-on="1"] .toolSwitchKnob {
+  left: 16px;
+  background: var(--h-bg-pane);
+}
+
+.toolMeta {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.toolName {
+  font-family: var(--h-font-mono);
+  font-size: 12.5px;
+  color: var(--h-text);
+  word-break: break-all;
+}
+
+.toolDesc {
+  font-size: 12.5px;
+  color: var(--h-text-3);
+  line-height: 1.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.toolCost {
+  flex-shrink: 0;
+  font-family: var(--h-font-mono);
+  font-size: 12.5px;
+  color: var(--h-text-3);
+}
+
+.toolFootnote {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--h-text-3);
+  line-height: 1.6;
+}
+
+/* ── 日志面板 ── */
+.logPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.logBar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.logSources {
+  display: inline-flex;
+  border: 1px solid var(--h-line);
+}
+
+.logSourceTab {
+  font-size: 12.5px;
+  padding: 5px 12px;
+  border: none;
+  border-right: 1px solid var(--h-line);
+  border-radius: 0;
+  background: transparent;
+  color: var(--h-text-3);
+  cursor: pointer;
+}
+
+.logSourceTab:last-child {
+  border-right: none;
+}
+
+.logSourceTab[data-active="1"] {
+  background: var(--h-bg-soft);
+  color: var(--h-text);
+}
+
+.logSearch {
+  flex: 1;
+  min-width: 140px;
+  font-size: 12.5px;
+  padding: 5px 10px;
+  border-radius: 0;
+  border: 1px solid var(--h-line);
+  background: var(--h-bg-pane);
+  color: var(--h-text);
+}
+
+.logPause {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12.5px;
+  padding: 5px 10px;
+  border-radius: 0;
+  border: 1px solid var(--h-line);
+  background: transparent;
+  color: var(--h-text-2);
+  cursor: pointer;
+}
+
+.logPause[data-on="1"] {
+  background: var(--h-bg-soft);
+  color: var(--h-text);
+}
+
+.logHint {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--h-text-3);
+  line-height: 1.6;
+  word-break: break-all;
+}
+
+.logEmpty {
+  margin: 0;
+  padding: 16px;
+  border: 1px dashed var(--h-line);
+  font-size: 12.5px;
+  color: var(--h-text-3);
+}
+
+.logError {
+  margin: 0;
+  padding: 12px 16px;
+  border: 1px solid var(--h-line);
+  font-size: 12.5px;
+  color: var(--h-err);
+}
+
+.logBody {
+  margin: 0;
+  max-height: 280px;
+  overflow: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--h-line);
+  background: var(--h-bg-soft);
+  font-family: var(--h-font-mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--h-text-2);
+}
+
+.logLine {
+  display: block;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* ── 原始 JSON 编辑 ── */
+.rawPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.rawBar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.rawTitle {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--h-text);
+}
+
+.rawState {
+  font-size: 12.5px;
+  color: var(--h-text-3);
+}
+
+.rawState[data-ok="0"] {
+  color: var(--h-err);
+}
+
+.rawActions {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 8px;
+}
+
+.rawArea {
+  min-height: 220px;
+  max-height: 420px;
+  padding: 10px 12px;
+  border-radius: 0;
+  border: 1px solid var(--h-line);
+  background: var(--h-bg-soft);
+  color: var(--h-text);
+  font-family: var(--h-font-mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+  resize: vertical;
+}
+
+.rawError {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--h-err);
+  line-height: 1.6;
+}
+
+.rawHint {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--h-text-3);
+  line-height: 1.6;
 }

@@ -273,6 +273,66 @@
   overflow-wrap: anywhere;
 }
 
+.phantomRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.phantomLabel {
+  color: var(--h-text-3);
+  font-size: 12.5px;
+}
+
+.phantomChip {
+  padding: 0 5px;
+  border: 1px solid var(--h-line);
+  border-radius: 0;
+  background: var(--h-bg-pane);
+  color: var(--h-text-2);
+  font-family: var(--h-font-mono);
+  font-size: 12.5px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.actionRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.actionButton {
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--h-line);
+  border-radius: 0;
+  background: transparent;
+  color: var(--h-text-2);
+  font-family: var(--h-font-cn);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.actionButton[data-suggested="true"] {
+  border-color: var(--h-accent-border);
+  color: var(--h-accent);
+}
+
+.actionButton:hover {
+  border-color: var(--h-accent-border);
+  color: var(--h-accent);
+}
+
+.actionHint {
+  color: var(--h-text-3);
+  font-size: 12.5px;
+}
+
 .comments {
   display: grid;
   gap: 8px;

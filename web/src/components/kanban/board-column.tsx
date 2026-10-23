@@ -2,6 +2,7 @@ import { memo, type ReactNode } from "react";
 import { useDroppable } from "@dnd-kit/core";
 import { ChevronDown, ChevronLeft, ChevronRight } from "lucide-react";
 import { kanbanColumnLabel, type ColumnCollapseState, type ColumnView } from "@/lib/kanban";
+import { groupTasksByAssignee, type Swimlane } from "@/lib/kanban-orchestration";
 import { TaskCard } from "./task-card";
 import s from "./board-column.module.css";
 
@@ -13,6 +14,7 @@ interface BoardColumnProps {
   collapse: ColumnCollapseState;
   filtersActive: boolean;
   bulkSelectedIds?: readonly string[];
+  swimlanes?: boolean;
   onOpenTask: (taskId: string) => void;
   onToggleSelectTask?: (taskId: string) => void;
   onExpandDone: () => void;
@@ -28,6 +30,7 @@ function BoardColumnInner({
   collapse,
   filtersActive,
   bulkSelectedIds,
+  swimlanes = false,
   onOpenTask,
   onToggleSelectTask,
   onExpandDone,
@@ -42,6 +45,19 @@ function BoardColumnInner({
   const dropState = dragging ? (view.dragTarget ? "allowed" : "forbidden") : undefined;
   const narrow = collapse.collapsed && !(dragging && isOver);
   const columnLabel = kanbanColumnLabel(view.label);
+  const lanes: Swimlane[] | null = swimlanes ? groupTasksByAssignee(view.tasks) : null;
+
+  const renderCard = (task: (typeof view.tasks)[number]) => (
+    <TaskCard
+      key={task.id}
+      task={task}
+      selected={selectedId === task.id}
+      bulkSelected={bulkSelectedIds ? bulkSelectedIds.includes(task.id) : false}
+      draggable={canDrag}
+      onOpen={onOpenTask}
+      onToggleSelect={onToggleSelectTask}
+    />
+  );
 
   return (
     <section
@@ -102,18 +118,18 @@ function BoardColumnInner({
                 <p className={s.empty}>
                   {view.unfilteredTotal > 0 ? "没有符合筛选的任务" : "这一列还没有任务"}
                 </p>
-              ) : (
-                view.tasks.map((task) => (
-                  <TaskCard
-                    key={task.id}
-                    task={task}
-                    selected={selectedId === task.id}
-                    bulkSelected={bulkSelectedIds ? bulkSelectedIds.includes(task.id) : false}
-                    draggable={canDrag}
-                    onOpen={onOpenTask}
-                    onToggleSelect={onToggleSelectTask}
-                  />
+              ) : lanes ? (
+                lanes.map((lane) => (
+                  <div key={lane.key} className={s.lane} data-lane={lane.key}>
+                    <div className={s.laneHead}>
+                      <span className={s.laneLabel}>{lane.label}</span>
+                      <span className={s.laneCount}>{lane.tasks.length}</span>
+                    </div>
+                    {lane.tasks.map(renderCard)}
+                  </div>
                 ))
+              ) : (
+                view.tasks.map(renderCard)
               )}
               {view.hiddenCount > 0 ? (
                 <button type="button" className={s.moreRow} onClick={onShowAllDone}>

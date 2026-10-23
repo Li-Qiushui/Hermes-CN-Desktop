@@ -3,3 +3,8 @@ export { McpInstallDialog } from "./mcp-install-dialog";
 export { McpDeleteDialog } from "./mcp-delete-dialog";
 export { McpServerCard } from "./mcp-server-card";
 export { McpCatalogCard } from "./mcp-catalog-card";
+export { McpServerDetail } from "./mcp-server-detail";
+export { McpStatusBadge } from "./mcp-status-badge";
+export { McpToolList } from "./mcp-tool-list";
+export { McpLogPanel } from "./mcp-log-panel";
+export { McpRawEditor } from "./mcp-raw-editor";

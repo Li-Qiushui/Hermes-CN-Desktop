@@ -21,13 +21,23 @@ export interface KanbanTaskWarnings {
   highest_severity?: string | null;
 }
 
+export interface KanbanDiagnosticAction {
+  kind: string;
+  label: string;
+  payload?: Record<string, unknown> | null;
+  suggested?: boolean | null;
+}
+
 export interface KanbanDiagnostic {
   kind: string;
   severity?: string | null;
+  title?: string | null;
   message?: string | null;
   detail?: string | null;
   action?: string | null;
   suggestion?: string | null;
+  actions?: KanbanDiagnosticAction[] | null;
+  data?: Record<string, unknown> | null;
   count?: number | null;
   last_seen_at?: number | null;
 }
@@ -97,6 +107,8 @@ export interface KanbanBoardSummary {
   slug: string;
   name: string;
   description?: string;
+  icon?: string | null;
+  archived?: boolean | null;
   counts?: { done?: number; archived?: number } | null;
   total?: number;
   is_current?: boolean;
@@ -168,6 +180,12 @@ export interface KanbanChildResult {
   result?: string | null;
 }
 
+export interface KanbanLinkRef {
+  id: string;
+  title?: string | null;
+  status?: string | null;
+}
+
 export interface KanbanTaskDetailResponse extends KanbanTaskResponse {
   comments?: KanbanTaskComment[] | null;
   events?: KanbanTaskEvent[] | null;
@@ -175,6 +193,40 @@ export interface KanbanTaskDetailResponse extends KanbanTaskResponse {
   attachments?: KanbanTaskAttachment[] | null;
   child_results?: KanbanChildResult[] | null;
   links?: { parents?: string[] | null; children?: string[] | null } | null;
+  link_tasks?: KanbanLinkRef[] | null;
+}
+
+export interface KanbanProfile {
+  name: string;
+  is_default?: boolean | null;
+  model?: string | null;
+  provider?: string | null;
+  description?: string | null;
+  description_auto?: boolean | null;
+  skill_count?: number | null;
+}
+
+export interface KanbanProfilesResponse {
+  profiles?: KanbanProfile[] | null;
+}
+
+export interface KanbanReassignResponse {
+  ok: boolean;
+  task_id: string;
+  assignee?: string | null;
+}
+
+export interface KanbanDecomposeResponse {
+  ok: boolean;
+  task_id: string;
+  reason?: string | null;
+  fanout?: boolean | null;
+  child_ids?: string[] | null;
+  new_title?: string | null;
+}
+
+export interface KanbanAttachmentResponse {
+  attachment?: KanbanTaskAttachment | null;
 }
 
 export interface KanbanTaskLogResponse {

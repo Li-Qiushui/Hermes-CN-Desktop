@@ -2,6 +2,11 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { fetchJSON, postJSON, putJSON, deleteJSON } from "@/lib/transport";
 import { useActiveProfileName } from "@/hooks/use-profiles";
 import {
+  type CronDeliveryTarget,
+  deliveryTargetsFromPayload,
+} from "@/lib/cron-delivery";
+import { type CronRunSession, parseCronRunSessions } from "@/lib/cron-runs";
+import {
   CronJob as CronJobSchema,
   CronJobsResponse,
   CronRunDetail,
@@ -32,9 +37,9 @@ export function useCronJobs() {
 export function useCreateCronJob() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (job: { prompt: string; schedule: string; name?: string; deliver?: string; profile?: string }) => {
-      const { profile = "default", ...body } = job;
-      return postJSON(`/api/cron/jobs?profile=${encodePart(profile)}`, body, CronJobSchema);
+    mutationFn: (job: Record<string, unknown> & { prompt: string; schedule: string }) => {
+      const { profile = "default", ...body } = job as Record<string, unknown> & { profile?: string };
+      return postJSON(`/api/cron/jobs?profile=${encodePart(String(profile))}`, body, CronJobSchema);
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ["cron-jobs"] }),
   });
@@ -48,6 +53,7 @@ export function useUpdateCronJob() {
     onSuccess: (_job, vars) => {
       qc.invalidateQueries({ queryKey: ["cron-jobs"] });
       qc.invalidateQueries({ queryKey: ["cron-runs", vars.profile ?? "default", vars.id] });
+      qc.invalidateQueries({ queryKey: ["cron-run-sessions", vars.profile ?? "default", vars.id] });
     },
   });
 }
@@ -72,6 +78,7 @@ export function useCronAction() {
     onSuccess: (_job, vars) => {
       qc.invalidateQueries({ queryKey: ["cron-jobs"] });
       qc.invalidateQueries({ queryKey: ["cron-runs", vars.profile ?? "default", vars.id] });
+      qc.invalidateQueries({ queryKey: ["cron-run-sessions", vars.profile ?? "default", vars.id] });
     },
   });
 }
@@ -109,5 +116,37 @@ export function useCronRunDetail(run: CronRun | null | undefined) {
     ),
     retry: 1,
     staleTime: 60_000,
+  });
+}
+
+export function useCronDeliveryTargets(profile?: string) {
+  const activeProfile = useActiveProfileName();
+  const target = profile || activeProfile || "default";
+  return useQuery<CronDeliveryTarget[]>({
+    queryKey: ["cron-delivery-targets", target],
+    queryFn: async ({ signal }) => {
+      const payload = await fetchJSON<unknown>(`/api/cron/delivery-targets?profile=${encodePart(target)}`, { signal });
+      return deliveryTargetsFromPayload(payload);
+    },
+    retry: 0,
+    staleTime: 120_000,
+  });
+}
+
+export function useCronRunSessions(job: CronJob | null | undefined, limit = 30) {
+  const profile = cronJobProfile(job);
+  const id = job?.id ?? "";
+  return useQuery<CronRunSession[]>({
+    queryKey: ["cron-run-sessions", profile, id, limit],
+    enabled: Boolean(job?.id),
+    queryFn: async ({ signal }) => {
+      const payload = await fetchJSON<unknown>(
+        `/api/cron/jobs/${encodePart(id)}/runs?profile=${encodePart(profile)}&limit=${limit}`,
+        { signal },
+      );
+      return parseCronRunSessions(payload);
+    },
+    retry: 1,
+    staleTime: 15_000,
   });
 }

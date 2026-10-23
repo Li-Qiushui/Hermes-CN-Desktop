@@ -1,6 +1,10 @@
+import type { ReactNode } from "react";
 import { Badge, Button } from "@hermes/shared-ui";
-import { Power, Trash2, Zap } from "lucide-react";
-import type { McpServer, McpTestResult } from "@hermes/protocol";
+import { ChevronDown, ChevronRight, Power, Trash2, Zap } from "lucide-react";
+import { deriveServerStatus, estimateContextCost } from "@/lib/mcp-status";
+import type { McpServerWire, McpTestWire } from "@/lib/mcp-wire";
+import { readToolFilter } from "@/lib/mcp-tools";
+import { McpStatusBadge } from "./mcp-status-badge";
 import { transportTone } from "./parse";
 import s from "./mcp.module.css";
 
@@ -12,26 +16,45 @@ export function McpServerCard({
   onTest,
   onToggle,
   onDelete,
+  expanded = false,
+  onToggleExpand,
+  children,
 }: {
-  server: McpServer;
-  result?: McpTestResult;
+  server: McpServerWire;
+  result?: McpTestWire;
   testing: boolean;
   toggling: boolean;
   onTest: () => void;
   onToggle: () => void;
   onDelete: () => void;
+  expanded?: boolean;
+  onToggleExpand?: () => void;
+  children?: ReactNode;
 }) {
   const envCount = Object.keys(server.env ?? {}).length;
   const target =
     server.transport === "http"
       ? server.url ?? "—"
       : [server.command, ...(server.args ?? [])].filter(Boolean).join(" ") || "—";
+  const status = deriveServerStatus({
+    enabled: server.enabled,
+    probing: testing,
+    tested: result !== undefined,
+    ok: result?.ok,
+    error: result?.error ?? null,
+    auth: server.auth ?? null,
+  });
+  const filter = readToolFilter(server.tools);
+  const tools = result?.ok ? result.tools : [];
+  const cost = estimateContextCost(tools);
+  const disabledCount = filter.include === null ? filter.exclude.length : 0;
 
   return (
-    <div className={`${s.card} ${!server.enabled ? s.cardDisabled : ""}`}>
+    <div className={`${s.card} ${!server.enabled ? s.cardDisabled : ""}`} data-status={status}>
       <div className={s.cardMain}>
         <div className={s.cardHead}>
           <span className={s.cardName}>{server.name}</span>
+          <McpStatusBadge status={status} />
           <Badge tone={transportTone(server.transport)} variant="soft" size="sm">
             {server.transport}
           </Badge>
@@ -50,6 +73,13 @@ export function McpServerCard({
         <div className={s.cardMetaRow}>
           <span className={s.cardMono}>{target}</span>
           {envCount > 0 && <span>{envCount} 个环境变量</span>}
+          {tools.length > 0 && (
+            <span data-mcp-cost="1">
+              {tools.length} 个工具 · {cost.label}
+            </span>
+          )}
+          {disabledCount > 0 && <span>{disabledCount} 个工具已禁用</span>}
+          {filter.include !== null && <span>白名单 {filter.include.length} 个工具</span>}
         </div>
 
         {result && (
@@ -95,6 +125,16 @@ export function McpServerCard({
         <Button
           iconOnly
           variant="ghost"
+          size="sm"
+          aria-label={expanded ? "收起详情" : "展开详情"}
+          title={expanded ? "收起详情" : "展开详情：工具开关 / 日志 / 原始 JSON"}
+          onClick={onToggleExpand}
+        >
+          {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+        </Button>
+        <Button
+          iconOnly
+          variant="ghost"
           tone="danger"
           size="sm"
           aria-label="删除"
@@ -104,6 +144,8 @@ export function McpServerCard({
           <Trash2 size={16} />
         </Button>
       </div>
+
+      {expanded && children}
     </div>
   );
 }
