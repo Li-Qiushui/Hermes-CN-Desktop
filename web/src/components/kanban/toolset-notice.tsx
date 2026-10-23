@@ -54,8 +54,7 @@ export function KanbanToolsetNotice() {
       <div className={s.body}>
         <span className={s.title}>看板工具未开启</span>
         <span className={s.text}>
-          看板面板可以正常使用，但 Agent 现在拿不到 kanban_* 工具。开启后会向 Agent 注册 kanban 工具（写入内核
-          platform_toolsets），下一轮对话生效。
+          看板面板可用，但 Agent 拿不到 kanban_* 工具。开启后写入内核 platform_toolsets，下一轮对话生效。
         </span>
         {error ? (
           <span className={s.error} role="alert">

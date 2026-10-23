@@ -220,7 +220,7 @@
 .resultMeta {
   margin: 0;
   color: var(--h-text-3);
-  font-family: var(--h-font-mono);
+  font-family: var(--h-font-cn);
   font-size: 12.5px;
   line-height: 1.5;
   overflow-wrap: anywhere;

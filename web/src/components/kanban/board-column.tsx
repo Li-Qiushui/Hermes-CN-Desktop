@@ -89,13 +89,10 @@ function BoardColumnInner({
             <span className={s.headIcon} aria-hidden="true">
               {icon}
             </span>
-            <span className={s.headLabel}>{columnLabel}</span>
-            {filtersActive ? (
-              <span className={s.headFilter}>
-                已筛选 {view.total}/{view.unfilteredTotal}
-              </span>
-            ) : null}
-            <span className={s.headCount}>{view.total}</span>
+            <span className={s.headMain}>
+              <span className={s.headLabel}>{columnLabel}</span>
+              <span className={s.headCount}>{view.total}</span>
+            </span>
             <button
               type="button"
               className={s.collapseToggle}
@@ -114,23 +111,17 @@ function BoardColumnInner({
             </button>
           ) : (
             <div className={s.cards}>
-              {view.tasks.length === 0 ? (
-                <p className={s.empty}>
-                  {view.unfilteredTotal > 0 ? "没有符合筛选的任务" : "这一列还没有任务"}
-                </p>
-              ) : lanes ? (
-                lanes.map((lane) => (
-                  <div key={lane.key} className={s.lane} data-lane={lane.key}>
-                    <div className={s.laneHead}>
-                      <span className={s.laneLabel}>{lane.label}</span>
-                      <span className={s.laneCount}>{lane.tasks.length}</span>
+              {lanes
+                ? lanes.map((lane) => (
+                    <div key={lane.key} className={s.lane} data-lane={lane.key}>
+                      <div className={s.laneHead}>
+                        <span className={s.laneLabel}>{lane.label}</span>
+                        <span className={s.laneCount}>{lane.tasks.length}</span>
+                      </div>
+                      {lane.tasks.map(renderCard)}
                     </div>
-                    {lane.tasks.map(renderCard)}
-                  </div>
-                ))
-              ) : (
-                view.tasks.map(renderCard)
-              )}
+                  ))
+                : view.tasks.map(renderCard)}
               {view.hiddenCount > 0 ? (
                 <button type="button" className={s.moreRow} onClick={onShowAllDone}>
                   显示全部 {view.total} 条

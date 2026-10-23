@@ -89,37 +89,41 @@ function TaskCardInner({
         </div>
       ) : null}
       <div className={s.meta}>
-        <span className={s.assignee} data-unassigned={unassigned ? "true" : undefined}>
-          {task.assignee || "未指派"}
-        </span>
-        {priority ? <span className={s.priority}>{priority}</span> : null}
-        <span className={s.age}>{humanizeAge(task.age?.created_age_seconds)}</span>
-        {comments > 0 ? (
-          <span className={s.stat}>
-            <MessageSquare size={13} aria-hidden="true" />
-            {comments}
+        <div className={s.tags}>
+          <span className={s.assignee} data-unassigned={unassigned ? "true" : undefined}>
+            {task.assignee || "未指派"}
           </span>
-        ) : null}
-        {children > 0 ? (
-          <span className={s.stat}>
-            <GitBranch size={13} aria-hidden="true" />
-            {children}
-          </span>
-        ) : null}
-        {progress ? (
-          <span className={s.stat} title="子任务完成进度">
-            <ListChecks size={13} aria-hidden="true" />
-            {progress}
-          </span>
-        ) : null}
-        {runStarted ? <RunClock startedAt={runStarted} className={s.clock} /> : null}
-      </div>
-      {blocked ? (
-        <div className={s.blocked} title={blocked}>
-          <AlertTriangle size={13} aria-hidden="true" />
-          {blocked}
+          {priority ? <span className={s.priority}>{priority}</span> : null}
+          {blocked ? (
+            <span className={s.blocked} title={blocked}>
+              <AlertTriangle size={12} aria-hidden="true" />
+              {blocked}
+            </span>
+          ) : null}
         </div>
-      ) : null}
+        <div className={s.stats}>
+          <span className={s.age}>{humanizeAge(task.age?.created_age_seconds)}</span>
+          {comments > 0 ? (
+            <span className={s.stat}>
+              <MessageSquare size={13} aria-hidden="true" />
+              {comments}
+            </span>
+          ) : null}
+          {children > 0 ? (
+            <span className={s.stat}>
+              <GitBranch size={13} aria-hidden="true" />
+              {children}
+            </span>
+          ) : null}
+          {progress ? (
+            <span className={s.stat} title="子任务完成进度">
+              <ListChecks size={13} aria-hidden="true" />
+              {progress}
+            </span>
+          ) : null}
+          {runStarted ? <RunClock startedAt={runStarted} className={s.clock} /> : null}
+        </div>
+      </div>
     </div>
   );
 }

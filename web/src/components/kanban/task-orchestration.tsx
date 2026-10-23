@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Ban, FileUp, GitBranch, Link2, Split, Trash2, UserCog } from "lucide-react";
+import { Ban, FileUp, Link2, Split, Trash2, UserCog } from "lucide-react";
 import { kanbanColumnLabel, type KanbanTask, type KanbanTaskAttachment, type KanbanTaskDetailResponse } from "@/lib/kanban";
 import {
   attachmentLimitLabel,
@@ -182,7 +182,6 @@ export function TaskOrchestration({
           <h3>
             <Split size={14} aria-hidden="true" /> 拆解
           </h3>
-          <p className={s.hint}>把这张卡交给后端拆解器拆成子任务（triage / todo 可用）。</p>
           <div className={s.form}>
             <button type="button" className={s.button} onClick={onDecompose} disabled={Boolean(busy)}>
               {busy === "decompose" ? "拆解中…" : "拆成子任务"}
@@ -291,12 +290,8 @@ export function TaskOrchestration({
             }}
           />
         </label>
-        <p className={s.hint}>单个附件上限 {attachmentLimitLabel()}，超出后端会返回 413。</p>
+        <p className={s.hint}>单个附件上限 {attachmentLimitLabel()}。</p>
       </div>
-
-      <p className={s.hint}>
-        <GitBranch size={13} aria-hidden="true" /> 依赖与阻塞都走内核真实端点，失败会回显原文。
-      </p>
     </section>
   );
 }

@@ -14,10 +14,9 @@
   width: min(560px, 100%);
   max-height: min(680px, calc(100vh - 48px));
   border: 1px solid var(--h-line);
-  border-radius: 8px;
+  border-radius: 0;
   background: var(--h-bg-pane);
   color: var(--h-text);
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.2);
 }
 
 .head {
@@ -42,7 +41,7 @@
   width: 28px;
   height: 28px;
   border: 1px solid var(--h-line-soft);
-  border-radius: 8px;
+  border-radius: 0;
   background: transparent;
   color: var(--h-text-2);
   cursor: pointer;
@@ -69,7 +68,7 @@
   width: 100%;
   padding: 8px 10px;
   border: 1px solid var(--h-line-soft);
-  border-radius: 8px;
+  border-radius: 0;
   background: var(--h-bg-input, var(--h-bg-pane));
   color: var(--h-text);
   font-family: var(--h-font-cn);
@@ -110,28 +109,29 @@
   align-items: center;
   gap: 6px;
   height: 32px;
-  padding: 0 12px;
-  border-radius: 8px;
-  font-size: 13px;
-  font-weight: 650;
+  padding: 0 14px;
+  border-radius: 0;
+  font-family: var(--h-font-cn);
+  font-size: 12.5px;
+  font-weight: 600;
   cursor: pointer;
 }
 
 .cancel {
-  border: 1px solid var(--h-line-soft);
+  border: 1px solid var(--h-line);
   background: transparent;
   color: var(--h-text-2);
 }
 
 .cancel:hover {
-  border-color: var(--h-line);
+  border-color: var(--h-accent-border);
   color: var(--h-text);
 }
 
 .submit {
-  border: 1px dashed var(--h-accent);
-  background: var(--h-accent-soft);
-  color: var(--h-text);
+  border: 1px solid var(--h-accent);
+  background: var(--h-accent);
+  color: var(--h-accent-contrast);
 }
 
 .submit:disabled {

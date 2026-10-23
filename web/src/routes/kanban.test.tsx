@@ -57,6 +57,7 @@ const h = vi.hoisted(() => {
     ],
     profiles: [{ name: "writer" }, { name: "reviewer" }],
     deleteMock: vi.fn(),
+    bulkMock: vi.fn(),
     cancelDispatchMock: vi.fn(),
     confirmMock: vi.fn(),
     updateMock: vi.fn(),
@@ -96,7 +97,7 @@ vi.mock("@/hooks/use-kanban", () => ({
   }),
   useCreateKanbanTask: () => ({ mutateAsync: vi.fn(), isPending: false, isError: false, error: null }),
   useAddKanbanComment: () => ({ mutateAsync: vi.fn(), isPending: false, isError: false, error: null }),
-  useBulkKanbanTasks: () => ({ mutateAsync: vi.fn(), isPending: false, isError: false, error: null }),
+  useBulkKanbanTasks: () => ({ mutateAsync: h.bulkMock, isPending: false, isError: false, error: null }),
   useAddKanbanLink: () => ({ mutateAsync: h.addLinkMock, isPending: false, isError: false, error: null }),
   useRemoveKanbanLink: () => ({
     mutateAsync: h.removeLinkMock,
@@ -165,6 +166,14 @@ function renderRoute() {
 
 function search(value: string) {
   fireEvent.change(screen.getByLabelText("搜索任务"), { target: { value } });
+}
+
+function openMore() {
+  fireEvent.click(screen.getByLabelText("更多操作"));
+}
+
+function clickMenuItem(name: string) {
+  fireEvent.click(screen.getByRole("menuitem", { name }));
 }
 
 beforeEach(() => {
@@ -309,7 +318,8 @@ describe("KanbanRoute 编排与看板管理", () => {
 
   it("新建看板校验 slug 后提交并切换", async () => {
     renderRoute();
-    fireEvent.click(screen.getByText("新建看板"));
+    openMore();
+    clickMenuItem("新建看板…");
     const dialog = screen.getByLabelText("新建看板");
     expect(dialog.textContent).toContain("slug");
     fireEvent.change(screen.getByLabelText("看板 slug"), { target: { value: "Hermes CN" } });
@@ -325,14 +335,16 @@ describe("KanbanRoute 编排与看板管理", () => {
 
   it("空 slug 时创建按钮禁用", () => {
     renderRoute();
-    fireEvent.click(screen.getByText("新建看板"));
+    openMore();
+    clickMenuItem("新建看板…");
     const submit = screen.getByText("创建看板") as HTMLButtonElement;
     expect(submit.disabled).toBe(true);
   });
 
   it("归档看板先二次确认，确认后才发请求", async () => {
     renderRoute();
-    fireEvent.click(screen.getByText("归档看板"));
+    openMore();
+    clickMenuItem("归档当前看板");
     await waitFor(() => expect(confirmMock).toHaveBeenCalledTimes(1));
     expect(confirmMock.mock.calls[0][0]).toMatchObject({ title: "归档当前看板", danger: true });
     await waitFor(() => expect(archiveBoardMock).toHaveBeenCalledWith({ slug: "default" }));
@@ -341,15 +353,73 @@ describe("KanbanRoute 编排与看板管理", () => {
   it("取消归档时不发请求", async () => {
     confirmMock.mockResolvedValue(false);
     renderRoute();
-    fireEvent.click(screen.getByText("归档看板"));
+    openMore();
+    clickMenuItem("归档当前看板");
     await waitFor(() => expect(confirmMock).toHaveBeenCalledTimes(1));
     expect(archiveBoardMock).not.toHaveBeenCalled();
   });
 
   it("泳道开关把卡片按负责人分组", () => {
     renderRoute();
+    openMore();
+    clickMenuItem("看板设置…");
     fireEvent.click(screen.getByLabelText("按负责人分泳道"));
     const column = screen.getByLabelText(/待办 列/);
     expect(column.textContent).toContain("writer");
+  });
+});
+
+describe("KanbanRoute 精简后的入口", () => {
+  const { bulkMock } = h;
+
+  beforeEach(() => {
+    bulkMock.mockReset();
+    bulkMock.mockResolvedValue({ results: [{ id: "t_body", ok: true }] });
+  });
+
+  it("主界面只留高频动作，低频动作在「更多」菜单里", () => {
+    renderRoute();
+    expect(screen.getByLabelText("搜索任务")).toBeTruthy();
+    expect(screen.getByLabelText("选择看板")).toBeTruthy();
+    expect(screen.queryByText("归档看板")).toBeNull();
+    expect(screen.queryByText("复制地址")).toBeNull();
+    openMore();
+    expect(screen.getByRole("menuitem", { name: "看板设置…" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "归档当前看板" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "复制看板地址" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "打开官方看板" })).toBeTruthy();
+  });
+
+  it("筛选收进面板，Esc 与再次点击都能收起设置弹框", () => {
+    renderRoute();
+    fireEvent.click(screen.getByText("筛选"));
+    const panel = screen.getByLabelText("筛选条件");
+    expect(panel.textContent).toContain("优先级");
+    expect(panel.textContent).toContain("工作区");
+    expect(panel.textContent).toContain("负责人");
+    expect((screen.getByText("清除筛选") as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.click(screen.getByText("筛选"));
+    expect(screen.queryByLabelText("筛选条件")).toBeNull();
+
+    openMore();
+    clickMenuItem("看板设置…");
+    expect(screen.getByLabelText("看板设置")).toBeTruthy();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByLabelText("看板设置")).toBeNull();
+  });
+
+  it("批量操作菜单仍可移动任务", async () => {
+    renderRoute();
+    fireEvent.click(screen.getByLabelText("重构登录，状态 todo"), { ctrlKey: true });
+    expect(screen.getByText("已选 1 个任务")).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("批量操作菜单"));
+    fireEvent.click(screen.getByRole("option", { name: /移动到「已完成」/ }));
+    await waitFor(() =>
+      expect(bulkMock).toHaveBeenCalledWith({
+        ids: ["t_body"],
+        patch: { status: "done" },
+      }),
+    );
   });
 });

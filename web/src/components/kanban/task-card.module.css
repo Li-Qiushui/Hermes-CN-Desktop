@@ -1,14 +1,16 @@
 .card {
   display: grid;
-  gap: 8px;
-  min-height: 56px;
+  gap: 6px;
+  box-sizing: border-box;
+  min-height: 76px;
   padding: 10px 12px;
   border: 1px solid var(--h-line-soft);
-  border-radius: 8px;
+  border-radius: 0;
   background: var(--h-bg-pane);
   color: var(--h-text);
-  font-size: 13px;
-  line-height: 1.45;
+  font-family: var(--h-font-cn);
+  font-size: 12.5px;
+  line-height: 1.5;
   cursor: grab;
   touch-action: none;
   text-align: left;
@@ -25,47 +27,59 @@
 }
 
 .card[data-selected="true"] {
-  border-color: var(--h-accent-border, var(--h-accent));
+  border-color: var(--h-accent-border);
   background: var(--h-accent-soft);
 }
 
 .card[data-dragging="true"] {
   cursor: grabbing;
-  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.16);
 }
 
 .card[data-bulk="true"] {
-  border-color: var(--h-accent-border, var(--h-accent));
-  box-shadow: inset 0 0 0 1px var(--h-accent-border, var(--h-accent));
+  border-color: var(--h-accent-border);
 }
 
 .title {
   display: block;
-  max-height: calc(1.45em * 2);
+  max-height: calc(1.5em * 2);
   overflow: clip;
   font-size: 13px;
   font-weight: 600;
-  line-height: 1.45;
+  line-height: 1.5;
   word-break: break-word;
   overflow-wrap: anywhere;
 }
 
 .meta {
+  display: grid;
+  gap: 6px;
+}
+
+.tags {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.stats {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   flex-wrap: wrap;
   color: var(--h-text-3);
-  font-size: 13px;
+  font-size: 12.5px;
 }
 
 .assignee {
   max-width: 130px;
   overflow: hidden;
-  padding: 1px 6px;
-  border: 1px solid var(--h-line-soft);
-  border-radius: 8px;
+  padding: 0 6px;
+  border: 1px solid var(--h-line);
+  border-radius: 0;
   color: var(--h-text-2);
+  font-size: 12.5px;
+  line-height: 18px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -77,6 +91,8 @@
 
 .priority {
   color: var(--h-warn);
+  font-family: var(--h-font-mono);
+  font-size: 12.5px;
 }
 
 .age {
@@ -94,8 +110,8 @@
   display: block;
   overflow: hidden;
   color: var(--h-text-3);
-  font-size: 13px;
-  line-height: 1.45;
+  font-size: 12.5px;
+  line-height: 1.5;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -109,16 +125,17 @@
 }
 
 .blocked {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 2px 6px;
-  border: 1px solid var(--h-warn-border, var(--h-line-soft));
-  border-radius: 8px;
-  background: var(--h-warn-soft, transparent);
+  max-width: 100%;
+  padding: 0 6px;
+  border: 1px solid var(--h-warn-border);
+  border-radius: 0;
+  background: var(--h-warn-soft);
   color: var(--h-warn);
-  font-size: 13px;
-  line-height: 1.4;
+  font-size: 12.5px;
+  line-height: 18px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

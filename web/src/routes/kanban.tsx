@@ -17,25 +17,25 @@ import {
   Copy,
   Eye,
   ExternalLink,
-  Folder,
   FolderPlus,
   Inbox,
   ListTodo,
+  MoreHorizontal,
   Play,
   Plus,
-  Radio,
   RefreshCw,
   Search,
+  Settings2,
   SlidersHorizontal,
   Trash2,
-  User,
   X,
 } from "lucide-react";
-import { CopyButton } from "@/components/ui/copy-button";
 import { Dropdown, type DropdownOption } from "@/components/ui/dropdown";
 import { PageSkeleton } from "@/components/page-skeleton";
 import { BoardColumn } from "@/components/kanban/board-column";
 import { BoardDialog, type BoardCreateInput } from "@/components/kanban/board-dialog";
+import { BoardSettings } from "@/components/kanban/board-settings";
+import { KanbanMenu, type KanbanMenuItem } from "@/components/kanban/kanban-menu";
 import { NewTaskDialog, type NewTaskInput } from "@/components/kanban/new-task-dialog";
 import { TaskDrawer } from "@/components/kanban/task-drawer";
 import { KanbanToolsetNotice } from "@/components/kanban/toolset-notice";
@@ -65,7 +65,7 @@ import {
 } from "@/hooks/use-kanban";
 import { useKanbanEvents } from "@/hooks/use-kanban-events";
 import { useStatus } from "@/hooks/use-status";
-import { dashboardPageUrlFromInputs, dashboardUrlFromInputs } from "@/lib/dashboard-url";
+import { dashboardPageUrlFromInputs } from "@/lib/dashboard-url";
 import { openExternalUrl } from "@/lib/external-links";
 import { cancelKanbanDispatch } from "@/lib/kanban-dispatch";
 import { useConfirm } from "@/lib/use-confirm";
@@ -173,7 +173,6 @@ export function KanbanRoute() {
     runtimeConfig: typeof window === "undefined" ? null : window.__HERMES_RUNTIME__,
     envOrigin: import.meta.env.VITE_HERMES_DASHBOARD_ORIGIN,
   };
-  const dashboardUrl = dashboardUrlFromInputs(dashboardInputs);
   const kanbanUrl = dashboardPageUrlFromInputs(dashboardInputs, "/kanban");
 
   const [opening, setOpening] = useState(false);
@@ -235,6 +234,8 @@ export function KanbanRoute() {
   const collapseMarks = marksBySlug[boardSlug] ?? readCollapseMarks(boardSlug);
   const [dragging, setDragging] = useState(false);
   const [hoveredKey, setHoveredKey] = useState<string | null>(null);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const pushToast = useCallback((tone: Toast["tone"], message: string) => {
     if (toastTimer.current) window.clearTimeout(toastTimer.current);
@@ -270,6 +271,11 @@ export function KanbanRoute() {
     priority: priorityFilter,
     workspace: workspaceFilter,
   });
+
+  const filterCount =
+    (priorityFilter === ALL_PRIORITIES ? 0 : 1) +
+    (workspaceFilter === ALL_WORKSPACES ? 0 : 1) +
+    (assigneeFilter === ALL_ASSIGNEES ? 0 : 1);
 
   const columnViews = useMemo<ColumnView[]>(() => {
     if (!searchableBoard) return [];
@@ -350,23 +356,20 @@ export function KanbanRoute() {
     [boards, boardSlug],
   );
 
-  const bulkStatusOptions = useMemo<DropdownOption[]>(
+  const bulkOptions = useMemo<DropdownOption[]>(
     () => [
-      { value: EMPTY_BULK_VALUE, label: "移动到…" },
+      { value: EMPTY_BULK_VALUE, label: "选择操作…" },
       ...workflowColumns
         .filter((column) => dragTargets.has(column.key))
-        .map((column) => ({ value: column.key, label: kanbanColumnLabel(column.label) })),
+        .map((column) => ({
+          value: `status:${column.key}`,
+          label: `移动到「${kanbanColumnLabel(column.label)}」`,
+        })),
+      ...PRIORITY_VALUES.map((value) => ({ value: `priority:${value}`, label: `优先级改 P${value}` })),
+      { value: "priority:0", label: "清除优先级" },
+      { value: "archive", label: "归档所选" },
     ],
     [dragTargets, workflowColumns],
-  );
-
-  const bulkPriorityOptions = useMemo<DropdownOption[]>(
-    () => [
-      { value: EMPTY_BULK_VALUE, label: "改优先级…" },
-      ...PRIORITY_VALUES.map((value) => ({ value, label: `P${value}` })),
-      { value: "0", label: "P0（清除）" },
-    ],
-    [],
   );
 
   const priorityOptions = useMemo<DropdownOption[]>(
@@ -505,6 +508,20 @@ export function KanbanRoute() {
     setPriorityFilter(ALL_PRIORITIES);
     setWorkspaceFilter(ALL_WORKSPACES);
   }, []);
+
+  const resetSelection = useCallback(() => {
+    setSelectedId(null);
+    setBulkSelected([]);
+    setOverrides({});
+  }, []);
+
+  const switchView = useCallback(
+    (view: KanbanBoardView) => {
+      setBoardView(view);
+      resetSelection();
+    },
+    [resetSelection],
+  );
 
   const toggleBulkSelection = useCallback((taskId: string) => {
     setBulkSelected((previous) => toggleTaskSelection(previous, taskId));
@@ -769,15 +786,13 @@ export function KanbanRoute() {
         boardSlugRef.current = true;
         setBoardSlug(created);
         setBoardView("active");
-        setSelectedId(null);
-        setBulkSelected([]);
-        setOverrides({});
+        resetSelection();
         pushToast("ok", `看板 ${created} 已创建`);
       } catch (error) {
         setBoardDialogError(errorText(error));
       }
     },
-    [createBoardMutation, pushToast],
+    [createBoardMutation, pushToast, resetSelection],
   );
 
   const handleArchiveBoard = useCallback(async () => {
@@ -794,14 +809,12 @@ export function KanbanRoute() {
       await archiveBoardMutation.mutateAsync({ slug: boardSlug });
       boardSlugRef.current = true;
       setBoardSlug("default");
-      setSelectedId(null);
-      setBulkSelected([]);
-      setOverrides({});
+      resetSelection();
       pushToast("ok", `已归档「${label}」`);
     } catch (error) {
       pushToast("error", `归档失败：${errorText(error)}`);
     }
-  }, [archiveBoardMutation, boardSlug, boards, confirm, pushToast]);
+  }, [archiveBoardMutation, boardSlug, boards, confirm, pushToast, resetSelection]);
 
   const runBulk = useCallback(
     async (patch: Record<string, unknown>, label: string) => {
@@ -880,14 +893,85 @@ export function KanbanRoute() {
     }
   };
 
+  const copyKanbanUrl = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(kanbanUrl);
+      pushToast("ok", "看板地址已复制");
+    } catch {
+      pushToast("error", "复制失败，请手动复制地址");
+    }
+  }, [kanbanUrl, pushToast]);
+
+  const handleBulkAction = useCallback(
+    (value: string) => {
+      if (value === "archive") {
+        void runBulk({ archive: true }, "已归档");
+        return;
+      }
+      const [kind, raw] = value.split(":");
+      if (kind === "status" && raw) {
+        void runBulk({ status: raw }, `已移动到「${labelOf(raw)}」`);
+        return;
+      }
+      if (kind === "priority" && raw) {
+        void runBulk({ priority: Number(raw) }, raw === "0" ? "已清除优先级" : `优先级改为 P${raw}`);
+      }
+    },
+    [labelOf, runBulk],
+  );
+
+  const moreItems = useMemo<KanbanMenuItem[]>(
+    () => [
+      { key: "settings", label: "看板设置…", icon: <Settings2 size={14} /> },
+      { key: "new-board", label: "新建看板…", icon: <FolderPlus size={14} /> },
+      {
+        key: "archive-board",
+        label: "归档当前看板",
+        icon: <Archive size={14} />,
+        hint: boards.length <= 1 ? "至少保留一个看板" : undefined,
+        disabled: boards.length <= 1,
+      },
+      { key: "refresh", label: "刷新看板", icon: <RefreshCw size={14} /> },
+      { key: "copy-url", label: "复制看板地址", icon: <Copy size={14} /> },
+      { key: "open-dashboard", label: "打开官方看板", icon: <ExternalLink size={14} /> },
+    ],
+    [boards.length],
+  );
+
+  const handleMoreAction = useCallback(
+    (key: string) => {
+      if (key === "settings") {
+        setSettingsOpen(true);
+        return;
+      }
+      if (key === "new-board") {
+        setBoardDialogError(null);
+        setBoardDialogOpen(true);
+        return;
+      }
+      if (key === "archive-board") {
+        void handleArchiveBoard();
+        return;
+      }
+      if (key === "refresh") {
+        void boardQuery.refetch();
+        return;
+      }
+      if (key === "copy-url") {
+        void copyKanbanUrl();
+        return;
+      }
+      if (key === "open-dashboard") void openKanban();
+    },
+    [boardQuery, copyKanbanUrl, handleArchiveBoard, openKanban],
+  );
+
   const boardLoading = boardQuery.isPending || (workflowQuery.isPending && !workflowQuery.data);
   const boardLoadError = boardQuery.isError
     ? errorText(boardQuery.error)
     : workflowQuery.isError
       ? errorText(workflowQuery.error)
       : null;
-  const statusTone = status ? "ready" : statusError ? "warn" : "checking";
-  const statusLabel = status ? "内核已连接" : statusError ? "尚未确认内核在线" : "正在确认内核状态";
   const streamLabel =
     events.status === "open"
       ? "事件流已连接"
@@ -896,6 +980,9 @@ export function KanbanRoute() {
         : events.status === "connecting"
           ? "事件流连接中"
           : "事件流已停止";
+  const healthLabel =
+    events.status !== "open" ? streamLabel : statusError ? "内核未确认" : status ? null : "正在确认内核";
+  const healthTone = statusError || events.status === "reconnecting" ? "warn" : "idle";
 
   return (
     <SectionShell
@@ -904,16 +991,8 @@ export function KanbanRoute() {
       sub="原生任务看板 · 读取内核 Kanban 插件"
       right={
         <div className={s.topActions}>
-          <CopyButton variant="outline" size="md" className={s.secondaryButton} text={kanbanUrl}>
-            <Copy size={15} />
-            复制地址
-          </CopyButton>
-          <button type="button" className={s.secondaryButton} onClick={() => void openKanban()} disabled={opening}>
-            <ExternalLink size={15} />
-            {opening ? "正在打开…" : "打开官方看板"}
-          </button>
           <button type="button" className={s.primaryButton} onClick={() => setCreating(true)}>
-            <Plus size={16} />
+            <Plus size={15} aria-hidden="true" />
             新建任务
           </button>
         </div>
@@ -930,46 +1009,16 @@ export function KanbanRoute() {
             minWidth={180}
             onChange={(next) => {
               setBoardSlug(next);
-              setOverrides({});
-              setSelectedId(null);
-              setBulkSelected([]);
+              resetSelection();
             }}
           />
-
-          <button
-            type="button"
-            className={s.secondaryButton}
-            onClick={() => {
-              setBoardDialogError(null);
-              setBoardDialogOpen(true);
-            }}
-          >
-            <FolderPlus size={14} aria-hidden="true" />
-            新建看板
-          </button>
-
-          <button
-            type="button"
-            className={s.secondaryButton}
-            onClick={() => void handleArchiveBoard()}
-            disabled={archiveBoardMutation.isPending || boards.length <= 1}
-            title={boards.length <= 1 ? "至少保留一个看板" : "归档当前看板"}
-          >
-            <Archive size={14} aria-hidden="true" />
-            归档看板
-          </button>
 
           <div className={s.segmented} role="group" aria-label="活跃或已归档">
             <button
               type="button"
               className={s.segment}
               data-active={boardView === "active" ? "true" : undefined}
-              onClick={() => {
-                setBoardView("active");
-                setSelectedId(null);
-                setBulkSelected([]);
-                setOverrides({});
-              }}
+              onClick={() => switchView("active")}
             >
               活跃
             </button>
@@ -977,12 +1026,7 @@ export function KanbanRoute() {
               type="button"
               className={s.segment}
               data-active={boardView === "archived" ? "true" : undefined}
-              onClick={() => {
-                setBoardView("archived");
-                setSelectedId(null);
-                setBulkSelected([]);
-                setOverrides({});
-              }}
+              onClick={() => switchView("archived")}
             >
               已归档
             </button>
@@ -1004,92 +1048,66 @@ export function KanbanRoute() {
             ) : null}
           </label>
 
-          <Dropdown
-            ariaLabel="按优先级筛选"
-            icon={<SlidersHorizontal size={13} />}
-            options={priorityOptions}
-            value={priorityFilter}
-            minWidth={150}
-            onChange={setPriorityFilter}
-          />
-
-          <Dropdown
-            ariaLabel="按工作区筛选"
-            icon={<Folder size={13} />}
-            options={workspaceDropdownOptions}
-            value={workspaceFilter}
-            minWidth={170}
-            onChange={setWorkspaceFilter}
-          />
-
-          <Dropdown
-            ariaLabel="按负责人筛选"
-            icon={<User size={13} />}
-            options={assigneeOptions}
-            value={assigneeFilter}
-            minWidth={160}
-            onChange={setAssigneeFilter}
-          />
-
-          {filtersActive ? (
-            <button type="button" className={s.clearFilters} onClick={clearFilters}>
-              <X size={13} aria-hidden="true" />
-              清除筛选
-            </button>
-          ) : null}
-
-          <label className={s.toggle}>
-            <input
-              type="checkbox"
-              checked={autoCollapseEmpty}
-              onChange={(event) => setAutoCollapseEmpty(event.target.checked)}
-            />
-            <span>自动折叠空列</span>
-          </label>
-
-          <label className={s.toggle}>
-            <input
-              type="checkbox"
-              checked={swimlanes}
-              onChange={(event) => setSwimlanes(event.target.checked)}
-            />
-            <span>按负责人分泳道</span>
-          </label>
-
-          {boardView === "active" ? (
-            <label className={s.toggle}>
-              <input
-                type="checkbox"
-                checked={showDone}
-                onChange={(event) => {
-                  setShowDone(event.target.checked);
-                  setDoneExpanded(false);
-                }}
-              />
-              <span>显示已完成</span>
-            </label>
-          ) : null}
-
-          <span className={s.statusBadge} data-tone={statusTone}>
-            {statusLabel}
-          </span>
-
-          <span className={s.streamBadge} data-state={events.status} title={streamLabel}>
-            <Radio size={13} aria-hidden="true" />
-            {streamLabel}
-          </span>
-
           <button
             type="button"
-            className={s.iconButton}
-            onClick={() => void boardQuery.refetch()}
-            disabled={boardQuery.isFetching}
-            aria-label="刷新看板"
-            title={dashboardUrl}
+            className={s.filterButton}
+            data-active={filtersOpen || filterCount > 0 ? "true" : undefined}
+            aria-expanded={filtersOpen}
+            onClick={() => setFiltersOpen((previous) => !previous)}
           >
-            <RefreshCw size={14} className={boardQuery.isFetching ? s.spinning : undefined} />
+            <SlidersHorizontal size={14} aria-hidden="true" />
+            筛选
+            {filterCount > 0 ? <span className={s.filterCount}>{filterCount}</span> : null}
           </button>
+
+          {healthLabel ? (
+            <span className={s.healthChip} data-tone={healthTone}>
+              {healthLabel}
+            </span>
+          ) : null}
+
+          <KanbanMenu
+            label="更多操作"
+            icon={<MoreHorizontal size={16} aria-hidden="true" />}
+            items={moreItems}
+            onSelect={handleMoreAction}
+          />
         </div>
+
+        {filtersOpen ? (
+          <div className={s.filterPanel} role="group" aria-label="筛选条件">
+            <Dropdown
+              ariaLabel="按优先级筛选"
+              prefix="优先级"
+              options={priorityOptions}
+              value={priorityFilter}
+              minWidth={150}
+              onChange={setPriorityFilter}
+            />
+
+            <Dropdown
+              ariaLabel="按工作区筛选"
+              prefix="工作区"
+              options={workspaceDropdownOptions}
+              value={workspaceFilter}
+              minWidth={170}
+              onChange={setWorkspaceFilter}
+            />
+
+            <Dropdown
+              ariaLabel="按负责人筛选"
+              prefix="负责人"
+              options={assigneeOptions}
+              value={assigneeFilter}
+              minWidth={160}
+              onChange={setAssigneeFilter}
+            />
+
+            <button type="button" className={s.clearFilters} onClick={clearFilters} disabled={!filtersActive}>
+              清除筛选
+            </button>
+          </div>
+        ) : null}
 
         {openError ? (
           <div className={s.errorBox} role="alert">
@@ -1107,7 +1125,7 @@ export function KanbanRoute() {
         ) : boardLoading ? (
           <PageSkeleton variant="board" columns={workflowColumns.length || 6} label="正在加载看板" />
         ) : columnViews.length === 0 ? (
-          <p className={s.emptyBoard}>这个看板还没有配置工作流列，先在官方 Dashboard 里检查 kanban workflow。</p>
+          <p className={s.emptyBoard}>这个看板还没有工作流列，去 Dashboard 的 kanban workflow 里配置。</p>
         ) : (
           <DndContext
             sensors={sensors}
@@ -1150,7 +1168,7 @@ export function KanbanRoute() {
               ))}
             </div>
             {filtersActive && columnViews.every((view) => view.total === 0) ? (
-              <p className={s.emptyBoard}>没有匹配的任务，换个关键词或点「清除筛选」。</p>
+              <p className={s.emptyBoard}>没有匹配的任务。</p>
             ) : null}
             {boardView === "archived" && archivedCount === 0 ? (
               <p className={s.emptyBoard}>这个看板还没有归档任务。</p>
@@ -1162,30 +1180,17 @@ export function KanbanRoute() {
           <div className={s.bulkBar} role="region" aria-label="批量操作">
             <span className={s.bulkCount}>已选 {bulkSelected.length} 个任务</span>
             <Dropdown
-              ariaLabel="批量移动到列"
-              options={bulkStatusOptions}
+              ariaLabel="批量操作菜单"
+              prefix="批量"
+              options={bulkOptions}
               value={EMPTY_BULK_VALUE}
-              minWidth={150}
+              minWidth={180}
               onChange={(next) => {
                 if (!next) return;
-                void runBulk({ status: next }, `已移动到「${labelOf(next)}」`);
+                handleBulkAction(next);
               }}
             />
-            <Dropdown
-              ariaLabel="批量改优先级"
-              options={bulkPriorityOptions}
-              value={EMPTY_BULK_VALUE}
-              minWidth={140}
-              onChange={(next) => {
-                if (!next) return;
-                void runBulk({ priority: Number(next) }, `优先级改为 P${next}`);
-              }}
-            />
-            <button type="button" className={s.secondaryButton} onClick={() => void runBulk({ archive: true }, "已归档")}>
-              <Archive size={14} aria-hidden="true" />
-              归档
-            </button>
-            <button type="button" className={s.secondaryButton} onClick={() => void runBulkDelete()}>
+            <button type="button" className={s.dangerButton} onClick={() => void runBulkDelete()}>
               <Trash2 size={14} aria-hidden="true" />
               删除
             </button>
@@ -1195,6 +1200,21 @@ export function KanbanRoute() {
           </div>
         ) : null}
       </div>
+
+      <BoardSettings
+        open={settingsOpen}
+        values={{ autoCollapseEmpty, swimlanes, showDone }}
+        showDoneAvailable={boardView === "active"}
+        onChange={(patch) => {
+          if (patch.autoCollapseEmpty !== undefined) setAutoCollapseEmpty(patch.autoCollapseEmpty);
+          if (patch.swimlanes !== undefined) setSwimlanes(patch.swimlanes);
+          if (patch.showDone !== undefined) {
+            setShowDone(patch.showDone);
+            setDoneExpanded(false);
+          }
+        }}
+        onClose={() => setSettingsOpen(false)}
+      />
 
       <TaskDrawer
         open={selectedId !== null}

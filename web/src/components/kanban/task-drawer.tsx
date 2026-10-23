@@ -482,7 +482,7 @@ export function TaskDrawer({
         </div>
 
         <footer className={s.foot}>
-          {dirty ? <span className={s.dirtyHint}>有未保存的修改</span> : <span className={s.hint}>改动会立即提交到内核</span>}
+          {dirty ? <span className={s.dirtyHint}>有未保存的修改</span> : null}
           <button type="button" className={s.save} onClick={submit} disabled={!dirty || saving}>
             <Check size={15} aria-hidden="true" />
             {saving ? "保存中…" : "保存修改"}
