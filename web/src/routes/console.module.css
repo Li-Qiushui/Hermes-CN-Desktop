@@ -71,7 +71,7 @@
 }
 
 .eyebrow {
-  font-family: var(--h-font-mono);
+  font-family: var(--h-font-cn);
   font-size: 10px;
   color: var(--h-accent);
   letter-spacing: 0.14em;

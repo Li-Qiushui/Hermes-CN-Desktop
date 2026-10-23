@@ -19,7 +19,7 @@
 
 .title {
   color: var(--h-accent);
-  font-family: var(--h-font-mono);
+  font-family: var(--h-font-cn);
   font-size: 12px;
   font-weight: 650;
   letter-spacing: 0.08em;
@@ -28,7 +28,7 @@
 
 .headHint {
   color: var(--h-text-4);
-  font-family: var(--h-font-mono);
+  font-family: var(--h-font-cn);
   font-size: 11px;
   margin-left: auto;
 }
@@ -55,7 +55,7 @@
 .cardTitle {
   margin: 0 0 12px;
   color: var(--h-text-4);
-  font-family: var(--h-font-mono);
+  font-family: var(--h-font-cn);
   font-size: 11px;
   font-weight: 650;
   letter-spacing: 0.08em;
@@ -91,7 +91,7 @@
 
 .defTerm {
   color: var(--h-text-4);
-  font-family: var(--h-font-mono);
+  font-family: var(--h-font-cn);
   font-size: 12px;
   flex: none;
 }
@@ -177,7 +177,7 @@
 .maintResult {
   margin-top: 12px;
   color: var(--h-text-2);
-  font-family: var(--h-font-mono);
+  font-family: var(--h-font-cn);
   font-size: 13px;
 }
 
@@ -201,7 +201,7 @@
 
 .discoverHint {
   color: var(--h-text-4);
-  font-family: var(--h-font-mono);
+  font-family: var(--h-font-cn);
   font-size: 11px;
 }
 

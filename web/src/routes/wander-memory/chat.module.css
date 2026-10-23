@@ -20,7 +20,7 @@
 
 .title {
   color: var(--h-accent);
-  font-family: var(--h-font-mono);
+  font-family: var(--h-font-cn);
   font-size: 12px;
   font-weight: 650;
   letter-spacing: 0.08em;
@@ -29,7 +29,7 @@
 
 .hint {
   color: var(--h-text-4);
-  font-family: var(--h-font-mono);
+  font-family: var(--h-font-cn);
   font-size: 11px;
 }
 
@@ -52,7 +52,7 @@
 .empty {
   margin: auto;
   color: var(--h-text-4);
-  font-family: var(--h-font-mono);
+  font-family: var(--h-font-cn);
   font-size: 13px;
   text-align: center;
 }
@@ -148,7 +148,7 @@
   padding-top: 8px;
   border-top: 1px solid var(--h-line-soft);
   color: var(--h-text-4);
-  font-family: var(--h-font-mono);
+  font-family: var(--h-font-cn);
   font-size: 10.5px;
 }
 

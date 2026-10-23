@@ -10,7 +10,7 @@
 .headerStat {
   font-size: 11.5px;
   color: var(--h-text-3);
-  font-family: var(--h-font-mono);
+  font-family: var(--h-font-cn);
 }
 
 .headerStatValue {
@@ -389,7 +389,7 @@
 .dayCount {
   font-size: 11px;
   color: var(--h-text-3);
-  font-family: var(--h-font-mono);
+  font-family: var(--h-font-cn);
 }
 
 .dayTotals {
@@ -637,7 +637,7 @@
 }
 
 .footNote {
-  font-family: var(--h-font-mono);
+  font-family: var(--h-font-cn);
 }
 
 .loadMore {

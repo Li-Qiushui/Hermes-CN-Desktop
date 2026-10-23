@@ -98,7 +98,7 @@
 
 .stepLabel {
   color: var(--h-accent);
-  font: 700 10px/1.3 var(--h-font-mono);
+  font: 700 10px/1.3 var(--h-font-cn);
   letter-spacing: .04em;
 }
 

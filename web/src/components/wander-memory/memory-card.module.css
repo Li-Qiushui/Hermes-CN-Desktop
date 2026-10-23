@@ -47,7 +47,7 @@
 }
 
 .updatedAt {
-  font-family: var(--h-font-mono);
+  font-family: var(--h-font-cn);
   font-size: 11px;
   color: var(--h-text-4);
 }

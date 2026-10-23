@@ -426,7 +426,7 @@
 }
 
 .scopeText strong {
-  font-family: var(--h-font-mono);
+  font-family: var(--h-font-cn);
   color: var(--h-text);
 }
 
