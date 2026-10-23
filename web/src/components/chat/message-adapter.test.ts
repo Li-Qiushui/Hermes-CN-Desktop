@@ -246,6 +246,39 @@ describe("message adapter", () => {
     });
   });
 
+  it("normalizes kernel async-delegation completion reports from user to system messages", () => {
+    const message = hermesUIMessageToChatMessage(uiMessage({
+      id: "async-notice",
+      role: "user",
+      parts: [{
+        type: "text",
+        text: [
+          "[ASYNC DELEGATION BATCH COMPLETE — deleg_9b163957]",
+          "A background fan-out unit you dispatched earlier — 1 subagent(s) — has finished.",
+          "",
+          "--- ✓ TASK 1/1: 审计改动  (status=completed) ---",
+          "结论：可以提交。",
+        ].join("\n"),
+      }],
+    }));
+
+    expect(message).toMatchObject({
+      id: "async-notice",
+      role: "system",
+    });
+    expect(message?.text).toContain("--- ✓ TASK 1/1: 审计改动");
+  });
+
+  it("keeps a user prompt that merely quotes the delegation marker as a user message", () => {
+    const message = hermesUIMessageToChatMessage(uiMessage({
+      id: "quoting-user",
+      role: "user",
+      parts: [{ type: "text", text: "为什么这行 [ASYNC DELEGATION BATCH COMPLETE — deleg_x] 会显示在右边？" }],
+    }));
+
+    expect(message?.role).toBe("user");
+  });
+
   it("deduplicates stored image transport prompts against live display prompts", () => {
     const stored = [
       uiMessage({
@@ -1294,5 +1327,56 @@ describe("assistant stats derivation", () => {
       const result = storedMessagesToChatMessages([msg]);
       expect(result).toHaveLength(1);
     });
+  });
+});
+
+describe("流式增量的引用复用", () => {
+  it("只有变化的 live 行拿到新 ChatMessage，其余逐条复用上次对象", () => {
+    const stored = [
+      uiMessage({ id: "stored-user", role: "user", parts: [{ type: "text", text: "写个长文档" }] }),
+      uiMessage({ id: "stored-assistant", parts: [{ type: "text", text: "好的" }] }),
+    ];
+    const liveUser = uiMessage({
+      id: "live-user",
+      role: "user",
+      createdAt: 1_900,
+      parts: [{ type: "text", text: "写个长文档" }],
+    });
+    const liveAssistant = uiMessage({
+      id: "live-assistant",
+      status: "streaming",
+      createdAt: 2_000,
+      parts: [{ type: "text", text: "第一段" }],
+    });
+    const nextAssistant = uiMessage({
+      id: "live-assistant",
+      status: "streaming",
+      createdAt: 2_000,
+      parts: [{ type: "text", text: "第一段第二段" }],
+    });
+
+    const firstChat = hermesUIMessagesToChatMessages(
+      mergeHermesUIMessages(stored, [liveUser, liveAssistant]),
+    );
+    const secondChat = hermesUIMessagesToChatMessages(
+      mergeHermesUIMessages(stored, [liveUser, nextAssistant]),
+    );
+
+    expect(secondChat.map((message) => message.id)).toEqual(firstChat.map((message) => message.id));
+
+    const growingIndex = secondChat.findIndex((message) => message.id === "live-assistant");
+    expect(growingIndex).toBeGreaterThanOrEqual(0);
+    expect(secondChat[growingIndex]!.text).toBe("第一段第二段");
+    expect(secondChat[growingIndex]).not.toBe(firstChat[growingIndex]);
+
+    secondChat.forEach((message, index) => {
+      if (index === growingIndex) return;
+      expect(message).toBe(firstChat[index]);
+    });
+  });
+
+  it("同一条 HermesUIMessage 重复转换复用同一 ChatMessage 对象", () => {
+    const message = uiMessage({ id: "same-source", parts: [{ type: "text", text: "同一份" }] });
+    expect(hermesUIMessageToChatMessage(message)).toBe(hermesUIMessageToChatMessage(message));
   });
 });

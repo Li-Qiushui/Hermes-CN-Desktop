@@ -12,13 +12,25 @@ import {
 import {
   activeSubagentCount,
   buildSubagentTree,
-  flattenSubagents,
+  compareSubagentPanelOrder,
+  countSubagentOutcomes,
+  lastSubagentOutput,
+  subagentOutcome,
   subagentsBySessionAtom,
   type SubagentNode,
+  type SubagentOutcome,
   type SubagentProgress,
   type SubagentStatus,
   type SubagentStreamEntry,
 } from "@/stores/subagents";
+import { canInterruptRow, type DelegateRunRow } from "./delegate-run-model";
+import {
+  SubagentDialog,
+  dialogTargetFromProgress,
+  formatSubagentDuration,
+  subagentStatusTone,
+  type SubagentDialogTarget,
+} from "./subagent-dialog";
 import { PanelResizeHandle, usePanelWidth } from "./panel-resize";
 import s from "./subagent-panel.module.css";
 
@@ -50,13 +62,10 @@ export function useSessionCliDelegations(candidates: (string | undefined)[]): Cl
   }, [bySession, key]);
 }
 
-function fmtDuration(seconds: number | undefined): string {
+const fmtDuration = (seconds: number | undefined): string => {
   if (!seconds || seconds <= 0) return "";
-  if (seconds < 60) return `${seconds.toFixed(1)}s`;
-  const m = Math.floor(seconds / 60);
-  const sec = Math.round(seconds % 60);
-  return `${m}分${sec.toString().padStart(2, "0")}秒`;
-}
+  return formatSubagentDuration(seconds);
+};
 
 function fmtAge(updatedAt: number, now: number): string {
   const sec = Math.max(0, Math.round((now - updatedAt) / 1000));
@@ -97,111 +106,88 @@ function StreamLine({ entry, active }: { entry: SubagentStreamEntry; active: boo
   );
 }
 
-function SubagentRow({ node, depth, now }: { node: SubagentNode; depth: number; now: number }) {
-  const running = node.status === "running" || node.status === "queued";
-  const [open, setOpen] = useState(() => running || depth < 2);
+interface FlatEntry {
+  depth: number;
+  node: SubagentNode;
+}
 
-  useEffect(() => {
-    if (running) setOpen(true);
-  }, [running]);
+/** 树 → 带缩进的平铺列表；同级按「运行中 → 失败 → 已完成」排。 */
+function flattenForPanel(nodes: readonly SubagentNode[], depth = 0, out: FlatEntry[] = []): FlatEntry[] {
+  const ordered = [...nodes].sort(compareSubagentPanelOrder);
+  for (const node of ordered) {
+    out.push({ depth, node });
+    flattenForPanel(node.children, depth + 1, out);
+  }
+  return out;
+}
 
-  const durationSeconds =
+function canInterruptNode(node: SubagentProgress): boolean {
+  return canInterruptRow({ status: node.status, subagentId: node.subagentId } as DelegateRunRow);
+}
+
+/** 面板一行：状态点 + 目标（截断）+ 模型/耗时/工具数 + 最后一行输出。 */
+function SubagentItem({
+  entry,
+  now,
+  onOpen,
+  onInterrupt,
+}: {
+  entry: FlatEntry;
+  now: number;
+  onOpen: (target: SubagentDialogTarget) => void;
+  onInterrupt?: (item: SubagentProgress) => void;
+}) {
+  const { node, depth } = entry;
+  const live = node.status === "running" || node.status === "queued";
+  const seconds =
     typeof node.durationSeconds === "number"
-      ? Math.max(0, Math.round(node.durationSeconds))
-      : Math.max(0, Math.round((now - node.startedAt) / 1000));
-
-  const tokens = (node.inputTokens ?? 0) + (node.outputTokens ?? 0);
-  const subtitle = [
+      ? Math.max(0, node.durationSeconds)
+      : Math.max(0, (now - node.startedAt) / 1000);
+  const duration = fmtDuration(seconds) || "0s";
+  const tools = node.toolCount ?? 0;
+  const last = lastSubagentOutput(node);
+  const meta = [
     node.model,
-    fmtDuration(durationSeconds),
-    node.toolCount ? `${node.toolCount} 工具` : "",
-    tokens ? `${formatTokens(tokens)} tok` : "",
-    `更新于 ${fmtAge(node.updatedAt, now)}`,
+    live ? `已运行 ${duration}` : `耗时 ${duration}`,
+    `${tools} 次工具`,
+    live ? "" : `更新于 ${fmtAge(node.updatedAt, now)}`,
   ].filter(Boolean);
 
-  const visibleRows = open ? node.stream.slice(-10) : node.stream.slice(-2);
-  const fileLines = [...node.filesWritten.map((p) => `+ ${p}`), ...node.filesRead.map((p) => `· ${p}`)];
-
   return (
-    <div className={s.row} style={depth > 0 ? { paddingLeft: 16 } : undefined} data-running={running ? "true" : undefined}>
-      <button className={s.rowHead} type="button" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
-        <ChevronRight className={s.chevron} data-open={open ? "true" : undefined} size={12} aria-hidden />
-        <StatusIcon status={node.status} />
-        <span className={s.rowMain}>
-          <span className={s.goal} data-running={running ? "true" : undefined}>
-            {node.goal}
+    <div
+      className={s.item}
+      data-subagent-row={node.id}
+      data-status={node.status}
+      data-depth={depth}
+      style={depth > 0 ? { paddingLeft: 12 + depth * 12 } : undefined}
+    >
+      <button
+        className={s.itemHead}
+        type="button"
+        title="查看这个子代理的运行情况"
+        onClick={() => onOpen(dialogTargetFromProgress(node))}
+      >
+        <span className={s.dot} data-tone={subagentStatusTone(node.status)} aria-hidden="true" />
+        <span className={s.itemMain}>
+          <span className={s.itemGoal}>{node.goal}</span>
+          <span className={s.itemMeta}>{meta.join(" · ")}</span>
+          <span className={s.itemLast} data-empty={last ? undefined : "true"}>
+            {last || "等待子代理输出…"}
           </span>
-          {subtitle.length > 0 ? <span className={s.subtitle}>{subtitle.join(" · ")}</span> : null}
         </span>
-        {running ? <span className={s.timer}>{fmtDuration(durationSeconds) || "0s"}</span> : null}
       </button>
-
-      {visibleRows.length > 0 ? (
-        <div className={s.stream}>
-          {visibleRows.map((entry, i) => (
-            <StreamLine
-              key={`${entry.kind}:${entry.at}:${i}`}
-              entry={entry}
-              active={running && i === visibleRows.length - 1}
-            />
-          ))}
-        </div>
-      ) : null}
-
-      {open && fileLines.length > 0 ? (
-        <div className={s.files}>
-          <span className={s.filesLabel}>文件</span>
-          {fileLines.slice(0, 8).map((line) => (
-            <span className={s.fileLine} key={line}>
-              {line}
-            </span>
-          ))}
-          {fileLines.length > 8 ? <span className={s.fileMore}>还有 {fileLines.length - 8} 个文件</span> : null}
-        </div>
-      ) : null}
-
-      {node.children.length > 0 ? (
-        <div className={s.children}>
-          {node.children.map((child) => (
-            <SubagentRow key={child.id} node={child} depth={depth + 1} now={now} />
-          ))}
-        </div>
+      {onInterrupt && canInterruptNode(node) ? (
+        <button
+          className={s.itemInterrupt}
+          type="button"
+          onClick={() => onInterrupt(node)}
+          title="中断这个子代理"
+        >
+          中断
+        </button>
       ) : null}
     </div>
   );
-}
-
-interface RootGroup {
-  id: string;
-  delegationIndex: number;
-  nodes: SubagentNode[];
-  taskCount: number;
-}
-
-// Groups parallel workers (same taskCount, started close in time, distinct
-// taskIndex) under one delegation header. Ported from upstream agents view.
-function groupDelegations(roots: readonly SubagentNode[]): RootGroup[] {
-  const groups: RootGroup[] = [];
-  let n = 0;
-  for (const node of roots) {
-    const prev = groups.at(-1);
-    const prevTail = prev?.nodes.at(-1);
-    const closeInTime = prevTail ? Math.abs(node.startedAt - prevTail.startedAt) <= 5_000 : false;
-    const sameShape = prev && node.taskCount > 1 && prev.taskCount === node.taskCount;
-    const uniqueStep = prev ? !prev.nodes.some((item) => item.taskIndex === node.taskIndex) : false;
-
-    if (prev && sameShape && closeInTime && uniqueStep) {
-      prev.nodes.push(node);
-      continue;
-    }
-    if (node.taskCount > 1) {
-      n += 1;
-      groups.push({ id: `delegation-${n}`, delegationIndex: n, nodes: [node], taskCount: node.taskCount });
-      continue;
-    }
-    groups.push({ id: node.id, delegationIndex: 0, nodes: [node], taskCount: node.taskCount });
-  }
-  return groups;
 }
 
 // ── 外部 CLI 委派（Claude Code / Codex，P-047）────────────────────────────
@@ -227,6 +213,13 @@ const CLI_ABNORMAL_STATUS_LABELS: Partial<Record<CliDelegationEntry["status"], s
   lost: "状态丢失",
   detached: "结果未跟踪",
 };
+
+const cliOutcome = (entry: CliDelegationEntry): SubagentOutcome =>
+  entry.status === "running" || entry.status === "detached"
+    ? "running"
+    : entry.status === "completed"
+      ? "completed"
+      : "failed";
 
 function cliTokenTotal(entry: Pick<CliDelegationEntry, "result">): number {
   const result = entry.result;
@@ -410,7 +403,7 @@ function CliDelegationRow({ entry, now }: { entry: CliDelegationEntry; now: numb
     : [];
 
   return (
-    <div className={s.row} data-running={running ? "true" : undefined}>
+    <div className={s.row} data-running={running ? "true" : undefined} data-cli-row={entry.id}>
       <button className={s.rowHead} type="button" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
         <ChevronRight className={s.chevron} data-open={open ? "true" : undefined} size={12} aria-hidden />
         <CliStatusIcon status={entry.status} />
@@ -443,82 +436,84 @@ function CliDelegationRow({ entry, now }: { entry: CliDelegationEntry; now: numb
   );
 }
 
-function DelegationGroup({ group, now }: { group: RootGroup; now: number }) {
-  if (group.nodes.length === 1 && group.taskCount <= 1) {
-    return <SubagentRow node={group.nodes[0]!} depth={0} now={now} />;
-  }
-  const activeWorkers = group.nodes.filter((nd) => nd.status === "running" || nd.status === "queued").length;
-  return (
-    <section className={s.group}>
-      <p className={s.groupLabel}>
-        {group.delegationIndex > 0 ? `委派 #${group.delegationIndex} · ` : ""}
-        {group.nodes.length} 个并行子Agent
-        {activeWorkers > 0 ? <span className={s.groupActive}> · {activeWorkers} 个运行中</span> : null}
-      </p>
-      <div className={s.groupBody}>
-        {group.nodes.map((node) => (
-          <SubagentRow key={node.id} node={node} depth={0} now={now} />
-        ))}
-      </div>
-    </section>
-  );
-}
+// ── 汇总条 ──────────────────────────────────────────────────────────────────
+
+const FILTERS: { key: SubagentOutcome; label: string }[] = [
+  { key: "running", label: "运行中" },
+  { key: "completed", label: "完成" },
+  { key: "failed", label: "失败" },
+];
 
 export function SubagentPanel({
   subagents,
   cliDelegations = [],
   onClose,
   onClearFinished,
+  onOpenSession,
+  onInterrupt,
 }: {
   subagents: SubagentProgress[];
   cliDelegations?: CliDelegationEntry[];
   onClose: () => void;
   onClearFinished?: () => void;
+  /** 「在页面中打开」：跳子会话（detail 会写来源，返回条才出得来）。 */
+  onOpenSession?: (childSessionId: string) => void;
+  onInterrupt?: (item: SubagentProgress) => void;
 }) {
   const tree = useMemo(() => buildSubagentTree(subagents), [subagents]);
-  const flat = useMemo(() => flattenSubagents(tree), [tree]);
-  const groups = useMemo(() => groupDelegations(tree), [tree]);
-  const active = activeSubagentCount(flat) + activeCliDelegationCount(cliDelegations);
-  // 已结束的行（内部终态 + 外部非 running）保留在面板里供 debug，可手动清空。
+  const entries = useMemo(() => flattenForPanel(tree), [tree]);
+
+  const [filter, setFilter] = useState<SubagentOutcome | "all">("all");
+  const [dialog, setDialog] = useState<SubagentDialogTarget | null>(null);
+
+  const internalCounts = useMemo(
+    () => countSubagentOutcomes(entries.map((entry) => entry.node)),
+    [entries],
+  );
+  const counts = useMemo(() => {
+    const total = { ...internalCounts };
+    for (const entry of cliDelegations) total[cliOutcome(entry)] += 1;
+    return total;
+  }, [cliDelegations, internalCounts]);
+
+  const active =
+    activeSubagentCount(entries.map((entry) => entry.node)) + activeCliDelegationCount(cliDelegations);
   const finishedCount =
-    flat.filter((nd) => nd.status !== "running" && nd.status !== "queued").length +
-    cliDelegations.filter((entry) => entry.status !== "running").length;
+    entries.filter((entry) => subagentOutcome(entry.node.status) !== "running").length +
+    cliDelegations.filter((entry) => cliOutcome(entry) !== "running").length;
 
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (active <= 0) return;
-    const id = window.setInterval(() => setNow(Date.now()), 500);
+    const id = window.setInterval(() => setNow(Date.now()), 1_000);
     return () => window.clearInterval(id);
   }, [active]);
 
-  const failed =
-    flat.filter((nd) => nd.status === "failed" || nd.status === "interrupted").length +
-    cliDelegations.filter((entry) =>
-      entry.status === "failed" || entry.status === "killed" || entry.status === "lost"
-    ).length;
-  const tools = flat.reduce((sum, nd) => sum + (nd.toolCount ?? 0), 0);
-  const files = flat.reduce((sum, nd) => sum + nd.filesRead.length + nd.filesWritten.length, 0);
-  const tokens =
-    flat.reduce((sum, nd) => sum + (nd.inputTokens ?? 0) + (nd.outputTokens ?? 0), 0) +
-    cliDelegations.reduce((sum, entry) => sum + cliTokenTotal(entry), 0);
+  const visibleEntries = useMemo(
+    () => (filter === "all" ? entries : entries.filter((entry) => subagentOutcome(entry.node.status) === filter)),
+    [entries, filter],
+  );
+  const visibleCli = useMemo(
+    () => (filter === "all" ? cliDelegations : cliDelegations.filter((entry) => cliOutcome(entry) === filter)),
+    [cliDelegations, filter],
+  );
 
-  const summary = [
-    `${flat.length + cliDelegations.length} 个子Agent`,
-    active > 0 ? `${active} 活跃` : "",
-    failed > 0 ? `${failed} 失败` : "",
-    tools > 0 ? `${tools} 工具` : "",
-    files > 0 ? `${files} 文件` : "",
-    tokens > 0 ? `${formatTokens(tokens)} tok` : "",
-  ].filter(Boolean);
+  const total = entries.length + cliDelegations.length;
+  const empty = total === 0;
+  const tools = entries.reduce((sum, entry) => sum + (entry.node.toolCount ?? 0), 0);
+  const tokens =
+    entries.reduce(
+      (sum, entry) => sum + (entry.node.inputTokens ?? 0) + (entry.node.outputTokens ?? 0),
+      0,
+    ) + cliDelegations.reduce((sum, entry) => sum + cliTokenTotal(entry), 0);
 
   const { width, onResizeStart } = usePanelWidth(360, 280, 640);
 
+  const toggleFilter = (key: SubagentOutcome) =>
+    setFilter((prev) => (prev === key ? "all" : key));
+
   return (
-    <aside
-      className={s.panel}
-      aria-label="子Agent 监视"
-      style={{ width, flexBasis: width }}
-    >
+    <aside className={s.panel} aria-label="子Agent 监视" style={{ width, flexBasis: width }}>
       <PanelResizeHandle ariaLabel="调整子Agent 面板宽度" onPointerDown={onResizeStart} />
       <header className={s.header}>
         <span className={s.headerTitle}>
@@ -540,40 +535,122 @@ export function SubagentPanel({
         </button>
       </header>
 
-      {flat.length === 0 && cliDelegations.length === 0 ? (
+      {empty ? (
         <div className={s.empty}>
           <Bot size={28} className={s.emptyIcon} aria-hidden />
-          <p className={s.emptyTitle}>暂无子Agent 活动</p>
+          <p className={s.emptyTitle}>当前会话没有子代理</p>
           <p className={s.emptyDesc}>
-            当本会话派生子Agent（委派/并行任务）或调度 Claude Code / Codex 等外部编程Agent 时，
-            这里会实时展示它们的层级、状态与流式输出。
+            让主代理用 <code className={s.emptyCode}>delegate_task</code> 派发并行子任务，
+            或委派 Claude Code / Codex 等外部 CLI，这里会实时显示它们的运行情况。
           </p>
         </div>
       ) : (
         <>
-          {flat.length > 0 ? <p className={s.summary}>{summary.join(" · ")}</p> : null}
+          <div className={s.summaryBar} role="group" aria-label="子代理状态筛选">
+            <button
+              className={s.summaryChip}
+              type="button"
+              data-tone="run"
+              data-active={filter === "running" ? "true" : undefined}
+              aria-pressed={filter === "running"}
+              onClick={() => toggleFilter("running")}
+            >
+              运行中 {counts.running}
+            </button>
+            <button
+              className={s.summaryChip}
+              type="button"
+              data-tone="ok"
+              data-active={filter === "completed" ? "true" : undefined}
+              aria-pressed={filter === "completed"}
+              onClick={() => toggleFilter("completed")}
+            >
+              完成 {counts.completed}
+            </button>
+            <button
+              className={s.summaryChip}
+              type="button"
+              data-tone="err"
+              data-active={filter === "failed" ? "true" : undefined}
+              aria-pressed={filter === "failed"}
+              onClick={() => toggleFilter("failed")}
+            >
+              失败 {counts.failed}
+            </button>
+            {tools > 0 || tokens > 0 ? (
+              <span className={s.summaryNote}>
+                {[tools > 0 ? `${tools} 工具` : "", tokens > 0 ? `${formatTokens(tokens)} tok` : ""]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </span>
+            ) : null}
+          </div>
+
           <div className={s.scroll}>
-            {cliDelegations.length > 0 ? (
+            {visibleCli.length > 0 ? (
               <section className={s.group}>
                 <p className={s.groupLabel}>
-                  外部 CLI 委派 · {cliDelegations.length} 个
-                  {activeCliDelegationCount(cliDelegations) > 0 ? (
-                    <span className={s.groupActive}> · {activeCliDelegationCount(cliDelegations)} 个运行中</span>
+                  外部 CLI 委派 · {visibleCli.length} 个
+                  {visibleCli.filter((entry) => cliOutcome(entry) === "running").length > 0 ? (
+                    <span className={s.groupActive}>
+                      {" · "}
+                      {visibleCli.filter((entry) => cliOutcome(entry) === "running").length} 个运行中
+                    </span>
                   ) : null}
                 </p>
                 <div className={s.groupBody}>
-                  {cliDelegations.map((entry) => (
+                  {visibleCli.map((entry) => (
                     <CliDelegationRow key={entry.id} entry={entry} now={now} />
                   ))}
                 </div>
               </section>
             ) : null}
-            {groups.map((group) => (
-              <DelegationGroup key={group.id} group={group} now={now} />
-            ))}
+
+            {visibleEntries.length > 0 ? (
+              <section className={s.group}>
+                <p className={s.groupLabel}>
+                  子代理 · {visibleEntries.length} 个
+                  {visibleEntries.filter((entry) => subagentOutcome(entry.node.status) === "running").length > 0 ? (
+                    <span className={s.groupActive}>
+                      {" · "}
+                      {visibleEntries.filter((entry) => subagentOutcome(entry.node.status) === "running").length} 个运行中
+                    </span>
+                  ) : null}
+                </p>
+                <div className={s.list}>
+                  {visibleEntries.map((entry) => (
+                    <SubagentItem
+                      key={entry.node.id}
+                      entry={entry}
+                      now={now}
+                      onOpen={setDialog}
+                      onInterrupt={onInterrupt}
+                    />
+                  ))}
+                </div>
+              </section>
+            ) : null}
+
+            {visibleEntries.length === 0 && visibleCli.length === 0 ? (
+              <div className={s.filteredEmpty}>
+                <p className={s.emptyTitle}>没有符合筛选的子代理</p>
+                <button className={s.filteredEmptyBtn} type="button" onClick={() => setFilter("all")}>
+                  清除筛选
+                </button>
+              </div>
+            ) : null}
           </div>
         </>
       )}
+
+      {dialog ? (
+        <SubagentDialog
+          target={dialog}
+          onClose={() => setDialog(null)}
+          onOpenInPage={onOpenSession}
+          now={now}
+        />
+      ) : null}
     </aside>
   );
 }

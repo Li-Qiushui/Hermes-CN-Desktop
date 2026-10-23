@@ -109,3 +109,14 @@
   cursor: default;
   opacity: 0.5;
 }
+
+.markdownRoot :global([data-streamdown="code-block-body"] code span[style*="--sdm-c"]) {
+  color: var(--sdm-c);
+}
+
+:global([data-theme="dark"]) .markdownRoot :global([data-streamdown="code-block-body"] code span[style*="--sdm-c"]),
+:global([data-theme="dark-modern"]) .markdownRoot :global([data-streamdown="code-block-body"] code span[style*="--sdm-c"]),
+:global([data-theme="dracula"]) .markdownRoot :global([data-streamdown="code-block-body"] code span[style*="--sdm-c"]),
+:global([data-theme="catppuccin-mocha"]) .markdownRoot :global([data-streamdown="code-block-body"] code span[style*="--sdm-c"]) {
+  color: var(--shiki-dark, var(--sdm-c));
+}

@@ -650,6 +650,12 @@
   margin-right: 20px;
 }
 
+.box[data-variant="big"] .steerNotice,
+.box[data-variant="big"] .pasteNotice {
+  margin-left: 20px;
+  margin-right: 20px;
+}
+
 .errorText,
 .modelError {
   color: var(--h-err);
@@ -695,6 +701,45 @@
   padding: 8px 8px;
 }
 
+.steerNotice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  border: 1px solid var(--h-line);
+  border-left: 2px solid var(--h-accent);
+  border-radius: 0;
+  background: color-mix(in srgb, var(--h-accent) 7%, var(--h-bg-input));
+  color: var(--h-text-2);
+  font-size: 12.5px;
+  line-height: 1.45;
+  padding: 7px 9px;
+}
+
+.steerNotice[data-kind="error"] {
+  border-left-color: var(--h-err);
+  background: color-mix(in srgb, var(--h-err) 8%, var(--h-bg-input));
+  color: var(--h-err);
+}
+
+.steerNotice span {
+  min-width: 0;
+}
+
+.pasteNotice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  border: 1px solid var(--h-line);
+  border-radius: 0;
+  background: color-mix(in srgb, var(--h-bg-input) 72%, transparent);
+  color: var(--h-text-3);
+  font-size: 12px;
+  line-height: 1.45;
+  padding: 8px 8px;
+}
+
 .contextWarning[data-risk="danger"] {
   border-color: color-mix(in srgb, var(--h-err) 45%, var(--h-line));
   background: color-mix(in srgb, var(--h-err) 11%, var(--h-bg-input));
@@ -702,6 +747,24 @@
 
 .contextWarning span {
   min-width: 0;
+}
+
+.queueHint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 4px 6px;
+  color: var(--h-text-3);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
+.queueHint span {
+  min-width: 0;
+}
+
+.queueHint[data-tone="warn"] {
+  color: var(--h-warn);
 }
 
 .modelPanel {
@@ -1415,6 +1478,7 @@
 
 .iconButton,
 .sendButton,
+.stopButton,
 .toolButton {
   display: inline-flex;
   align-items: center;
@@ -1714,6 +1778,10 @@
   background: color-mix(in srgb, var(--composer-send-accent) 84%, var(--h-text));
 }
 
+.sendButton[data-steer="true"] {
+  --composer-send-accent: color-mix(in srgb, var(--h-accent) 74%, var(--h-text));
+}
+
 .sendButton:disabled,
 .sendButton[data-ready="false"] {
   cursor: not-allowed;
@@ -1723,17 +1791,28 @@
   opacity: 1;
 }
 
-.sendButton[data-mode="stop"] {
+.stopButton {
+  flex: 0 0 auto;
   min-width: 44px;
-  border-color: var(--composer-send-accent);
-  background: var(--composer-send-accent);
-  color: var(--h-accent-contrast, #fff);
+  height: var(--composer-action-height);
+  gap: 6px;
+  border: 1px solid var(--h-line);
+  border-radius: 0;
+  background: var(--h-bg-chip);
+  color: var(--h-text-2);
+  font-size: 12.5px;
+  font-weight: 500;
   padding: 0 12px;
+  transition:
+    border-color 0.15s,
+    background 0.15s,
+    color 0.15s;
 }
 
-.sendButton[data-mode="stop"]:hover:not(:disabled) {
-  border-color: color-mix(in srgb, var(--composer-send-accent) 84%, var(--h-text));
-  background: color-mix(in srgb, var(--composer-send-accent) 84%, var(--h-text));
+.stopButton:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--h-err) 42%, var(--h-line));
+  background: color-mix(in srgb, var(--h-err) 10%, var(--h-bg-chip));
+  color: var(--h-err);
 }
 
 .sendIcon {
@@ -1930,7 +2009,7 @@
     padding: 0 16px;
   }
 
-  .sendButton[data-mode="stop"] {
+  .stopButton {
     min-width: 44px;
     padding: 0 12px;
   }

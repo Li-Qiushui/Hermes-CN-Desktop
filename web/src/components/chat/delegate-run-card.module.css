@@ -1,0 +1,316 @@
+/* delegate 子代理运行卡（对话流内）。视觉语汇照 board-demo 第 ④ 块：直角、
+   1px 描边、12.5px 正文 / 11.5px 等宽元信息，只用 --h-* token。 */
+
+.card {
+  width: 100%;
+  max-width: 100%;
+  /* 卡片是独立 css module，吃不到 timeline 的邻接间距，自带 12px 节奏。 */
+  margin: 12px 0;
+  border: 1px solid var(--h-line);
+  border-radius: 0;
+  background: var(--h-bg-soft);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.card[data-status="failed"] {
+  border-color: color-mix(in srgb, var(--h-err) 45%, var(--h-line));
+}
+
+.groupHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--h-line-soft);
+  font-size: 11.5px;
+  color: var(--h-text-4);
+  letter-spacing: 0.03em;
+}
+
+.groupKind {
+  color: var(--h-accent);
+  letter-spacing: 0.04em;
+}
+
+/* 派发结果摘要：整卡只有一句时提到组头说一次，不再在每个子任务行下面复读。 */
+.groupSummary {
+  margin-left: auto;
+  min-width: 0;
+  max-width: 62%;
+  font-family: var(--h-font-mono);
+  font-size: 11.5px;
+  color: var(--h-text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.agent + .agent {
+  border-top: 1px solid var(--h-line-soft);
+}
+
+.hd {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  min-width: 0;
+}
+
+.nm {
+  font-size: 12.5px;
+  color: var(--h-text-2);
+  font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kind {
+  flex: 0 0 auto;
+  font-size: 11.5px;
+  color: var(--h-accent);
+  letter-spacing: 0.04em;
+}
+
+.mdl {
+  flex: 0 1 auto;
+  max-width: 42%;
+  font-family: var(--h-font-mono);
+  font-size: 11.5px;
+  color: var(--h-text-4);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.st {
+  margin-left: auto;
+  flex: 0 0 auto;
+  font-size: 11.5px;
+  color: var(--h-text-4);
+  font-variant-numeric: tabular-nums;
+}
+
+.agent[data-status="running"] .st,
+.agent[data-status="queued"] .st {
+  color: var(--h-accent);
+}
+
+.agent[data-status="completed"] .st {
+  color: var(--h-ok);
+}
+
+.agent[data-status="failed"] .st,
+.agent[data-status="interrupted"] .st {
+  color: var(--h-err);
+}
+
+.glyph {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  color: var(--h-text-4);
+}
+
+.glyph[data-tone="ok"] {
+  color: var(--h-ok);
+}
+
+.glyph[data-tone="err"] {
+  color: var(--h-err);
+}
+
+/* 后台存活态：一个静止的方块点，刻意不转 —— 没有事件在喂它，转圈就是在
+   谎称有人看着。 */
+.parkedDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 0;
+  background: var(--h-text-4);
+}
+
+.bd {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 0 12px 9px;
+  max-height: 92px;
+  overflow: hidden;
+  font-family: var(--h-font-mono);
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: var(--h-text-3);
+}
+
+.line {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.line[data-tone="err"] {
+  color: var(--h-err);
+}
+
+.line[data-tone="thinking"] {
+  color: var(--h-text-4);
+}
+
+.line[data-tone="summary"] {
+  color: var(--h-text-2);
+}
+
+.line[data-live="true"] {
+  animation: delegateLineIn 420ms ease-out;
+}
+
+.line[data-empty="true"] {
+  color: var(--h-text-4);
+}
+
+.caret {
+  color: var(--h-text-4);
+  margin-right: 6px;
+}
+
+.ft {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0 12px 10px;
+}
+
+.btn {
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--h-line);
+  border-radius: 0;
+  background: var(--h-bg-chip);
+  color: var(--h-text-2);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.btn:not(:disabled):hover {
+  border-color: var(--h-text-4);
+}
+
+.btn:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.btn[data-active="true"] {
+  border-color: var(--h-accent);
+  background: color-mix(in srgb, var(--h-accent) 9%, var(--h-bg-chip));
+  color: var(--h-text);
+}
+
+.btn[data-danger="true"] {
+  border-color: color-mix(in srgb, var(--h-err) 55%, var(--h-line));
+  background: color-mix(in srgb, var(--h-err) 8%, transparent);
+  color: var(--h-err);
+}
+
+.steerRow {
+  display: flex;
+  gap: 8px;
+  padding: 0 12px 10px;
+}
+
+.steerInput {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--h-line);
+  border-radius: 0;
+  background: var(--h-bg-input);
+  color: var(--h-text);
+  font-family: inherit;
+  font-size: 12.5px;
+  line-height: 1;
+}
+
+.steerInput:focus {
+  outline: none;
+  border-color: var(--h-accent);
+}
+
+.steerNote {
+  padding: 0 12px 9px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--h-text-3);
+}
+
+.steerNote[data-tone="ok"] {
+  color: color-mix(in srgb, var(--h-accent) 78%, var(--h-text));
+}
+
+.steerNote[data-tone="err"] {
+  color: var(--h-err);
+}
+
+.err {
+  padding: 0 12px 9px;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--h-err);
+}
+
+.note {
+  padding: 0 12px 9px;
+  font-size: 11.5px;
+  color: var(--h-text-4);
+}
+
+.log {
+  margin: 0;
+  padding: 8px 12px 10px;
+  border-top: 1px solid var(--h-line-soft);
+  background: var(--h-bg-pane);
+  font-family: var(--h-font-mono);
+  font-size: 11.5px;
+  line-height: 1.65;
+  color: var(--h-text-3);
+  max-height: 260px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.logEmpty {
+  color: var(--h-text-4);
+}
+
+@keyframes delegateLineIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .line[data-live="true"] {
+    animation: none;
+  }
+}

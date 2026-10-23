@@ -1,0 +1,263 @@
+/* 子代理运行情况弹窗 + 子会话返回条。直角、1px var(--h-line)、
+   目标 12.5px 主色 / 元信息 11.5px 次色，只用 --h-* token。 */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--h-z-dialog-overlay);
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--h-color-ink-000) 36%, transparent);
+}
+
+.dialog {
+  z-index: var(--h-z-dialog);
+  display: flex;
+  flex-direction: column;
+  width: min(920px, 92vw);
+  /* 弹窗不需要占满屏：62vh 封顶 640px，长日志靠内部滚动，别把整个对话盖住。 */
+  height: min(62vh, 640px);
+  min-height: 0;
+  border: 1px solid var(--h-line);
+  border-radius: 0;
+  background: var(--h-bg-pane);
+  color: var(--h-text);
+  font-family: var(--h-font-cn);
+  overflow: hidden;
+}
+
+.head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--h-line);
+}
+
+.title {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--h-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.close {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--h-text-3);
+  font-size: 12.5px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.close:hover {
+  border-color: var(--h-line);
+  color: var(--h-text);
+}
+
+.glyph {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  color: var(--h-text-4);
+}
+
+.glyph[data-tone="run"] {
+  color: var(--h-accent);
+}
+
+.glyph[data-tone="ok"] {
+  color: var(--h-ok);
+}
+
+.glyph[data-tone="err"] {
+  color: var(--h-err);
+}
+
+.meta {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--h-line-soft);
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--h-text-3);
+}
+
+.metaItem {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--h-font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.metaItem[data-key="status"] {
+  color: var(--h-text-2);
+}
+
+.metaItem[data-status="running"],
+.metaItem[data-status="queued"] {
+  color: var(--h-accent);
+}
+
+.metaItem[data-status="completed"] {
+  color: var(--h-ok);
+}
+
+.metaItem[data-status="failed"],
+.metaItem[data-status="interrupted"] {
+  color: var(--h-err);
+}
+
+.logHead {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 16px;
+  font-size: 11.5px;
+  color: var(--h-text-4);
+  border-bottom: 1px solid var(--h-line-soft);
+}
+
+.logLabel {
+  letter-spacing: 0.04em;
+}
+
+.followBtn {
+  border: 1px solid var(--h-line);
+  border-radius: 0;
+  background: var(--h-bg-chip);
+  color: var(--h-text-2);
+  font-family: inherit;
+  font-size: 11.5px;
+  line-height: 1;
+  height: 22px;
+  padding: 0 8px;
+  cursor: pointer;
+}
+
+.followBtn:hover {
+  border-color: var(--h-text-4);
+}
+
+.log {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 10px 16px;
+  background: var(--h-bg-soft);
+  font-family: var(--h-font-mono);
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: var(--h-text-3);
+}
+
+.logLine {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.caret {
+  margin-right: 6px;
+  color: var(--h-text-4);
+}
+
+.logEmpty {
+  margin: 0;
+  color: var(--h-text-4);
+}
+
+.foot {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--h-line);
+}
+
+.btn {
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--h-line);
+  border-radius: 0;
+  background: var(--h-bg-chip);
+  color: var(--h-text-2);
+  font-family: inherit;
+  font-size: 12.5px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.btn[data-variant="primary"] {
+  border-color: var(--h-accent-border);
+  background: var(--h-accent-soft);
+  color: var(--h-accent);
+}
+
+.btn:not(:disabled):hover {
+  border-color: var(--h-text-4);
+}
+
+.btn:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+/* ── 子会话返回条 ────────────────────────────────────────────────────────── */
+
+.originBar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  padding: 6px 12px 0;
+}
+
+.originBtn {
+  max-width: 100%;
+  border: 1px solid var(--h-line);
+  border-radius: 0;
+  background: var(--h-bg-soft);
+  color: var(--h-text-2);
+  font-family: inherit;
+  font-size: 12.5px;
+  line-height: 1;
+  height: 26px;
+  padding: 0 10px;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.originBtn:hover {
+  border-color: var(--h-text-4);
+  color: var(--h-text);
+}

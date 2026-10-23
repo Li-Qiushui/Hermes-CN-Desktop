@@ -417,3 +417,209 @@
   gap: 12px;
   padding-left: 20px;
 }
+
+/* ── 汇总条（运行中 / 完成 / 失败，可点击筛选） ──────────────────────────── */
+
+.summaryBar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--h-line-soft);
+}
+
+.summaryChip {
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--h-line);
+  border-radius: 0;
+  background: transparent;
+  color: var(--h-text-3);
+  font-family: inherit;
+  font-size: 11.5px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.summaryChip:hover {
+  border-color: var(--h-text-4);
+  color: var(--h-text-2);
+}
+
+.summaryChip[data-active="true"] {
+  border-color: var(--h-text-4);
+  background: var(--h-bg-soft);
+  color: var(--h-text);
+}
+
+.summaryChip[data-tone="run"] {
+  color: var(--h-accent);
+}
+
+.summaryChip[data-tone="ok"] {
+  color: var(--h-ok);
+}
+
+.summaryChip[data-tone="err"] {
+  color: var(--h-err);
+}
+
+.summaryNote {
+  margin-left: auto;
+  color: var(--h-text-4);
+  font-family: var(--h-font-mono);
+  font-size: 11.5px;
+}
+
+/* ── 子代理条目（一行一件事：状态点 + 目标 + 元信息 + 最后一行输出） ────── */
+
+.list {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.item {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+  border-top: 1px solid var(--h-line-soft);
+}
+
+.item:first-child {
+  border-top: 0;
+}
+
+.itemHead {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 4px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.itemHead:hover {
+  background: var(--h-bg-soft);
+}
+
+.dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  margin-top: 6px;
+  background: var(--h-text-4);
+}
+
+.dot[data-tone="run"] {
+  background: var(--h-accent);
+}
+
+.dot[data-tone="ok"] {
+  background: var(--h-ok);
+}
+
+.dot[data-tone="err"] {
+  background: var(--h-err);
+}
+
+.itemMain {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.itemGoal {
+  color: var(--h-text);
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.item[data-status="running"] .itemGoal,
+.item[data-status="queued"] .itemGoal {
+  color: var(--h-text-2);
+}
+
+.itemMeta {
+  color: var(--h-text-3);
+  font-size: 11.5px;
+  line-height: 1.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.itemLast {
+  color: var(--h-text-3);
+  font-family: var(--h-font-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.itemLast[data-empty="true"] {
+  color: var(--h-text-4);
+}
+
+.itemInterrupt {
+  flex: 0 0 auto;
+  align-self: center;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid color-mix(in srgb, var(--h-err) 55%, var(--h-line));
+  border-radius: 0;
+  background: color-mix(in srgb, var(--h-err) 8%, transparent);
+  color: var(--h-err);
+  font-family: inherit;
+  font-size: 11.5px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+/* ── 筛选后空态 ──────────────────────────────────────────────────────────── */
+
+.filteredEmpty {
+  display: grid;
+  justify-items: start;
+  gap: 8px;
+  padding: 12px 0;
+}
+
+.filteredEmptyBtn {
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--h-line);
+  border-radius: 0;
+  background: var(--h-bg-chip);
+  color: var(--h-text-2);
+  font-family: inherit;
+  font-size: 12.5px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.emptyCode {
+  font-family: var(--h-font-mono);
+  font-size: 11.5px;
+  color: var(--h-text-2);
+}

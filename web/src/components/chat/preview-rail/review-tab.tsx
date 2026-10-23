@@ -54,6 +54,7 @@ export function ReviewTab({ workspaceRoot, active }: ReviewTabProps) {
     actionError,
     treeMode,
     commitDefault,
+    loadError,
   } = review;
 
   // Revert is destructive (no undo), so it always routes through a confirm. The
@@ -84,6 +85,22 @@ export function ReviewTab({ workspaceRoot, active }: ReviewTabProps) {
       <div className={s.empty}>
         <GitPullRequest size={24} aria-hidden />
         <p>当前环境没有桌面端 Git 能力，请在桌面应用中使用改动审查。</p>
+      </div>
+    );
+  }
+
+  // 桥接报错必须显示原文：远程连接、cwd 不可读、git 缺失时，静默白板只会让人
+  // 以为「没有拉取到代码」。这里给出原因、工作区和重试入口。
+  if (loadError && !loading) {
+    return (
+      <div className={s.empty} role="alert">
+        <GitPullRequest size={24} aria-hidden />
+        <p>无法拉取改动</p>
+        <p className={s.emptyDetail}>{loadError}</p>
+        <p className={s.emptyDetail}>工作区：{workspaceRoot}</p>
+        <button type="button" className={s.retryBtn} onClick={() => review.refresh()}>
+          <RefreshCw size={12} aria-hidden /> 重试
+        </button>
       </div>
     );
   }

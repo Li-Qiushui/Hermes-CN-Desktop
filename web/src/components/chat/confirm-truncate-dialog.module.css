@@ -1,0 +1,45 @@
+.dialog {
+  width: 420px;
+  max-width: calc(100vw - 32px);
+  border-radius: 0;
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 20px 0;
+}
+
+.icon {
+  flex: 0 0 auto;
+  color: var(--h-warn);
+}
+
+.title {
+  margin: 0;
+  font-family: var(--h-font-cn);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--h-text);
+}
+
+.body {
+  margin: 0;
+  padding: 10px 20px 0;
+  font-family: var(--h-font-cn);
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--h-text-2);
+  word-break: break-word;
+}
+
+.foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+  padding: 12px 20px 16px;
+  border-top: 1px solid color-mix(in srgb, var(--h-line) 70%, transparent);
+}

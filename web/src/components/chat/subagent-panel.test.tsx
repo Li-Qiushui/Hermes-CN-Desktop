@@ -1,8 +1,13 @@
+// @vitest-environment jsdom
 import ReactDOMServer from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 import type { CliDelegationEntry } from "@/stores/cli-delegations";
-import { CliDelegationDetails } from "./subagent-panel";
+import type { SubagentProgress } from "@/stores/subagents";
+import { CliDelegationDetails, SubagentPanel } from "./subagent-panel";
+
+afterEach(() => cleanup());
 
 function entry(overrides: Partial<CliDelegationEntry> = {}): CliDelegationEntry {
   return {
@@ -55,5 +60,130 @@ describe("CliDelegationDetails", () => {
     expect(html).toContain("获取中");
     expect(html).toContain("统计中");
     expect(html).not.toContain("点击复制");
+  });
+});
+
+function sub(overrides: Partial<SubagentProgress> = {}): SubagentProgress {
+  return {
+    id: "sub-1",
+    parentId: null,
+    goal: "审计 host-hub 接口",
+    model: "deepseek-v4.1-flash",
+    status: "running",
+    taskCount: 1,
+    taskIndex: 0,
+    startedAt: 1_000,
+    updatedAt: 2_000,
+    toolCount: 3,
+    filesRead: [],
+    filesWritten: [],
+    stream: [{ at: 1, kind: "tool", text: 'Grep("鉴权中间件")' }],
+    ...overrides,
+  };
+}
+
+const rowIds = (container: HTMLElement): string[] =>
+  Array.from(container.querySelectorAll("[data-subagent-row]")).map(
+    (node) => node.getAttribute("data-subagent-row") ?? "",
+  );
+
+describe("子Agent 监视面板", () => {
+  it("顶部汇总条按运行中/完成/失败计数", () => {
+    render(
+      <SubagentPanel
+        subagents={[
+          sub({ id: "a" }),
+          sub({ id: "b" }),
+          sub({ id: "c", status: "completed" }),
+          sub({ id: "d", status: "failed" }),
+        ]}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: /运行中 2/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /完成 1/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /失败 1/ })).toBeTruthy();
+  });
+
+  it("排序：运行中在前，其次失败，再按派发时间", () => {
+    const { container } = render(
+      <SubagentPanel
+        subagents={[
+          sub({ id: "done", status: "completed", startedAt: 100 }),
+          sub({ id: "live", status: "running", startedAt: 900 }),
+          sub({ id: "boom", status: "failed", startedAt: 500 }),
+        ]}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(rowIds(container)).toEqual(["live", "boom", "done"]);
+  });
+
+  it("点汇总条筛选，再点一次回到全部", () => {
+    const { container } = render(
+      <SubagentPanel
+        subagents={[
+          sub({ id: "live", status: "running" }),
+          sub({ id: "boom", status: "failed" }),
+        ]}
+        onClose={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /失败 1/ }));
+    expect(rowIds(container)).toEqual(["boom"]);
+
+    fireEvent.click(screen.getByRole("button", { name: /失败 1/ }));
+    expect(rowIds(container)).toEqual(["live", "boom"]);
+  });
+
+  it("每条显示目标、模型、耗时、工具数与最后一行输出", () => {
+    render(<SubagentPanel subagents={[sub()]} onClose={vi.fn()} />);
+
+    expect(screen.getByText("审计 host-hub 接口")).toBeTruthy();
+    expect(screen.getByText(/deepseek-v4\.1-flash/)).toBeTruthy();
+    expect(screen.getByText(/3 次工具/)).toBeTruthy();
+    expect(screen.getByText(/Grep\("鉴权中间件"\)/)).toBeTruthy();
+  });
+
+  it("点一条打开运行情况弹窗", () => {
+    render(<SubagentPanel subagents={[sub()]} onClose={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /审计 host-hub 接口/ }));
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(screen.getByText("3 次工具调用")).toBeTruthy();
+  });
+
+  it("空态说明没有子代理，并提示派发方式", () => {
+    render(<SubagentPanel subagents={[]} onClose={vi.fn()} />);
+
+    expect(screen.getByText("当前会话没有子代理")).toBeTruthy();
+    expect(screen.getByText(/delegate_task/)).toBeTruthy();
+  });
+
+  it("中断按钮只在有 subagent_id 且仍在跑时出现", () => {
+    const onInterrupt = vi.fn();
+    render(
+      <SubagentPanel
+        subagents={[sub({ id: "live", subagentId: "kernel-1" })]}
+        onClose={vi.fn()}
+        onInterrupt={onInterrupt}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "中断" }));
+    expect(onInterrupt).toHaveBeenCalledTimes(1);
+
+    cleanup();
+    render(
+      <SubagentPanel
+        subagents={[sub({ id: "fallback", status: "running" })]}
+        onClose={vi.fn()}
+        onInterrupt={onInterrupt}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: "中断" })).toBeNull();
   });
 });

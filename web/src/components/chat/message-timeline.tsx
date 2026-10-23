@@ -1,24 +1,29 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode, WheelEvent } from "react";
 import { useAtomValue } from "jotai";
-import { AlertTriangle, ChevronRight, Info, Volume2, VolumeX } from "lucide-react";
+import { AlertTriangle, ArrowDown, Bot, ChevronRight, Info, Pencil, RotateCcw, Volume2, VolumeX } from "lucide-react";
 import { LoadingIndicator } from "@hermes/shared-ui";
 import { assistantAvatarEffectiveAtom, assistantDisplayNameAtom, showReasoningAtom } from "@/stores/ui";
 import type { AssistantMessageStats, ChatMessage, ChatToolItem } from "./chat-types";
 import { AssistantProfileCard } from "./assistant-profile-card";
 import { CliDelegationCard, entryFromChatTool } from "./cli-delegation-card";
+import { DelegateRunCard } from "./delegate-run-card";
+import { isDelegateToolName } from "./delegate-run-model";
+import { useInlinePromptAnchor } from "./inline-prompt-flow";
 import { cliDelegationsByToolIdAtom } from "@/stores/cli-delegations";
 import { MessageImage } from "./message-image";
 import { MessageSkeleton } from "./message-skeleton";
 import { MessageText } from "./message-text";
 import { SkillInvocationMessage } from "./skill-invocation-message";
 import { CopyButton } from "@/components/ui/copy-button";
+import { ToolResultCard } from "./tool-result-card";
 import s from "./message-timeline.module.css";
 import { groupElapsedMs } from "./group-tools";
 import { cachedGroupConsecutiveTools, cachedToolActivitySummary } from "./tool-cache";
 import { truncateMiddle } from "@/lib/truncate-middle";
 import { sanitizeTextForSpeech, speakText, voiceErrorMessage } from "@/lib/voice";
 import { isSkillInvocationText } from "@/lib/skill-invocation";
+import { isKernelInjectedNotice, kernelNotice } from "@/lib/kernel-notice";
 import {
   formatDurationMs,
   formatElapsedTimer,
@@ -30,6 +35,7 @@ import type { SessionUsageResult } from "@hermes/protocol";
 const useIsomorphicLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 const BOTTOM_FOLLOW_THRESHOLD_PX = 120;
 const BOTTOM_REATTACH_THRESHOLD_PX = 8;
+const BOTTOM_FOLLOW_EPSILON_PX = 1;
 const LONG_SESSION_RENDER_THRESHOLD = 80;
 const LONG_SESSION_INITIAL_WINDOW = 60;
 const LONG_SESSION_EARLIER_BATCH = 40;
@@ -42,6 +48,26 @@ interface MessageTimelineProps {
   sessionUsage?: SessionUsageResult | null;
   progressModel?: string;
   autoTts?: boolean;
+  /** 解析 subagent store 的候选会话 id——对话流内 delegate 运行卡要用。 */
+  subagentSessionIds?: readonly (string | undefined)[];
+  /** 对话流末尾的插槽（审批堆叠卡），排在消息之后、状态提示之后。 */
+  trailing?: ReactNode;
+  /** 服务端是否还有更早的消息（useSessionMessages().hasMore）。 */
+  hasEarlier?: boolean;
+  /** 更早一页正在请求中。 */
+  isLoadingEarlier?: boolean;
+  /** 更早一页请求失败的错误，取到就要在顶部可见。 */
+  loadEarlierError?: Error | null;
+  /** 触发服务端向前翻页；不传则只保留本地渲染窗口。 */
+  onLoadEarlier?: () => void | Promise<void>;
+  /** 纠错闭环：把这条用户消息回填到输入框。不传则不渲染「编辑」。 */
+  onEditMessage?: (message: ChatMessage) => void;
+  /** 纠错闭环：重发这条回复对应的那条用户消息。不传则不渲染「重试」。 */
+  onRetryMessage?: (userMessage: ChatMessage) => void;
+  /** 流式进行中 / 会话忙碌时置 true：编辑与重试都要求会话空闲。 */
+  correctionLocked?: boolean;
+  /** 锁住的理由，直接进按钮 title。 */
+  correctionLockedReason?: string;
 }
 
 interface TurnAnchor {
@@ -85,8 +111,69 @@ export function resolveBottomFollowState(
   };
 }
 
-function distanceFromBottom(element: HTMLElement): number {
-  return Math.max(0, element.scrollHeight - element.scrollTop - element.clientHeight);
+function distanceFromBottom(
+  scrollTop: number,
+  scrollHeight: number,
+  clientHeight: number,
+): number {
+  return Math.max(0, scrollHeight - scrollTop - clientHeight);
+}
+
+export function shouldAnchorToBottom(
+  userDetachedFromBottom: boolean,
+  nearBottom: boolean,
+  autoAnchor: boolean,
+  bottomDistance: number,
+): boolean {
+  if (userDetachedFromBottom) return false;
+  if (!nearBottom && !autoAnchor) return false;
+  return bottomDistance > BOTTOM_FOLLOW_EPSILON_PX;
+}
+
+export function findLastAnchorIndexAtOrAbove(
+  count: number,
+  isAtOrAbove: (index: number) => boolean,
+): number {
+  let low = 0;
+  let high = count - 1;
+  let found = -1;
+  while (low <= high) {
+    const middle = (low + high) >> 1;
+    if (isAtOrAbove(middle)) {
+      found = middle;
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+  return found;
+}
+
+export function shouldShowJumpToBottom(
+  userDetachedFromBottom: boolean,
+  bottomDistance: number,
+): boolean {
+  if (userDetachedFromBottom) return true;
+  return bottomDistance > BOTTOM_FOLLOW_THRESHOLD_PX;
+}
+
+export function countRowsBelowViewport(
+  count: number,
+  isBelow: (index: number) => boolean,
+): number {
+  let low = 0;
+  let high = count - 1;
+  let firstBelow = count;
+  while (low <= high) {
+    const middle = (low + high) >> 1;
+    if (isBelow(middle)) {
+      firstBelow = middle;
+      high = middle - 1;
+    } else {
+      low = middle + 1;
+    }
+  }
+  return count - firstBelow;
 }
 
 // 只有"用户主动上滑"才应脱离贴底跟随。程序触发的轮次跳转平滑滚动同样会让 scrollTop
@@ -134,8 +221,37 @@ function formatTime(timestamp: number): string {
   });
 }
 
+const MESSAGE_TIME_MINUTE_MS = 60_000;
+const MESSAGE_TIME_TICK_MS = 30_000;
+
+export function formatMessageTime(timestamp: number, now: number = Date.now()): string {
+  const date = new Date(timestamp);
+  const nowDate = new Date(now);
+  if (date.toDateString() !== nowDate.toDateString()) return formatTime(timestamp);
+
+  const elapsed = now - timestamp;
+  if (elapsed < MESSAGE_TIME_MINUTE_MS) return "刚刚";
+
+  const minutes = Math.floor(elapsed / MESSAGE_TIME_MINUTE_MS);
+  if (minutes < 60) return `${minutes} 分钟前`;
+
+  return formatTime(timestamp);
+}
+
+function MessageTimeLabel({ timestamp }: { timestamp: number }) {
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), MESSAGE_TIME_TICK_MS);
+    return () => window.clearInterval(timer);
+  }, [timestamp]);
+
+  return <>{formatMessageTime(timestamp, now)}</>;
+}
+
 function turnAnchorTitle(message: ChatMessage, index: number): string {
-  const preview = getCopyableText(message)?.replace(/\s+/g, " ").trim();
+  const preview = copyableMessageText(message)?.replace(/\s+/g, " ").trim();
   return preview
     ? `第 ${index + 1} 轮：${truncateMiddle(preview, 34)}`
     : `第 ${index + 1} 轮`;
@@ -347,6 +463,28 @@ function initialRenderWindowStart(total: number): number {
   return total > LONG_SESSION_RENDER_THRESHOLD ? total - LONG_SESSION_INITIAL_WINDOW : 0;
 }
 
+function headPrependShift(state: RenderWindowState, messages: ChatMessage[]): number {
+  if (state.sessionKey === undefined) return 0;
+  const firstId = messages[0]?.id;
+  if (firstId === undefined || firstId === state.sessionKey) return 0;
+  const index = messages.findIndex((message) => message.id === state.sessionKey);
+  return index > 0 ? index : 0;
+}
+
+function resolveWindowStart(
+  state: RenderWindowState,
+  messages: ChatMessage[],
+  initial: number,
+): number {
+  if (state.sessionKey === undefined) return initial;
+  if (messages[0]?.id === state.sessionKey) return state.start;
+  const shift = headPrependShift(state, messages);
+  if (shift > 0) {
+    return Math.max(0, state.start + shift - LONG_SESSION_EARLIER_BATCH);
+  }
+  return initial;
+}
+
 function ToolCardBase({ tool }: { tool: ChatToolItem }) {
   const [open, setOpen] = useState(tool.status === "error");
   const [elapsed, setElapsed] = useState(() =>
@@ -407,10 +545,7 @@ function ToolCardBase({ tool }: { tool: ChatToolItem }) {
               ))}
             </div>
           ) : null}
-          {tool.arguments ? (
-            <pre>{JSON.stringify(tool.arguments, null, 2)}</pre>
-          ) : null}
-          {body ? <pre data-error={tool.status === "error"}>{body}</pre> : null}
+          <ToolResultCard tool={tool} body={body} />
         </div>
       ) : null}
     </div>
@@ -528,12 +663,40 @@ function ToolChainBase({ tools }: { tools: ChatToolItem[] }) {
 
 const ToolChain = memo(ToolChainBase, toolListPropsEqual);
 
+function MessageToolList({
+  tools,
+  streaming,
+  subagentSessionIds,
+}: {
+  tools: ChatToolItem[];
+  streaming: boolean;
+  subagentSessionIds?: readonly (string | undefined)[];
+}) {
+  const delegates = tools.filter((tool) => isDelegateToolName(tool.name));
+  const others = tools.filter((tool) => !isDelegateToolName(tool.name));
+  return (
+    <>
+      {others.length > 0 ? <ToolChain tools={others} /> : null}
+      {delegates.map((tool) => (
+        <DelegateRunCard
+          key={`delegate-run-${tool.tool_id}`}
+          tool={tool}
+          sessionIds={subagentSessionIds}
+          streaming={streaming}
+          claimUnlinked={delegates.length === 1}
+        />
+      ))}
+    </>
+  );
+}
+
 interface MessageBlocksProps {
   message: ChatMessage;
   streaming: boolean;
   turnStartedAt?: number;
   sessionUsage?: SessionUsageResult | null;
   progressModel?: string;
+  subagentSessionIds?: readonly (string | undefined)[];
 }
 
 function messageBlocksPropsEqual(prev: MessageBlocksProps, next: MessageBlocksProps): boolean {
@@ -542,25 +705,49 @@ function messageBlocksPropsEqual(prev: MessageBlocksProps, next: MessageBlocksPr
     prev.streaming === next.streaming &&
     prev.turnStartedAt === next.turnStartedAt &&
     prev.sessionUsage === next.sessionUsage &&
-    prev.progressModel === next.progressModel
+    prev.progressModel === next.progressModel &&
+    prev.subagentSessionIds === next.subagentSessionIds
   );
 }
 
-function MessageBlocksBase({ message, streaming, turnStartedAt, sessionUsage, progressModel }: MessageBlocksProps) {
+function MessageBlocksBase({ message, streaming, turnStartedAt, sessionUsage, progressModel, subagentSessionIds }: MessageBlocksProps) {
   const showReasoning = useAtomValue(showReasoningAtom);
   const cliDelegations = useAtomValue(cliDelegationsByToolIdAtom);
+  const inlineAnchor = useInlinePromptAnchor();
   const blocks = message.blocks ?? [];
   const items: ReactNode[] = [];
   let pendingTools: ChatToolItem[] = [];
+  // 同一条消息里可能有多次 delegate_task；只有唯一一张卡时才允许它按时间窗
+  // 认领没有工具 id 关联的原生 subagent 行，否则第二张会抢第一张的工人。
+  const delegateCardCount = blocks.filter(
+    (block) => block.type === "tool" && isDelegateToolName(block.tool.name),
+  ).length;
 
   const flushTools = (key: string) => {
     if (pendingTools.length === 0) return;
+    const anchorHere = Boolean(inlineAnchor) && pendingTools.some((tool) => tool.tool_id === inlineAnchor?.toolId);
     items.push(<ToolChain key={key} tools={pendingTools} />);
+    if (anchorHere) items.push(<Fragment key="inline-prompt">{inlineAnchor?.node}</Fragment>);
     pendingTools = [];
   };
 
   blocks.forEach((block, index) => {
     if (block.type === "tool") {
+      // 内核 delegate_task：子代理协作的一等公民，出专用运行卡（ticker/模型/
+      // 状态/日志/中断），不进 ToolChain 聚合，也不吃通用工具行的 JSON 大块。
+      if (isDelegateToolName(block.tool.name)) {
+        flushTools(`tools-${index}`);
+        items.push(
+          <DelegateRunCard
+            key={`delegate-run-${block.tool.tool_id || index}`}
+            tool={block.tool}
+            sessionIds={subagentSessionIds}
+            streaming={streaming}
+            claimUnlinked={delegateCardCount === 1}
+          />,
+        );
+        return;
+      }
       // CLI 委派（Claude Code / Codex）升级为品牌化卡片：live store 命中
       // 优先（P-047 事件或旧内核回退），历史重载走渲染时按需重建。委派卡
       // 不进 ToolChain 聚合——它是多 Agent 协作的一等公民，不该被折叠进
@@ -645,16 +832,16 @@ function MessageBlocksBase({ message, streaming, turnStartedAt, sessionUsage, pr
 
 const MessageBlocks = memo(MessageBlocksBase, messageBlocksPropsEqual);
 
-function getCopyableText(message: ChatMessage): string | undefined {
+export function copyableMessageText(message: ChatMessage): string | undefined {
   if (message.blocks?.length) {
     const text = message.blocks
-      .filter((block) => block.type === "text" || block.type === "reasoning")
+      .filter((block) => block.type === "text")
       .map((block) => block.text)
       .join("\n\n")
       .trim();
-    return text || undefined;
+    if (text) return text;
   }
-  return message.text || message.reasoning;
+  return message.text?.trim() || undefined;
 }
 
 function getReadableText(message: ChatMessage): string | undefined {
@@ -818,15 +1005,31 @@ function MessageStatsFooter({ stats }: { stats: AssistantMessageStats }) {
   );
 }
 
+function precedingUserAsk(messages: readonly ChatMessage[], index: number): ChatMessage | null {
+  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+    const candidate = messages[cursor];
+    if (!candidate || candidate.role !== "user") continue;
+    if (isSkillInvocationText(candidate.text) || isKernelInjectedNotice(candidate.text)) continue;
+    return candidate;
+  }
+  return null;
+}
+
 interface MessageBubbleProps {
   message: ChatMessage;
   turnStartedAt?: number;
   sessionUsage?: SessionUsageResult | null;
   progressModel?: string;
+  subagentSessionIds?: readonly (string | undefined)[];
   speechStatus: SpeechPlaybackStatus;
   speechError: string | null;
   onSpeak: (messageId: string, text: string) => void;
   onStop: () => void;
+  retrySource?: ChatMessage | null;
+  onEditMessage?: (message: ChatMessage) => void;
+  onRetryMessage?: (userMessage: ChatMessage) => void;
+  correctionLocked?: boolean;
+  correctionLockedReason?: string;
 }
 
 function messageBubblePropsEqual(prev: MessageBubbleProps, next: MessageBubbleProps): boolean {
@@ -835,10 +1038,16 @@ function messageBubblePropsEqual(prev: MessageBubbleProps, next: MessageBubblePr
     prev.turnStartedAt === next.turnStartedAt &&
     prev.sessionUsage === next.sessionUsage &&
     prev.progressModel === next.progressModel &&
+    prev.subagentSessionIds === next.subagentSessionIds &&
     prev.speechStatus === next.speechStatus &&
     prev.speechError === next.speechError &&
     prev.onSpeak === next.onSpeak &&
-    prev.onStop === next.onStop
+    prev.onStop === next.onStop &&
+    prev.retrySource === next.retrySource &&
+    prev.onEditMessage === next.onEditMessage &&
+    prev.onRetryMessage === next.onRetryMessage &&
+    prev.correctionLocked === next.correctionLocked &&
+    prev.correctionLockedReason === next.correctionLockedReason
   );
 }
 
@@ -847,10 +1056,16 @@ function MessageBubbleBase({
   turnStartedAt,
   sessionUsage,
   progressModel,
+  subagentSessionIds,
   speechStatus,
   speechError,
   onSpeak,
   onStop,
+  retrySource,
+  onEditMessage,
+  onRetryMessage,
+  correctionLocked = false,
+  correctionLockedReason,
 }: MessageBubbleProps) {
   const showReasoning = useAtomValue(showReasoningAtom);
   const assistantDisplayName = useAtomValue(assistantDisplayNameAtom);
@@ -859,14 +1074,54 @@ function MessageBubbleBase({
   const isToolOnly = message.role === "tool";
   const isSystem = message.role === "system";
   const streaming = message.status === "streaming";
-  const copyable = getCopyableText(message);
+  const copyable = copyableMessageText(message);
   const readable = !isUser && !isSystem && !isToolOnly && !streaming && message.status !== "error"
     ? getReadableText(message)
     : undefined;
   const speechBusy = speechStatus === "preparing" || speechStatus === "speaking";
   const hasBlocks = !isUser && Boolean(message.blocks?.length);
   const hasSkillInvocation = isSkillInvocationText(message.text);
+  const kernel = kernelNotice(message.text);
   const messageStats = message.stats ?? sessionUsageFallbackStats(message, sessionUsage);
+  const canEdit = isUser && !isSystem && !isToolOnly && !hasSkillInvocation && Boolean(onEditMessage);
+  const canRetry =
+    !isUser && !isSystem && !isToolOnly && !streaming && Boolean(onRetryMessage) && Boolean(retrySource);
+  const editTitle = correctionLocked
+    ? (correctionLockedReason ?? "正在生成回复，等这轮结束再编辑")
+    : message.images?.length
+      ? "编辑并重发：附件不会被带回输入框"
+      : "编辑并重发";
+  const retryTitle = correctionLocked
+    ? (correctionLockedReason ?? "正在生成回复，等这轮结束再重试")
+    : retrySource?.images?.length
+      ? "重试这条回复：原消息的附件不会重新发送"
+      : "重试这条回复（重发对应的提问）";
+
+  if (kernel) {
+    return (
+      <div className={s.messageRow} data-role="system" data-system-kind="kernel-notice">
+        <div className={s.systemNotice} data-kind="kernel-notice" role="status">
+          <Bot
+            className={s.systemNoticeIcon}
+            size={16}
+            strokeWidth={1.75}
+            aria-hidden="true"
+          />
+          <div className={s.systemNoticeBody}>
+            <div className={s.systemNoticeTitle}>
+              <span>{kernel.title}</span>
+              {kernel.delegationId ? (
+                <span className={s.kernelNoticeId}>{kernel.delegationId}</span>
+              ) : null}
+            </div>
+            <div className={s.kernelNoticeBody}>
+              <MessageText text={kernel.body} />
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (hasSkillInvocation) {
     return (
@@ -892,12 +1147,17 @@ function MessageBubbleBase({
   }
 
   if (isToolOnly) {
+    const tools = message.tools ?? [];
     return (
       <div className={s.messageRow} data-role="assistant">
         {/* 与带头像的行保持左缘对齐的占位列。 */}
         <div className={s.avatarCol} aria-hidden />
         <div className={s.messageContent}>
-          <ToolChain tools={message.tools ?? []} />
+          <MessageToolList
+            tools={tools}
+            streaming={streaming}
+            subagentSessionIds={subagentSessionIds}
+          />
         </div>
       </div>
     );
@@ -965,6 +1225,7 @@ function MessageBubbleBase({
               turnStartedAt={turnStartedAt}
               sessionUsage={sessionUsage}
               progressModel={progressModel}
+              subagentSessionIds={subagentSessionIds}
             />
           ) : (
             <>
@@ -982,18 +1243,52 @@ function MessageBubbleBase({
               {showReasoning && message.reasoning ? (
                 <ReasoningBlock text={message.reasoning} streaming={streaming && !message.text} />
               ) : null}
-              {message.tools?.length ? <ToolChain tools={message.tools} /> : null}
+              {message.tools?.length ? (
+                <MessageToolList
+                  tools={message.tools}
+                  streaming={streaming}
+                  subagentSessionIds={subagentSessionIds}
+                />
+              ) : null}
               {streaming ? <ProgressBlock progressModel={progressModel} /> : null}
             </>
           )}
         </div>
         <div className={s.messageActions}>
           <span className={s.messageActionsControls}>
-            <span>{formatTime(message.createdAt)}</span>
+            <span className={s.messageTime}>
+              <MessageTimeLabel timestamp={message.createdAt} />
+            </span>
             {copyable ? (
               <CopyButton text={copyable} showStatusIcon={false}>
                 复制
               </CopyButton>
+            ) : null}
+            {canEdit ? (
+              <button
+                type="button"
+                className={s.messageCorrectAction}
+                onClick={() => onEditMessage?.(message)}
+                disabled={correctionLocked}
+                title={editTitle}
+              >
+                <Pencil size={12} strokeWidth={1.75} aria-hidden="true" />
+                <span>编辑</span>
+              </button>
+            ) : null}
+            {canRetry ? (
+              <button
+                type="button"
+                className={s.messageCorrectAction}
+                onClick={() => {
+                  if (retrySource) onRetryMessage?.(retrySource);
+                }}
+                disabled={correctionLocked}
+                title={retryTitle}
+              >
+                <RotateCcw size={12} strokeWidth={1.75} aria-hidden="true" />
+                <span>重试</span>
+              </button>
             ) : null}
             {readable ? (
               <button
@@ -1040,6 +1335,16 @@ export function MessageTimeline({
   sessionUsage,
   progressModel,
   autoTts = false,
+  subagentSessionIds,
+  trailing,
+  hasEarlier = false,
+  isLoadingEarlier = false,
+  loadEarlierError = null,
+  onLoadEarlier,
+  onEditMessage,
+  onRetryMessage,
+  correctionLocked = false,
+  correctionLockedReason,
 }: MessageTimelineProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
@@ -1049,12 +1354,16 @@ export function MessageTimeline({
   const autoAnchorRef = useRef(false);
   const autoAnchorTimerRef = useRef<number | null>(null);
   const lastScrollTopRef = useRef(0);
+  const turnUpdateFrameRef = useRef(0);
+  const lastTurnUpdateScrollTopRef = useRef(-1);
   // 程序触发的轮次跳转（平滑滚动）守卫：跳转动画期间 onScroll 会被误判为用户上滑而
   // 触发 detachFromBottomAutoFollow 硬取消滚动，这里用标记把跳转滚动与用户手势区分开。
   const programmaticScrollRef = useRef(false);
   const programmaticTargetRef = useRef(0);
   const programmaticTimerRef = useRef<number | null>(null);
   const messageCountRef = useRef(0);
+  const jumpFrameRef = useRef(0);
+  const jumpInFlightRef = useRef(false);
   const firstMessageIdRef = useRef<string | undefined>(undefined);
   const lastUserMessageIdRef = useRef<string | undefined>(undefined);
   const speechAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -1063,6 +1372,10 @@ export function MessageTimeline({
   const autoTtsSeenRef = useRef<Set<string>>(new Set());
   const autoTtsSessionKeyRef = useRef<string | undefined>(undefined);
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
+  const [jumpButton, setJumpButton] = useState<{ visible: boolean; count: number }>({
+    visible: false,
+    count: 0,
+  });
   const [speechState, setSpeechState] = useState<SpeechPlaybackState>({
     messageId: null,
     status: "idle",
@@ -1083,7 +1396,7 @@ export function MessageTimeline({
   const turnAnchors = useMemo<TurnAnchor[]>(() => {
     const anchors: TurnAnchor[] = [];
     for (const message of visibleMessages) {
-      if (message.role !== "user" || isSkillInvocationText(message.text)) continue;
+      if (message.role !== "user" || isSkillInvocationText(message.text) || isKernelInjectedNotice(message.text)) continue;
       const index = anchors.length;
       anchors.push({
         id: message.id,
@@ -1101,11 +1414,12 @@ export function MessageTimeline({
     start: 0,
   });
   const initialWindowStart = initialRenderWindowStart(visibleMessages.length);
-  if (renderWindow.sessionKey !== sessionKey) {
+  const prependShift = headPrependShift(renderWindow, visibleMessages);
+  if (renderWindow.sessionKey !== sessionKey && prependShift === 0) {
     setRenderWindow({ sessionKey, start: initialWindowStart });
   }
   const windowStart =
-    renderWindow.sessionKey === sessionKey ? renderWindow.start : initialWindowStart;
+    renderWindow.sessionKey === sessionKey ? renderWindow.start : resolveWindowStart(renderWindow, visibleMessages, initialWindowStart);
   const windowedMessages = windowStart > 0 ? visibleMessages.slice(windowStart) : visibleMessages;
   const hiddenMessageCount = windowStart;
 
@@ -1191,11 +1505,14 @@ export function MessageTimeline({
   }, []);
 
   useEffect(() => {
-    const completed = messages.filter((message) =>
-      message.role === "assistant" &&
-      message.status === "complete" &&
-      Boolean(getReadableText(message)),
-    );
+    if (!autoTts) return;
+
+    const completed: ChatMessage[] = [];
+    for (const message of messages) {
+      if (message.role !== "assistant" || message.status !== "complete") continue;
+      if (!getReadableText(message)) continue;
+      completed.push(message);
+    }
     const sessionKey = messages[0]?.id;
     if (autoTtsSessionKeyRef.current !== sessionKey) {
       autoTtsSessionKeyRef.current = sessionKey;
@@ -1203,13 +1520,15 @@ export function MessageTimeline({
       return;
     }
 
-    const fresh = completed.filter((message) => !autoTtsSeenRef.current.has(message.id));
-    for (const message of completed) autoTtsSeenRef.current.add(message.id);
-    if (!autoTts || fresh.length === 0) return;
+    let fresh: ChatMessage | undefined;
+    for (const message of completed) {
+      if (!autoTtsSeenRef.current.has(message.id)) fresh = message;
+      autoTtsSeenRef.current.add(message.id);
+    }
+    if (!fresh) return;
 
-    const target = fresh[fresh.length - 1];
-    const text = target ? getReadableText(target) : undefined;
-    if (target && text) void playSpeech(target.id, text);
+    const text = getReadableText(fresh);
+    if (text) void playSpeech(fresh.id, text);
   }, [autoTts, messages, playSpeech]);
 
   const handleSpeak = useCallback((messageId: string, text: string) => {
@@ -1240,6 +1559,16 @@ export function MessageTimeline({
     }));
   }, [firstRenderedRow, sessionKey, windowStart]);
 
+  const [earlierRequested, setEarlierRequested] = useState(false);
+
+  const loadEarlierMessages = useCallback(() => {
+    if (!onLoadEarlier || isLoadingEarlier || !hasEarlier) return;
+    const node = firstRenderedRow();
+    revealEarlierRef.current = node ? { node, top: node.getBoundingClientRect().top } : null;
+    setEarlierRequested(true);
+    void onLoadEarlier();
+  }, [firstRenderedRow, hasEarlier, isLoadingEarlier, onLoadEarlier]);
+
   useIsomorphicLayoutEffect(() => {
     const pending = revealEarlierRef.current;
     const container = containerRef.current;
@@ -1265,22 +1594,37 @@ export function MessageTimeline({
 
     const containerRect = container.getBoundingClientRect();
     const thresholdY = containerRect.top + Math.min(container.clientHeight * 0.35, 180);
-    let currentId = turnAnchors[0]?.id ?? null;
-
-    for (const turn of turnAnchors) {
-      const node = turnAnchorRefs.current.get(turn.id);
-      if (!node) continue;
-      if (node.getBoundingClientRect().top <= thresholdY) {
-        currentId = turn.id;
-      } else {
-        break;
-      }
+    const present: number[] = [];
+    for (let index = 0; index < turnAnchors.length; index += 1) {
+      if (turnAnchorRefs.current.has(turnAnchors[index].id)) present.push(index);
     }
+    if (present.length === 0) return;
+
+    // 锚点在文档流里从上到下排列，矩形 top 单调递增，可以直接二分定位"最后一个越过
+    // 激活线的轮次"，不再对每一轮都做 getBoundingClientRect（长会话里是 O(轮次)/帧）。
+    const hit = findLastAnchorIndexAtOrAbove(present.length, (position) => {
+      const node = turnAnchorRefs.current.get(turnAnchors[present[position]].id);
+      return node ? node.getBoundingClientRect().top <= thresholdY : false;
+    });
+    const currentId = turnAnchors[hit >= 0 ? present[hit] : 0]?.id ?? null;
 
     if (currentId) {
       setActiveTurnId((previous) => previous === currentId ? previous : currentId);
     }
   }, [turnAnchors]);
+
+  const scheduleActiveTurnUpdate = useCallback(() => {
+    if (turnUpdateFrameRef.current !== 0) return;
+    turnUpdateFrameRef.current = window.requestAnimationFrame(() => {
+      turnUpdateFrameRef.current = 0;
+      const container = containerRef.current;
+      if (!container) return;
+      const scrollTop = container.scrollTop;
+      if (scrollTop === lastTurnUpdateScrollTopRef.current) return;
+      lastTurnUpdateScrollTopRef.current = scrollTop;
+      updateActiveTurnFromScroll();
+    });
+  }, [updateActiveTurnFromScroll]);
 
   const scrollToTurn = useCallback((id: string) => {
     const container = containerRef.current;
@@ -1331,12 +1675,13 @@ export function MessageTimeline({
     if (userDetachedFromBottomRef.current) return;
     userDetachedFromBottomRef.current = false;
     nearBottomRef.current = true;
+    const targetTop = Math.max(0, container.scrollHeight - container.clientHeight);
     container.scrollTo({
-      top: container.scrollHeight,
+      top: targetTop,
       behavior,
     });
     if (behavior === "auto") {
-      lastScrollTopRef.current = container.scrollTop;
+      lastScrollTopRef.current = targetTop;
     }
   }, []);
 
@@ -1357,6 +1702,7 @@ export function MessageTimeline({
       programmaticTimerRef.current = null;
     }
     clearAutoAnchor();
+    jumpInFlightRef.current = false;
     userDetachedFromBottomRef.current = true;
     nearBottomRef.current = false;
     if (container) {
@@ -1367,6 +1713,81 @@ export function MessageTimeline({
       lastScrollTopRef.current = container.scrollTop;
     }
   }, [clearAutoAnchor]);
+
+  const measureMessagesBelowViewport = useCallback((): number => {
+    const container = containerRef.current;
+    const messagesElement = messagesRef.current;
+    if (!container || !messagesElement) return 0;
+
+    const rows = messagesElement.children;
+    if (rows.length === 0) return 0;
+
+    const viewportBottom = container.getBoundingClientRect().top + container.clientHeight;
+    const belowCount = countRowsBelowViewport(
+      rows.length,
+      (index) => rows[index].getBoundingClientRect().top >= viewportBottom,
+    );
+    const firstBelow = rows.length - belowCount;
+    let count = 0;
+    for (let index = firstBelow; index < rows.length; index += 1) {
+      if (rows[index].hasAttribute("data-message-index")) count += 1;
+    }
+    return count;
+  }, []);
+
+  const scheduleJumpButtonUpdate = useCallback(() => {
+    if (jumpFrameRef.current !== 0) return;
+    jumpFrameRef.current = window.requestAnimationFrame(() => {
+      jumpFrameRef.current = 0;
+      const container = containerRef.current;
+      if (!container) return;
+      const bottomDistance = distanceFromBottom(
+        container.scrollTop,
+        container.scrollHeight,
+        container.clientHeight,
+      );
+      if (jumpInFlightRef.current) {
+        setJumpButton((previous) => (previous.visible ? { visible: false, count: 0 } : previous));
+        return;
+      }
+      const visible = shouldShowJumpToBottom(
+        userDetachedFromBottomRef.current,
+        bottomDistance,
+      );
+      const count = visible ? measureMessagesBelowViewport() : 0;
+      setJumpButton((previous) =>
+        previous.visible === visible && previous.count === count
+          ? previous
+          : { visible, count },
+      );
+    });
+  }, [measureMessagesBelowViewport]);
+
+  const jumpToBottom = useCallback(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const targetTop = Math.max(0, container.scrollHeight - container.clientHeight);
+    scrollToBottom("smooth", true);
+    jumpInFlightRef.current = true;
+    programmaticScrollRef.current = true;
+    programmaticTargetRef.current = targetTop;
+    if (programmaticTimerRef.current !== null) {
+      window.clearTimeout(programmaticTimerRef.current);
+    }
+    programmaticTimerRef.current = window.setTimeout(() => {
+      programmaticScrollRef.current = false;
+      programmaticTimerRef.current = null;
+      jumpInFlightRef.current = false;
+    }, 700);
+    lastScrollTopRef.current = container.scrollTop;
+    scheduleActiveTurnUpdate();
+    setJumpButton({ visible: false, count: 0 });
+  }, [scheduleActiveTurnUpdate, scrollToBottom]);
+
+  useIsomorphicLayoutEffect(() => {
+    scheduleJumpButtonUpdate();
+  }, [scheduleJumpButtonUpdate, statusMessage, visibleMessages]);
 
   useEffect(() => {
     const knownIds = new Set(turnAnchors.map((turn) => turn.id));
@@ -1394,10 +1815,16 @@ export function MessageTimeline({
     const previousLastUserMessageId = lastUserMessageIdRef.current;
     const nextFirstMessageId = visibleMessages[0]?.id;
     const nextLastUserMessageId = turnAnchors[turnAnchors.length - 1]?.id;
+    const prependedEarlier =
+      previousFirstMessageId !== undefined &&
+      nextFirstMessageId !== undefined &&
+      previousFirstMessageId !== nextFirstMessageId &&
+      visibleMessages.some((message) => message.id === previousFirstMessageId);
     const sessionChanged =
       previousFirstMessageId !== undefined &&
       nextFirstMessageId !== undefined &&
-      previousFirstMessageId !== nextFirstMessageId;
+      previousFirstMessageId !== nextFirstMessageId &&
+      !prependedEarlier;
     const forceBottom = shouldForceBottomOnMessageChange(
       previousMessageCount,
       visibleMessages.length,
@@ -1409,6 +1836,8 @@ export function MessageTimeline({
     messageCountRef.current = visibleMessages.length;
     firstMessageIdRef.current = nextFirstMessageId;
     lastUserMessageIdRef.current = nextLastUserMessageId;
+
+    if (prependedEarlier) return;
 
     if (visibleMessages.length === 0) {
       nearBottomRef.current = true;
@@ -1463,14 +1892,41 @@ export function MessageTimeline({
     if (!container || !messagesElement || typeof ResizeObserver === "undefined") return;
 
     let frame = 0;
+    let lastContentHeight = -1;
+    let lastViewportHeight = -1;
     const anchorToBottom = () => {
-      if (userDetachedFromBottomRef.current) return;
-      if (!nearBottomRef.current && !autoAnchorRef.current) return;
-      container.scrollTop = container.scrollHeight;
-      lastScrollTopRef.current = container.scrollTop;
+      frame = 0;
+      scheduleJumpButtonUpdate();
+      const scrollHeight = container.scrollHeight;
+      const clientHeight = container.clientHeight;
+      const bottomDistance = distanceFromBottom(container.scrollTop, scrollHeight, clientHeight);
+      if (!shouldAnchorToBottom(
+        userDetachedFromBottomRef.current,
+        nearBottomRef.current,
+        autoAnchorRef.current,
+        bottomDistance,
+      )) return;
+      // 一次读（scrollHeight/clientHeight 已在上方读好）→ 一次写，写完后不再回读
+      // scrollTop，避免每帧读-写-读交替触发强制布局。
+      const targetTop = Math.max(0, scrollHeight - clientHeight);
+      container.scrollTop = targetTop;
+      lastScrollTopRef.current = targetTop;
     };
-    const observer = new ResizeObserver(() => {
-      window.cancelAnimationFrame(frame);
+    const observer = new ResizeObserver((entries) => {
+      let changed = false;
+      for (const entry of entries) {
+        const height = entry.contentRect.height;
+        if (entry.target === messagesElement) {
+          if (Math.abs(height - lastContentHeight) < BOTTOM_FOLLOW_EPSILON_PX) continue;
+          lastContentHeight = height;
+          changed = true;
+        } else {
+          if (Math.abs(height - lastViewportHeight) < BOTTOM_FOLLOW_EPSILON_PX) continue;
+          lastViewportHeight = height;
+          changed = true;
+        }
+      }
+      if (!changed || frame !== 0) return;
       frame = window.requestAnimationFrame(anchorToBottom);
     });
     observer.observe(messagesElement);
@@ -1483,7 +1939,7 @@ export function MessageTimeline({
       window.cancelAnimationFrame(frame);
       observer.disconnect();
     };
-  }, []);
+  }, [scheduleJumpButtonUpdate]);
 
   useEffect(() => {
     return () => {
@@ -1492,6 +1948,14 @@ export function MessageTimeline({
       }
       if (programmaticTimerRef.current !== null) {
         window.clearTimeout(programmaticTimerRef.current);
+      }
+      if (turnUpdateFrameRef.current !== 0) {
+        window.cancelAnimationFrame(turnUpdateFrameRef.current);
+        turnUpdateFrameRef.current = 0;
+      }
+      if (jumpFrameRef.current !== 0) {
+        window.cancelAnimationFrame(jumpFrameRef.current);
+        jumpFrameRef.current = 0;
       }
     };
   }, []);
@@ -1506,23 +1970,31 @@ export function MessageTimeline({
     const container = containerRef.current;
     if (!container) return;
 
+    const scrollTop = container.scrollTop;
+
     // 轮次跳转动画进行中：不要把它当成用户上滑（否则会自取消）。到达目标后解除守卫。
     if (programmaticScrollRef.current) {
-      lastScrollTopRef.current = container.scrollTop;
-      if (Math.abs(container.scrollTop - programmaticTargetRef.current) <= 2) {
+      lastScrollTopRef.current = scrollTop;
+      if (Math.abs(scrollTop - programmaticTargetRef.current) <= 2) {
         programmaticScrollRef.current = false;
+        jumpInFlightRef.current = false;
         if (programmaticTimerRef.current !== null) {
           window.clearTimeout(programmaticTimerRef.current);
           programmaticTimerRef.current = null;
         }
       }
-      updateActiveTurnFromScroll();
+      scheduleActiveTurnUpdate();
+      scheduleJumpButtonUpdate();
       return;
     }
 
-    const bottomDistance = distanceFromBottom(container);
+    const bottomDistance = distanceFromBottom(
+      scrollTop,
+      container.scrollHeight,
+      container.clientHeight,
+    );
     const scrollingUp = shouldDetachOnScroll(
-      container.scrollTop,
+      scrollTop,
       lastScrollTopRef.current,
       programmaticScrollRef.current,
     );
@@ -1539,86 +2011,144 @@ export function MessageTimeline({
       nearBottomRef.current = next.nearBottom;
       userDetachedFromBottomRef.current = next.userDetachedFromBottom;
     }
-    lastScrollTopRef.current = container.scrollTop;
-    updateActiveTurnFromScroll();
+    lastScrollTopRef.current = scrollTop;
+    scheduleActiveTurnUpdate();
+    scheduleJumpButtonUpdate();
   };
 
+  const jumpLabel = jumpButton.count > 0
+    ? `回到底部 · 下面还有 ${jumpButton.count} 条`
+    : "回到底部";
+
   return (
-    <div
-      ref={containerRef}
-      className={s.scroll}
-      onWheel={handleWheel}
-      onScroll={handleScroll}
-      role="log"
-      aria-live="polite"
-    >
-      {showTurnRail ? (
-        <div className={s.turnRailWrap}>
-          <nav className={s.turnRail} aria-label="对话轮次定位">
-            {turnAnchors.map((turn) => {
-              const active = turn.id === activeTurnId;
-              return (
-                <button
-                  key={turn.id}
-                  type="button"
-                  className={s.turnDot}
-                  data-active={active ? "true" : undefined}
-                  aria-current={active ? "step" : undefined}
-                  aria-label={`定位到第 ${turn.index + 1} 轮对话`}
-                  title={turn.title}
-                  onClick={() => scrollToTurn(turn.id)}
-                />
-              );
-            })}
-          </nav>
-        </div>
-      ) : null}
-      <div ref={messagesRef} className={s.messages}>
-        {loading ? <MessageSkeleton /> : null}
-        {!loading && visibleMessages.length === 0 && !statusMessage ? (
-          <div className={s.empty}>
-            <div className={s.emptyTitle}>暂无对话记录</div>
-            <div className={s.emptySub}>发送一条消息开始继续这个任务。</div>
+    <div className={s.timelineRoot}>
+      <div
+        ref={containerRef}
+        className={s.scroll}
+        onWheel={handleWheel}
+        onScroll={handleScroll}
+        role="log"
+        aria-live="polite"
+      >
+        {showTurnRail ? (
+          <div className={s.turnRailWrap}>
+            <nav className={s.turnRail} aria-label="对话轮次定位">
+              {turnAnchors.map((turn) => {
+                const active = turn.id === activeTurnId;
+                return (
+                  <button
+                    key={turn.id}
+                    type="button"
+                    className={s.turnDot}
+                    data-active={active ? "true" : undefined}
+                    aria-current={active ? "step" : undefined}
+                    aria-label={`定位到第 ${turn.index + 1} 轮对话`}
+                    title={turn.title}
+                    onClick={() => scrollToTurn(turn.id)}
+                  />
+                );
+              })}
+            </nav>
           </div>
         ) : null}
-
-        {hiddenMessageCount > 0 ? (
-          <div className={s.dateSeparator}>
-            <button type="button" className={s.systemNoticeToggle} onClick={revealEarlierMessages}>
-              显示更早的 {Math.min(LONG_SESSION_EARLIER_BATCH, hiddenMessageCount)} 条消息
-            </button>
-          </div>
-        ) : null}
-
-        {windowedMessages.map((message, offset) => {
-          const index = windowStart + offset;
-          const previous = visibleMessages[index - 1];
-          const showDate = !previous || formatDay(previous.createdAt) !== formatDay(message.createdAt);
-          const isLast = index === visibleMessages.length - 1;
-          const isUserTurn = message.role === "user" && !isSkillInvocationText(message.text);
-          return (
-            <div
-              key={message.id}
-              ref={isUserTurn ? (node) => setTurnAnchorNode(message.id, node) : undefined}
-              data-turn-anchor={isUserTurn ? "true" : undefined}
-            >
-              {showDate ? <div className={s.dateSeparator}>{formatDay(message.createdAt)}</div> : null}
-              <MessageBubble
-                message={message}
-                turnStartedAt={isLast ? turnStartedAt : undefined}
-                sessionUsage={isLast ? sessionUsage : undefined}
-                progressModel={isLast ? progressModel : undefined}
-                speechStatus={speechState.messageId === message.id ? speechState.status : "idle"}
-                speechError={speechError?.messageId === message.id ? speechError.message : null}
-                onSpeak={handleSpeak}
-                onStop={stopSpeech}
-              />
+        <div ref={messagesRef} className={s.messages}>
+          {loading ? <MessageSkeleton /> : null}
+          {!loading && visibleMessages.length === 0 && !statusMessage ? (
+            <div className={s.empty}>
+              <div className={s.emptyTitle}>暂无对话记录</div>
+              <div className={s.emptySub}>发送一条消息开始继续这个任务。</div>
             </div>
-          );
-        })}
+          ) : null}
 
-        {statusMessage ? <div className={s.statusMessage}>{statusMessage}</div> : null}
+          {hiddenMessageCount > 0 || hasEarlier || isLoadingEarlier || loadEarlierError ? (
+            <div className={s.earlierBar}>
+              {loadEarlierError ? (
+                <div className={s.earlierError} role="alert">
+                  <span className={s.earlierErrorText}>加载更早的消息失败：{loadEarlierError.message}</span>
+                  <button
+                    type="button"
+                    className={s.earlierAction}
+                    onClick={loadEarlierMessages}
+                    disabled={isLoadingEarlier}
+                  >
+                    重试
+                  </button>
+                </div>
+              ) : null}
+              {hiddenMessageCount > 0 ? (
+                <button type="button" className={s.systemNoticeToggle} onClick={revealEarlierMessages}>
+                  显示更早的 {Math.min(LONG_SESSION_EARLIER_BATCH, hiddenMessageCount)} 条消息
+                  {onLoadEarlier ? "（已加载）" : ""}
+                </button>
+              ) : null}
+              {hasEarlier ? (
+                <button
+                  type="button"
+                  className={s.systemNoticeToggle}
+                  onClick={loadEarlierMessages}
+                  disabled={isLoadingEarlier}
+                >
+                  {isLoadingEarlier ? "加载中…" : "加载更早的消息"}
+                </button>
+              ) : earlierRequested ? (
+                <span className={s.earlierEnd}>已到最早</span>
+              ) : null}
+            </div>
+          ) : null}
+
+          {windowedMessages.map((message, offset) => {
+            const index = windowStart + offset;
+            const previous = visibleMessages[index - 1];
+            const showDate = !previous || formatDay(previous.createdAt) !== formatDay(message.createdAt);
+            const isLast = index === visibleMessages.length - 1;
+            const isUserTurn =
+              message.role === "user" &&
+              !isSkillInvocationText(message.text) &&
+              !isKernelInjectedNotice(message.text);
+            return (
+              <div
+                key={message.id}
+                ref={isUserTurn ? (node) => setTurnAnchorNode(message.id, node) : undefined}
+                data-turn-anchor={isUserTurn ? "true" : undefined}
+                data-message-index={index}
+              >
+                {showDate ? <div className={s.dateSeparator}>{formatDay(message.createdAt)}</div> : null}
+                <MessageBubble
+                  message={message}
+                  turnStartedAt={isLast ? turnStartedAt : undefined}
+                  sessionUsage={isLast ? sessionUsage : undefined}
+                  progressModel={isLast ? progressModel : undefined}
+                  subagentSessionIds={subagentSessionIds}
+                  speechStatus={speechState.messageId === message.id ? speechState.status : "idle"}
+                  speechError={speechError?.messageId === message.id ? speechError.message : null}
+                  onSpeak={handleSpeak}
+                  onStop={stopSpeech}
+                  retrySource={message.role === "assistant" ? precedingUserAsk(visibleMessages, index) : null}
+                  onEditMessage={onEditMessage}
+                  onRetryMessage={onRetryMessage}
+                  correctionLocked={correctionLocked}
+                  correctionLockedReason={correctionLockedReason}
+                />
+              </div>
+            );
+          })}
+
+          {statusMessage ? <div className={s.statusMessage}>{statusMessage}</div> : null}
+          {trailing ? <div className={s.trailingSlot}>{trailing}</div> : null}
+        </div>
       </div>
+      {jumpButton.visible ? (
+        <button
+          type="button"
+          className={s.jumpToBottom}
+          onClick={jumpToBottom}
+          aria-label={jumpLabel}
+          title={jumpLabel}
+        >
+          <ArrowDown size={14} strokeWidth={1.75} aria-hidden="true" />
+          <span>{jumpLabel}</span>
+        </button>
+      ) : null}
     </div>
   );
 }

@@ -4,6 +4,7 @@ import { isLikelyLocalFilePath, normalizeLocalFilePath, safeImageSrc } from "@/l
 import { fetchMediaDataUrl } from "@/lib/transport";
 import type { ChatImageItem } from "./chat-types";
 import s from "./message-timeline.module.css";
+import { ZoomableImage } from "./zoomable-image";
 
 interface MessageImageProps {
   image: ChatImageItem;
@@ -101,20 +102,12 @@ export function MessageImage({ image }: MessageImageProps) {
   if (failedSrc === src) return <ImagePlaceholder image={image} reason="failed" />;
 
   return (
-    <a
-      className={s.imageFrame}
-      href={src}
-      target="_blank"
-      rel="noreferrer"
+    <ZoomableImage
+      src={src}
+      alt={label}
       title={image.title || label}
-    >
-      <img
-        src={src}
-        alt={label}
-        loading="lazy"
-        decoding="async"
-        onError={() => setFailedSrc(src)}
-      />
-    </a>
+      frameClassName={s.imageFrame}
+      onError={() => setFailedSrc(src)}
+    />
   );
 }

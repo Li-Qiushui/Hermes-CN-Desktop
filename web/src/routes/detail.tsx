@@ -52,11 +52,16 @@ import {
   subscribeSessionUiStateChanges,
 } from "@/lib/session-ui-state";
 import { isRemoteConnection, readFileDataUrl, readImageBytesFromPath, uploadAttachmentFile } from "@/lib/transport";
+import { resumeFailureMessage, resumeWithRetry } from "@/lib/resume-retry";
+import { getGatewayClient } from "@/lib/gateway-client";
+import { classifyGatewayError } from "@/lib/gateway-result";
+import { isMethodKnownUnsupported } from "@/lib/gateway-capabilities";
 import { voiceAutoTtsFromConfig } from "@/lib/voice";
 import {
   rememberSessionWorkspace,
   rememberWorkspaceProject,
   resolveSessionWorkspace,
+  writeWorkspacePath,
 } from "@/lib/workspaces";
 import { TopBar, TopBarActionButton, TopBarActions } from "@/components/top-bar/top-bar";
 import { GooseComposer } from "@/components/chat/goose-composer";
@@ -74,8 +79,11 @@ import type {
   ComposerSubmitPayload,
 } from "@/components/chat/composer-types";
 import { MessageTimeline } from "@/components/chat/message-timeline";
+import { InlinePromptFlow } from "@/components/chat/inline-prompt-flow";
 import { StallNotice } from "@/components/chat/stall-notice";
+import { ConfirmTruncateDialog } from "@/components/chat/confirm-truncate-dialog";
 import { SubagentPanel, useSessionCliDelegations, useSessionSubagents } from "@/components/chat/subagent-panel";
+import { SubagentOriginBar, useSubagentSessionOpener } from "@/components/chat/subagent-dialog";
 import { PreviewRail } from "@/components/chat/preview-rail/preview-rail";
 import { PREVIEW_PANEL_QUERY_KEY } from "@/lib/preview-rail";
 import { activeCliDelegationCount, clearFinishedCliDelegationsAtom } from "@/stores/cli-delegations";
@@ -88,6 +96,7 @@ import {
 } from "@/components/chat/message-adapter";
 import { stabilizeChatMessages } from "@/components/chat/message-stability";
 import type { ChatMessage } from "@/components/chat/chat-types";
+import type { HermesUIMessage } from "@hermes/protocol";
 
 import s from "./detail.module.css";
 
@@ -96,6 +105,20 @@ interface ComposerPrefillState {
   nonce: number;
   sessionId?: string;
 }
+
+interface PendingEditTarget {
+  rowId: number | null;
+  text: string;
+}
+
+export function correctionTruncateRowId(messageId: string): number | null {
+  const matched = /^stored-(\d+)$/.exec(messageId);
+  if (!matched) return null;
+  const rowId = Number(matched[1]);
+  return Number.isSafeInteger(rowId) && rowId > 0 ? rowId : null;
+}
+
+export type SubmitCorrectionOutcome = "sent" | "fallback" | "cancelled";
 
 export function DetailRoute() {
   // URL drives the *initial* selection (deep links, browser back/forward),
@@ -145,6 +168,7 @@ export function DetailRoute() {
   // 以配置里的值为准（再读不到则回落到后端默认）。
   const [reasoningEffortOverride, setReasoningEffortOverride] = useState<ReasoningEffort | null>(null);
   const [sessionIdCopyState, setSessionIdCopyState] = useState<"idle" | "copied" | "error">("idle");
+  const [resumeFailure, setResumeFailure] = useState<{ message: string; sessionId: string } | null>(null);
   const [sessionTitleOverrides, setSessionTitleOverrides] = useState(readSessionTitleOverrides);
   const sessionIdCopyTimer = useRef<number | null>(null);
   const recoverCompletedTurnFromStoredMessages = useSetAtom(recoverCompletedTurnFromStoredMessagesAtom);
@@ -170,12 +194,13 @@ export function DetailRoute() {
   // (网关会话 id) keyed，故按 detail 解析出的多个候选 id 取首个命中（覆盖 resume 后
   // 持久 id / 网关 id 的形态差异）。
   const [subagentPanelOpen, setSubagentPanelOpen] = useState(false);
-  const subagents = useSessionSubagents([
-    runtimeSessionId,
-    activeMappedGatewaySessionId,
-    usageGatewaySessionId,
-    taskId,
-  ]);
+  // 候选 id 数组给「对话流内的 delegate 运行卡」当稳定引用用：每帧新建数组会
+  // 让时间线里所有消息行的 memo 全部失效。
+  const subagentSessionIds = useMemo(
+    () => [runtimeSessionId, activeMappedGatewaySessionId, usageGatewaySessionId, taskId],
+    [runtimeSessionId, activeMappedGatewaySessionId, usageGatewaySessionId, taskId],
+  );
+  const subagents = useSessionSubagents(subagentSessionIds);
   // 外部 CLI 委派（Claude Code / Codex，P-047）与内部子代理同面板展示。
   const cliDelegations = useSessionCliDelegations([
     runtimeSessionId,
@@ -202,6 +227,12 @@ export function DetailRoute() {
   const { data: session } = useSession(restSessionId);
   const messagesQuery = useSessionMessages(restSessionId);
   const { data: messagesData, isLoading } = messagesQuery;
+  const {
+    hasMore: hasEarlierMessages,
+    isLoadingEarlier: isLoadingEarlierMessages,
+    loadEarlier: loadEarlierMessages,
+    loadEarlierError: loadEarlierMessagesError,
+  } = messagesQuery;
   const { data: sessionsData } = useSessions();
   const sessionData = session;
   const sessionSummary = sessionsData?.sessions.find(
@@ -335,10 +366,174 @@ export function DetailRoute() {
       // to live here was the source of #52 (closure-stale replace
       // yanking the URL back to the previous session after rapid
       // switches). See #53 for the broader rework.
-      return await resumeSession(restSessionId);
+      setResumeFailure(null);
+      try {
+        return await resumeWithRetry(() => resumeSession(restSessionId));
+      } catch (error) {
+        setResumeFailure({ message: resumeFailureMessage(error), sessionId: restSessionId });
+        throw error;
+      }
     }
     return activeMappedGatewaySessionId ?? taskId;
   }, [activeMappedGatewaySessionId, restSessionId, resumeSession, taskId]);
+
+  const retryResume = useCallback(async () => {
+    try {
+      await ensureGatewaySession();
+    } catch {
+      // 失败信息已经落在 resumeFailure，重试按钮保持可见
+    }
+  }, [ensureGatewaySession]);
+
+  const editTargetRef = useRef<PendingEditTarget | null>(null);
+  const chatMessagesRef = useRef<ChatMessage[]>([]);
+  const [truncateConfirm, setTruncateConfirm] = useState<{ removedCount: number | null } | null>(null);
+  const truncateConfirmResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
+
+  const confirmTruncate = useCallback(
+    (removedCount: number | null) =>
+      new Promise<boolean>((resolve) => {
+        truncateConfirmResolverRef.current = resolve;
+        setTruncateConfirm({ removedCount });
+      }),
+    [],
+  );
+
+  const settleTruncateConfirm = useCallback((confirmed: boolean) => {
+    const resolve = truncateConfirmResolverRef.current;
+    truncateConfirmResolverRef.current = null;
+    setTruncateConfirm(null);
+    resolve?.(confirmed);
+  }, []);
+
+  useEffect(
+    () => () => {
+      truncateConfirmResolverRef.current?.(false);
+      truncateConfirmResolverRef.current = null;
+    },
+    [],
+  );
+
+  const countRemovedAfterRow = useCallback((rowId: number): number | null => {
+    const index = chatMessagesRef.current.findIndex((message) => message.id === `stored-${rowId}`);
+    if (index < 0) return null;
+    return chatMessagesRef.current
+      .slice(index + 1)
+      .filter((message) => message.role === "user" || message.role === "assistant").length;
+  }, []);
+
+  const refetchMessagesRef = useRef(messagesQuery.refetch);
+  useEffect(() => {
+    refetchMessagesRef.current = messagesQuery.refetch;
+  }, [messagesQuery.refetch]);
+
+  const submitCorrection = useCallback(
+    async (rowId: number | null, text: string): Promise<SubmitCorrectionOutcome> => {
+      const trimmed = text.trim();
+      if (!taskId || !trimmed) return "fallback";
+      if (rowId === null) return "fallback";
+      const removedCount = countRemovedAfterRow(rowId);
+      const destructive = removedCount === null || removedCount > 0;
+      if (destructive && !isMethodKnownUnsupported("prompt.submit")) {
+        const confirmed = await confirmTruncate(removedCount);
+        if (!confirmed) return "cancelled";
+      }
+      let sessionId: string;
+      try {
+        sessionId = await ensureGatewaySession();
+      } catch (error) {
+        appendNotice({
+          sessionId: taskId,
+          text: `纠错失败：${classifyGatewayError(error).message}`,
+          level: "error",
+        });
+        return "sent";
+      }
+      try {
+        await getGatewayClient().request("prompt.submit", {
+          session_id: sessionId,
+          text: trimmed,
+          truncate_before_row_id: rowId,
+          confirm_truncate: true,
+        });
+        appendNotice({
+          sessionId,
+          text: "已从这条消息重新发送，它后面的话已被内核截断。",
+          level: "info",
+        });
+        void refetchMessagesRef.current();
+        return "sent";
+      } catch (error) {
+        const info = classifyGatewayError(error);
+        if (info.kind === "unsupported-method") return "fallback";
+        appendNotice({ sessionId, text: `纠错失败：${info.message}`, level: "error" });
+        return "sent";
+      }
+    },
+    [appendNotice, confirmTruncate, countRemovedAfterRow, ensureGatewaySession, taskId],
+  );
+
+  const handleEditMessage = useCallback(
+    (message: ChatMessage) => {
+      if (!taskId || runtimeIsBusy) return;
+      const text = message.text ?? "";
+      if (!text.trim()) {
+        appendNotice({
+          sessionId: taskId,
+          text: "这条消息只有附件、没有文字，暂不支持编辑重发。",
+          level: "warning",
+        });
+        return;
+      }
+      editTargetRef.current = { rowId: correctionTruncateRowId(message.id), text };
+      setComposerPrefill({ sessionId: taskId, text, nonce: Date.now() });
+    },
+    [appendNotice, runtimeIsBusy, taskId],
+  );
+
+  const handleRetryMessage = useCallback(
+    (userMessage: ChatMessage) => {
+      if (!taskId || runtimeIsBusy) return;
+      const text = userMessage.text ?? "";
+      if (!text.trim()) {
+        appendNotice({
+          sessionId: taskId,
+          text: "这条提问只有附件、没有文字，暂不支持重试。",
+          level: "warning",
+        });
+        return;
+      }
+      const rowId = correctionTruncateRowId(userMessage.id);
+      void (async () => {
+        const outcome = await submitCorrection(rowId, text);
+        if (outcome === "sent" || outcome === "cancelled") return;
+        try {
+          const sessionId = await ensureGatewaySession();
+          if (rowId === null) {
+            appendNotice({
+              sessionId,
+              text: "这条提问还没拿到内核记录定位，本次作为新消息发送，后续消息不会删除。",
+              level: "warning",
+            });
+          } else {
+            appendNotice({
+              sessionId,
+              text: "当前内核不支持消息回溯，本次作为新消息发送，后续消息不会删除。",
+              level: "warning",
+            });
+          }
+          await sendPrompt(sessionId, text);
+        } catch (error) {
+          appendNotice({
+            sessionId: taskId,
+            text: `重试失败：${classifyGatewayError(error).message}`,
+            level: "error",
+          });
+        }
+      })();
+    },
+    [appendNotice, ensureGatewaySession, runtimeIsBusy, sendPrompt, submitCorrection, taskId],
+  );
 
   // Follow the backend's compression tip (issue #305). When a session.resume is
   // redirected to a live continuation (recorded in sessionTipRedirectAtom), the
@@ -378,15 +573,29 @@ export function DetailRoute() {
   ]);
 
   const stableMessagesRef = useRef<ChatMessage[] | undefined>(undefined);
+  const canonicalMessagesRef = useRef<HermesUIMessage[] | undefined>(undefined);
   const chatMessages = useMemo(() => {
     const canonical = mergeHermesUIMessages(
       storedMessages,
       isLiveSession ? runtime.messages : [],
     );
+    // 流式 delta 里绝大多数帧合并结果逐条同引用（只有正在变的那条是新对象），
+    // 这种帧直接复用上次的 ChatMessage 数组。
+    const previousCanonical = canonicalMessagesRef.current;
+    const previousStable = stableMessagesRef.current;
+    if (
+      previousCanonical !== undefined &&
+      previousStable !== undefined &&
+      previousCanonical.length === canonical.length &&
+      canonical.every((message, index) => message === previousCanonical[index])
+    ) {
+      return previousStable;
+    }
     const next = hermesUIMessagesToChatMessages(canonical);
     // 流式输出每个 token 都会重建全部消息对象；内容没变的复用旧引用，
     // 否则 MessageBubble 的 memo 全部失效，一帧要重渲染几十个气泡。
     const stable = stabilizeChatMessages(stableMessagesRef.current, next);
+    canonicalMessagesRef.current = canonical;
     stableMessagesRef.current = stable;
     return stable;
   }, [
@@ -394,6 +603,10 @@ export function DetailRoute() {
     runtime.messages,
     storedMessages,
   ]);
+
+  useEffect(() => {
+    chatMessagesRef.current = chatMessages;
+  }, [chatMessages]);
 
   // Manual context compaction (/compress). Fire-and-forget so the composer
   // clears immediately; the backend pins a "正在压缩上下文…" status while it
@@ -430,6 +643,7 @@ export function DetailRoute() {
       rememberSessionWorkspace(taskId, payload.workspacePath);
       rememberSessionWorkspace(gatewaySessionId, payload.workspacePath);
       rememberSessionWorkspace(restSessionId, payload.workspacePath);
+      writeWorkspacePath(payload.workspacePath);
     }
     // A `/skill <name>` invocation dispatches to the backend skill registry; the
     // returned payload becomes the transport text while the composer still shows
@@ -474,6 +688,27 @@ export function DetailRoute() {
       void runManualCompress(sessionId, builtin.arg);
       return;
     }
+    const pendingEdit = editTargetRef.current;
+    if (pendingEdit) {
+      editTargetRef.current = null;
+      const canTruncate = !runtimeIsBusy && payload.attachments.length === 0;
+      if (canTruncate) {
+        const outcome = await submitCorrection(pendingEdit.rowId, payload.text);
+        if (outcome === "sent") return;
+        if (outcome === "cancelled") {
+          editTargetRef.current = pendingEdit;
+          return;
+        }
+      }
+      appendNotice({
+        sessionId: taskId,
+        text:
+          pendingEdit.rowId === null || payload.attachments.length > 0 || runtimeIsBusy
+            ? "本次作为新消息发送，原消息与它后面的话都不会删除。"
+            : "当前内核不支持消息回溯，本次作为新消息发送，后续消息不会删除。",
+        level: "warning",
+      });
+    }
     // Park the submission while the agent is busy; the composer clears on resolve
     // and the queue drains (auto on settle, or manually) when it frees up.
     if (runtimeIsBusy) {
@@ -481,7 +716,15 @@ export function DetailRoute() {
       return;
     }
     await submitPayload(payload, controls.updateAttachment);
-  }, [ensureGatewaySession, runManualCompress, runtimeIsBusy, submitPayload, taskId]);
+  }, [
+    appendNotice,
+    ensureGatewaySession,
+    runManualCompress,
+    runtimeIsBusy,
+    submitCorrection,
+    submitPayload,
+    taskId,
+  ]);
 
   // ---- Send queue (drain on settle, send-now / edit / delete) --------------
   const queuedPrompts = useQueuedPrompts(taskId);
@@ -618,6 +861,8 @@ export function DetailRoute() {
       })
     : "会话详情";
   const model = selectedModel?.model ?? sessionUsage?.model ?? sessionData?.model ?? "";
+  // 跳子会话要记来源，子会话页顶部才出得来「返回父会话」。
+  const openSubagentSession = useSubagentSessionOpener(taskId, title);
   const contextSelection = useMemo<ComposerModelSelection | null>(() => {
     if (selectedModel) return selectedModel;
     if (!model) return null;
@@ -735,19 +980,78 @@ export function DetailRoute() {
       />
       <div className={s.workArea}>
         <div className={s.chatColumn}>
+          <SubagentOriginBar currentSessionId={taskId} />
+          {resumeFailure ? (
+            <div
+              role="alert"
+              data-state="resume-failed"
+              data-action="resume-failure"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                margin: "8px 12px 0",
+                padding: "6px 10px",
+                border: "1px solid var(--h-line)",
+                borderLeft: "2px solid var(--h-err)",
+                borderRadius: 0,
+                background: "var(--h-bg-soft)",
+                color: "var(--h-text-2)",
+                fontFamily: "var(--h-font-cn)",
+                fontSize: 12.5,
+                lineHeight: 1.4,
+              }}
+            >
+              <span style={{ flex: "1 1 auto", minWidth: 0 }}>{resumeFailure.message}</span>
+              <button
+                type="button"
+                data-action="retry-resume"
+                onClick={() => void retryResume()}
+                style={{
+                  flex: "0 0 auto",
+                  height: 24,
+                  padding: "0 10px",
+                  border: "1px solid var(--h-line)",
+                  borderRadius: 0,
+                  background: "transparent",
+                  color: "var(--h-text)",
+                  fontFamily: "var(--h-font-cn)",
+                  fontSize: 12.5,
+                  lineHeight: 1,
+                  cursor: "pointer",
+                }}
+              >
+                重试
+              </button>
+            </div>
+          ) : null}
           {/* key={taskId}：切会话强制重挂载时间线。layout effect 在首帧绘制前就
               把滚动定位到底部，避免新会话内容先以上一个会话的滚动位置绘制、再
               在 650ms 的滚动校正窗口里反复跳动（用户感知为"闪烁两下"）。 */}
-          <MessageTimeline
-            key={taskId}
-            messages={chatMessages}
-            loading={isLoading && runtime.messages.length === 0}
-            statusMessage={timelineStatus}
-            turnStartedAt={runtimeIsBusy ? runtime.turnStartedAt : undefined}
-            sessionUsage={runtimeIsBusy ? sessionUsage : undefined}
-            progressModel={runtimeIsBusy ? model || undefined : undefined}
-            autoTts={autoTts}
-          />
+          <InlinePromptFlow messages={chatMessages} sessionIds={[runtimeSessionId, taskId]}>
+            {(trailingPrompts) => (
+              <MessageTimeline
+                key={taskId}
+                messages={chatMessages}
+                loading={isLoading && runtime.messages.length === 0}
+                statusMessage={timelineStatus}
+                turnStartedAt={runtimeIsBusy ? runtime.turnStartedAt : undefined}
+                sessionUsage={runtimeIsBusy ? sessionUsage : undefined}
+                progressModel={runtimeIsBusy ? model || undefined : undefined}
+                autoTts={autoTts}
+                subagentSessionIds={subagentSessionIds}
+                trailing={trailingPrompts}
+                hasEarlier={hasEarlierMessages}
+                isLoadingEarlier={isLoadingEarlierMessages}
+                onLoadEarlier={loadEarlierMessages}
+                loadEarlierError={loadEarlierMessagesError}
+                onEditMessage={handleEditMessage}
+                onRetryMessage={handleRetryMessage}
+                correctionLocked={runtimeIsBusy}
+                correctionLockedReason="正在生成回复，等这轮结束再纠正"
+              />
+            )}
+          </InlinePromptFlow>
           <div className={s.composerArea}>
             {runtimeIsBusy && stall.isStalled ? (
               <StallNotice silenceMs={stall.silenceMs} onInterrupt={onStop} />
@@ -768,6 +1072,7 @@ export function DetailRoute() {
               initialNonce={composerInitialNonce}
               onDraftChange={onComposerDraftChange}
               onSend={onSend}
+              queuedCount={queuedPrompts.length}
               loadingPlaceholder={composerLoadingPlaceholder}
               showMeta={false}
               loading={runtimeIsBusy}
@@ -822,9 +1127,16 @@ export function DetailRoute() {
             cliDelegations={cliDelegations}
             onClose={() => setSubagentPanelOpen(false)}
             onClearFinished={clearFinishedDelegationRows}
+            onOpenSession={openSubagentSession}
           />
         ) : null}
 
+        <ConfirmTruncateDialog
+          open={truncateConfirm !== null}
+          removedCount={truncateConfirm?.removedCount ?? null}
+          onCancel={() => settleTruncateConfirm(false)}
+          onConfirm={() => settleTruncateConfirm(true)}
+        />
       </div>
     </div>
   );

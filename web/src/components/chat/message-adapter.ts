@@ -21,6 +21,8 @@ import {
 } from "@/lib/message-images";
 import { stableTextHash, type UiTurnStats } from "@/lib/ui-store";
 import { isSkillInvocationText } from "@/lib/skill-invocation";
+import { isKernelInjectedNotice } from "@/lib/kernel-notice";
+import { reconcileAssistantTimeline } from "@/lib/chat-messages-reconciliation";
 import type { AssistantTurnBlock } from "@/stores/chat";
 import type { AssistantMessageStats, ChatImageItem, ChatMessage, ChatToolItem } from "./chat-types";
 
@@ -815,14 +817,55 @@ export function deriveAssistantStats(msg: HermesUIMessage): AssistantMessageStat
   return hasAny ? stats : undefined;
 }
 
+type ChatMessageMemo = {
+  partsRef: HermesMessagePart[];
+  partsSnapshot: HermesMessagePart[];
+  status: HermesUIMessage["status"];
+  role: HermesUIMessage["role"];
+  createdAt: number;
+  metadata: HermesUIMessage["metadata"];
+  value: ChatMessage | null;
+};
+
+const chatMessageBySource = new WeakMap<HermesUIMessage, ChatMessageMemo>();
+
 export function hermesUIMessageToChatMessage(msg: HermesUIMessage): ChatMessage | null {
+  const cached = chatMessageBySource.get(msg);
+
+  if (
+    cached !== undefined &&
+    cached.partsRef === msg.parts &&
+    cached.status === msg.status &&
+    cached.role === msg.role &&
+    cached.createdAt === msg.createdAt &&
+    cached.metadata === msg.metadata &&
+    partsSnapshotMatches(cached.partsSnapshot, msg.parts)
+  ) {
+    return cached.value;
+  }
+
+  const value = buildChatMessage(msg);
+  chatMessageBySource.set(msg, {
+    partsRef: msg.parts,
+    partsSnapshot: [...msg.parts],
+    status: msg.status,
+    role: msg.role,
+    createdAt: msg.createdAt,
+    metadata: msg.metadata,
+    value,
+  });
+  return value;
+}
+
+function buildChatMessage(msg: HermesUIMessage): ChatMessage | null {
   const includeProgress = msg.status === "streaming";
   const text = msg.role === "system"
     ? noticeTextFromParts(msg.parts) ?? textFromParts(msg.parts)
     : textFromParts(msg.parts);
   // Core 把 Skill 指令作为 user 上下文注入模型，但它不是用户在聊天框发送的
   // 内容。进入展示模型时归一为 system，避免污染用户气泡、轮次导航和动作栏。
-  const displayRole = msg.role === "user" && isSkillInvocationText(text)
+  // 异步子代理完成回报（[ASYNC DELEGATION …]）同属内核注入，同样归一。
+  const displayRole = msg.role === "user" && (isSkillInvocationText(text) || isKernelInjectedNotice(text))
     ? "system"
     : msg.role;
   const reasoning = reasoningFromParts(msg.parts);
@@ -878,15 +921,15 @@ function looseComparableText(value: string | undefined): string {
     .toLowerCase();
 }
 
-function canonicalText(message: HermesUIMessage): string {
+function canonicalTextOf(message: HermesUIMessage): string {
   return comparableText(normalizeContent(textFromParts(message.parts) ?? noticeTextFromParts(message.parts)));
 }
 
-function canonicalReasoning(message: HermesUIMessage): string {
+function canonicalReasoningOf(message: HermesUIMessage): string {
   return comparableText(reasoningFromParts(message.parts));
 }
 
-function canonicalImages(message: HermesUIMessage): string {
+function canonicalImagesOf(message: HermesUIMessage): string {
   return comparableText(
     imagesFromParts(message.parts)
       ?.map((image) => [image.url, image.name, image.alt].filter(Boolean).join(" "))
@@ -894,7 +937,7 @@ function canonicalImages(message: HermesUIMessage): string {
   );
 }
 
-function canonicalToolComparable(message: HermesUIMessage): string {
+function canonicalToolComparableOf(message: HermesUIMessage): string {
   return message.parts
     .filter((part): part is HermesToolPart => part.type === "tool")
     .map((tool) =>
@@ -910,12 +953,160 @@ function canonicalToolComparable(message: HermesUIMessage): string {
     .join("|");
 }
 
-function canonicalToolIdentityComparable(message: HermesUIMessage): string {
+function canonicalToolIdentityOf(message: HermesUIMessage): string {
   return message.parts
     .filter((part): part is HermesToolPart => part.type === "tool")
     .map((tool) => [tool.toolCallId, tool.name].join(":"))
     .join("|");
 }
+
+type CanonicalFacts = {
+  partsRef: HermesMessagePart[];
+  partsSnapshot: HermesMessagePart[];
+  role: HermesUIMessage["role"];
+  status: HermesUIMessage["status"];
+  text: string;
+  looseText: string;
+  reasoning: string;
+  images: string;
+  toolComparable: string;
+  toolIdentity: string;
+};
+
+const canonicalFactsByMessage = new WeakMap<HermesUIMessage, CanonicalFacts>();
+
+function partsSnapshotMatches(
+  snapshot: HermesMessagePart[],
+  parts: HermesMessagePart[],
+): boolean {
+  if (snapshot.length !== parts.length) return false;
+  for (let index = 0; index < parts.length; index += 1) {
+    if (snapshot[index] !== parts[index]) return false;
+  }
+  return true;
+}
+
+function buildCanonicalFacts(message: HermesUIMessage): CanonicalFacts {
+  const text = canonicalTextOf(message);
+  const reasoning = canonicalReasoningOf(message);
+  const images = canonicalImagesOf(message);
+  return {
+    partsRef: message.parts,
+    partsSnapshot: [...message.parts],
+    role: message.role,
+    status: message.status,
+    text,
+    looseText: looseComparableText(text),
+    reasoning,
+    images,
+    toolComparable: canonicalToolComparableOf(message),
+    toolIdentity: canonicalToolIdentityOf(message),
+  };
+}
+
+function canonicalFacts(message: HermesUIMessage): CanonicalFacts {
+  const cached = canonicalFactsByMessage.get(message);
+
+  if (
+    cached !== undefined &&
+    cached.partsRef === message.parts &&
+    cached.role === message.role &&
+    cached.status === message.status &&
+    partsSnapshotMatches(cached.partsSnapshot, message.parts)
+  ) {
+    return cached;
+  }
+
+  const facts = buildCanonicalFacts(message);
+  canonicalFactsByMessage.set(message, facts);
+  return facts;
+}
+
+function canonicalText(message: HermesUIMessage): string {
+  return canonicalFacts(message).text;
+}
+
+function canonicalLooseText(message: HermesUIMessage): string {
+  return canonicalFacts(message).looseText;
+}
+
+function canonicalReasoning(message: HermesUIMessage): string {
+  return canonicalFacts(message).reasoning;
+}
+
+function canonicalImages(message: HermesUIMessage): string {
+  return canonicalFacts(message).images;
+}
+
+function canonicalToolComparable(message: HermesUIMessage): string {
+  return canonicalFacts(message).toolComparable;
+}
+
+function canonicalToolIdentityComparable(message: HermesUIMessage): string {
+  return canonicalFacts(message).toolIdentity;
+}
+
+type PairMemo<T> = {
+  leftParts: HermesMessagePart[];
+  leftStatus: HermesUIMessage["status"];
+  leftMetadata: HermesUIMessage["metadata"];
+  rightParts: HermesMessagePart[];
+  rightStatus: HermesUIMessage["status"];
+  rightMetadata: HermesUIMessage["metadata"];
+  value: T;
+};
+
+type PairMemoMap<T> = WeakMap<HermesUIMessage, WeakMap<HermesUIMessage, PairMemo<T>>>;
+
+const readPairMemo = <T>(
+  memo: PairMemoMap<T>,
+  left: HermesUIMessage,
+  right: HermesUIMessage,
+): T | undefined => {
+  const entry = memo.get(left)?.get(right);
+
+  if (
+    entry === undefined ||
+    entry.leftParts !== left.parts ||
+    entry.leftStatus !== left.status ||
+    entry.leftMetadata !== left.metadata ||
+    entry.rightParts !== right.parts ||
+    entry.rightStatus !== right.status ||
+    entry.rightMetadata !== right.metadata
+  ) {
+    return undefined;
+  }
+
+  return entry.value;
+};
+
+const writePairMemo = <T>(
+  memo: PairMemoMap<T>,
+  left: HermesUIMessage,
+  right: HermesUIMessage,
+  value: T,
+): void => {
+  const entry: PairMemo<T> = {
+    leftParts: left.parts,
+    leftStatus: left.status,
+    leftMetadata: left.metadata,
+    rightParts: right.parts,
+    rightStatus: right.status,
+    rightMetadata: right.metadata,
+    value,
+  };
+  const byRight = memo.get(left);
+
+  if (byRight === undefined) {
+    memo.set(left, new WeakMap([[right, entry]]));
+    return;
+  }
+
+  byRight.set(right, entry);
+};
+
+const sameCanonicalMemo: PairMemoMap<boolean> = new WeakMap();
+const mergedMessageMemo: PairMemoMap<HermesUIMessage> = new WeakMap();
 
 function hasInterruptedCompletion(message: HermesUIMessage, canonicalMessageText: string): boolean {
   if (message.metadata?.finishReason === "interrupted") return true;
@@ -956,7 +1147,7 @@ function isReplayDuplicateLiveMessage(
   if (live.role !== "assistant") return false;
   const liveTools = canonicalToolIdentityComparable(live);
   if (!liveTools) return false;
-  const liveText = looseComparableText(canonicalText(live));
+  const liveText = canonicalLooseText(live);
   return storedMessages.some((stored) => {
     if (stored.role !== "assistant" || stored.status !== "complete") return false;
     const storedTools = canonicalToolIdentityComparable(stored);
@@ -967,7 +1158,7 @@ function isReplayDuplicateLiveMessage(
     // prefix of the stored canonical text — otherwise treat it as a genuinely
     // different turn and keep it.
     if (liveText) {
-      const storedText = looseComparableText(canonicalText(stored));
+      const storedText = canonicalLooseText(stored);
       if (!storedText.startsWith(liveText)) return false;
     }
     return true;
@@ -1010,11 +1201,11 @@ function isSupersededByStoredTurn(
   // Every live tool call (unique ids) must already be persisted, in order.
   if (!storedTools.includes(liveTools)) return false;
 
-  const liveText = looseComparableText(canonicalText(live));
+  const liveText = canonicalLooseText(live);
   if (liveText) {
-    const storedText = looseComparableText(
-      storedAssistants.map((message) => canonicalText(message)).join(" "),
-    );
+    const storedText = storedAssistants
+      .map((message) => canonicalLooseText(message))
+      .join("");
     if (!storedText.includes(liveText)) return false;
   }
   return true;
@@ -1056,8 +1247,8 @@ function isCorruptedLiveCompletionSupersededByStored(
   const completedAt = live.metadata?.timing?.completedAt;
   if (typeof completedAt !== "number" || Math.abs(completedAt - stored.createdAt) > 5_000) return false;
 
-  const storedText = looseComparableText(canonicalText(stored));
-  const liveText = looseComparableText(canonicalText(live));
+  const storedText = canonicalLooseText(stored);
+  const liveText = canonicalLooseText(live);
   if (!storedText || liveText.length <= storedText.length || !liveText.endsWith(storedText)) return false;
 
   return canonicalReasoning(stored) === canonicalReasoning(live) &&
@@ -1066,6 +1257,17 @@ function isCorruptedLiveCompletionSupersededByStored(
 }
 
 function isSameCanonicalMessage(stored: HermesUIMessage, live: HermesUIMessage): boolean {
+  const memoized = readPairMemo(sameCanonicalMemo, stored, live);
+  if (memoized !== undefined) {
+    return memoized;
+  }
+
+  const value = computeSameCanonicalMessage(stored, live);
+  writePairMemo(sameCanonicalMemo, stored, live, value);
+  return value;
+}
+
+function computeSameCanonicalMessage(stored: HermesUIMessage, live: HermesUIMessage): boolean {
   if (stored.id === live.id || hasSamePersistedId(stored, live)) return true;
   if (stored.role !== live.role) return false;
 
@@ -1099,8 +1301,8 @@ function isSameCanonicalMessage(stored: HermesUIMessage, live: HermesUIMessage):
     if (storedText || liveText) {
       if (storedText === liveText) return true;
 
-      const storedLooseText = looseComparableText(storedText);
-      const liveLooseText = looseComparableText(liveText);
+      const storedLooseText = canonicalLooseText(stored);
+      const liveLooseText = canonicalLooseText(live);
       if (storedLooseText && liveLooseText && storedLooseText === liveLooseText) {
         return true;
       }
@@ -1172,6 +1374,18 @@ function consolidateAssistantMessages(messages: HermesUIMessage[]): HermesUIMess
 }
 
 function mergeMatchedMessage(storedMessage: HermesUIMessage, liveMessage: HermesUIMessage): HermesUIMessage {
+  const memoized = readPairMemo(mergedMessageMemo, storedMessage, liveMessage);
+
+  if (memoized !== undefined) {
+    return memoized;
+  }
+
+  const merged = computeMatchedMessage(storedMessage, liveMessage);
+  writePairMemo(mergedMessageMemo, storedMessage, liveMessage, merged);
+  return merged;
+}
+
+function computeMatchedMessage(storedMessage: HermesUIMessage, liveMessage: HermesUIMessage): HermesUIMessage {
   const storedCompletionWins = isCorruptedLiveCompletionSupersededByStored(
     storedMessage,
     liveMessage,
@@ -1199,11 +1413,14 @@ export function mergeHermesUIMessages(
   if (stored.length === 0) return live;
 
   const consolidatedLive = consolidateAssistantMessages(live);
+  // 回合完成后重拉持久化消息：以 stored 行为基准，把本地 live 行的耗时、首 token
+  // 时间、时间戳挂回对应行（官方 reconciliation.reconcileLocalAssistantTimeline）。
+  const reconciledStored = reconcileAssistantTimeline(stored, consolidatedLive);
 
   const usedLiveIndexes = new Set<number>();
   const merged: HermesUIMessage[] = [];
 
-  for (const storedMessage of stored) {
+  for (const storedMessage of reconciledStored) {
     const liveIndex = consolidatedLive.findIndex(
       (liveMessage, index) =>
         !usedLiveIndexes.has(index) && isSameCanonicalMessage(storedMessage, liveMessage),
@@ -1221,9 +1438,9 @@ export function mergeHermesUIMessages(
 
   consolidatedLive.forEach((liveMessage, index) => {
     if (usedLiveIndexes.has(index)) return;
-    if (isStaleInterruptedLiveMessage(liveMessage, stored)) return;
-    if (isReplayDuplicateLiveMessage(liveMessage, stored)) return;
-    if (isSupersededByStoredTurn(liveMessage, stored)) return;
+    if (isStaleInterruptedLiveMessage(liveMessage, reconciledStored)) return;
+    if (isReplayDuplicateLiveMessage(liveMessage, reconciledStored)) return;
+    if (isSupersededByStoredTurn(liveMessage, reconciledStored)) return;
     merged.push(liveMessage);
   });
 

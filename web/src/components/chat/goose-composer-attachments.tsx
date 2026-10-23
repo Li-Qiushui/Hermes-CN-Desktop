@@ -4,6 +4,22 @@ import s from "./goose-composer.module.css";
 
 export const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
 
+export const LARGE_PASTE_ATTACHMENT_THRESHOLD = 3_000;
+
+export function shouldConvertPasteToAttachment(text: string): boolean {
+  return typeof text === "string" && text.length > LARGE_PASTE_ATTACHMENT_THRESHOLD;
+}
+
+export function pasteCharLabel(text: string): string {
+  const chars = text.length;
+  if (chars >= 10_000) return `${(chars / 10_000).toFixed(1)} 万字`;
+  return `${chars} 字`;
+}
+
+export function largePasteNotice(text: string): string {
+  return `已粘入的 ${pasteCharLabel(text)}已转为附件`;
+}
+
 function normalizeDroppedPath(value: string): string | null {
   const text = value.trim();
   if (!text) return null;
@@ -48,6 +64,26 @@ export function createPathAttachment(path: string, index: number): ComposerAttac
     name: fileNameFromPath(path),
     kind: isImagePath(path) ? "image" : "file",
     status: "ready",
+  };
+}
+
+function pastedTextFileName(): string {
+  const stamp = new Date().toISOString().slice(11, 19).replace(/:/g, "");
+  const salt = Math.random().toString(16).slice(2, 6);
+  return `pasted-content-${stamp}-${salt}.txt`;
+}
+
+export function createPastedTextAttachment(text: string, index = 0): ComposerAttachment {
+  const file = new File([text], pastedTextFileName(), { type: "text/plain" });
+  return {
+    id: createAttachmentId(index),
+    source: "browser",
+    file,
+    name: file.name,
+    kind: "file",
+    status: "ready",
+    size: file.size,
+    mimeType: "text/plain",
   };
 }
 

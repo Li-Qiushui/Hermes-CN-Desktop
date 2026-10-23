@@ -41,6 +41,7 @@ import {
 import {
   filterComposerCommands,
   isBuiltinComposerCommandToken,
+  parseBuiltinComposerCommand,
   type ComposerCommandCandidate,
 } from "@/lib/builtin-commands";
 import {
@@ -87,10 +88,13 @@ import {
   AttachmentTray,
   attachmentIdentity,
   createFileAttachment,
+  createPastedTextAttachment,
   createPathAttachment,
   isAttachmentBusy,
+  largePasteNotice,
   MAX_ATTACHMENT_BYTES,
   revokeAttachmentPreview,
+  shouldConvertPasteToAttachment,
   uniquePaths,
 } from "./goose-composer-attachments";
 import { ContextIndicator, contextRiskText } from "./goose-composer-context";
@@ -105,12 +109,47 @@ import { isSingleUrl, urlReferenceText } from "@/lib/composer-url";
 import { filesFromClipboardData, imageFileFromClipboardData, readClipboardImageAsFile } from "@/lib/clipboard-image";
 import { downloadExternalImageFile } from "@/lib/transport";
 import { runtime } from "@/lib/runtime";
+import { getGatewayClient } from "@/lib/gateway-client";
+import { classifyGatewayError, humanizeGatewayError } from "@/lib/gateway-result";
+import { gwSessionIdAtom } from "@/stores/chat";
 import { ReasoningEffortMenu } from "@/components/composer/reasoning-effort-menu";
 import s from "./goose-composer.module.css";
 
 export interface ComposerHint {
   kbd?: string;
   label: string;
+}
+
+/** `session.steer` 的回执；只有 status 对 UI 有意义。 */
+export interface ComposerSteerResult {
+  status?: string;
+}
+
+const STEER_UNSUPPORTED = /does not support steer|不支持[^\r\n]{0,10}引导/i;
+
+const DROPPED_PATH_LINE = /^(?:file:\/\/|[A-Za-z]:[\\/]|\/|~\/)/;
+const DROPPED_TEXT_SETTLE_MS = 220;
+const PASTE_NOTICE_TTL_MS = 6000;
+
+export function pathsFromDroppedText(text: string): string[] {
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith("#"));
+  if (!lines.length) return [];
+  if (!lines.every((line) => DROPPED_PATH_LINE.test(line))) return [];
+  return uniquePaths(lines);
+}
+
+function insertNativeText(textarea: HTMLTextAreaElement, text: string, start: number, end: number): boolean {
+  if (typeof document.execCommand !== "function") return false;
+  textarea.focus();
+  textarea.setSelectionRange(start, end);
+  try {
+    return document.execCommand("insertText", false, text);
+  } catch {
+    return false;
+  }
 }
 
 export function isComposerComposing({
@@ -129,12 +168,23 @@ interface GooseComposerProps {
     controls: ComposerSubmitControls,
   ) => void | Promise<void>;
   onStop?: () => void | Promise<void>;
+  /** 运行中的「引导」：注入测试用，默认直接调 `session.steer`。返回值里的
+   * `status`（queued / redirected / rejected）决定清空还是保留输入框。 */
+  onSteer?: (text: string) => Promise<ComposerSteerResult | void> | ComposerSteerResult | void;
   placeholder?: string;
   initial?: string;
   initialNonce?: number;
   autoFocus?: boolean;
   disabled?: boolean;
   loading?: boolean;
+  /** Keep accepting submissions while `loading` is true. The parent is expected to
+   * park the payload in its own send queue instead of sending it immediately (the
+   * detail route enqueues and drains on settle). Only takes effect when `onStop`
+   * is wired, i.e. the loading state really is "agent running". */
+  queueWhileLoading?: boolean;
+  /** Prompts already parked in the parent queue — used only to decide whether the
+   * queue hint line is worth showing. */
+  queuedCount?: number;
   showMeta?: boolean;
   compact?: boolean;
   /** Remove the lower corner radius when the composer sits flush with a page edge. */
@@ -212,12 +262,15 @@ export function ComposerErrorMessage({
 export function GooseComposer({
   onSend,
   onStop,
+  onSteer,
   placeholder,
   initial = "",
   initialNonce = 0,
   autoFocus = false,
   disabled = false,
   loading = false,
+  queueWhileLoading = true,
+  queuedCount = 0,
   showMeta = true,
   compact = false,
   flushBottom = false,
@@ -237,6 +290,7 @@ export function GooseComposer({
   voiceConfig = null,
 }: GooseComposerProps) {
   const navigate = useNavigate();
+  const gwSessionId = useAtomValue(gwSessionIdAtom);
   const configuredSubmitShortcut = useAtomValue(composerSubmitShortcutAtom);
   const effectiveSubmitShortcut = submitShortcut ?? configuredSubmitShortcut;
   const submitHint = composerSubmitShortcutHint(effectiveSubmitShortcut);
@@ -249,6 +303,24 @@ export function GooseComposer({
     () => normalizeWorkspacePath(initialWorkspacePath) || readWorkspacePath(),
   );
   const [submitError, setSubmitError] = useState("");
+  const [pasteNotice, setPasteNotice] = useState("");
+  const [steerNotice, setSteerNotice] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
+  const [steerBusy, setSteerBusy] = useState(false);
+  const [steerUnsupported, setSteerUnsupported] = useState(false);
+
+  useEffect(() => {
+    if (!pasteNotice) return;
+    const timer = window.setTimeout(() => setPasteNotice(""), PASTE_NOTICE_TTL_MS);
+    return () => window.clearTimeout(timer);
+  }, [pasteNotice]);
+
+  // 成功提示几秒后自己消失；失败提示留着，等下一次动作覆盖。
+  useEffect(() => {
+    if (steerNotice?.kind !== "ok") return;
+    const timer = window.setTimeout(() => setSteerNotice(null), PASTE_NOTICE_TTL_MS);
+    return () => window.clearTimeout(timer);
+  }, [steerNotice]);
+
   const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
   const [modelOptions, setModelOptions] = useState<ModelOptionsResult | null>(
@@ -280,6 +352,9 @@ export function GooseComposer({
   const modelLoadPromiseRef = useRef<Promise<ModelOptionsResult> | null>(null);
   const selectedModelRef = useRef<ComposerModelSelection | null>(modelPicker?.selected ?? null);
   const dragDepthRef = useRef(0);
+  const composerBoxRef = useRef<HTMLDivElement>(null);
+  const draggedTextRef = useRef("");
+  const draggedTextTimerRef = useRef<number | null>(null);
   const voiceStartedAtRef = useRef(0);
   const voiceIntervalRef = useRef<number | null>(null);
   const voiceTimeoutRef = useRef<number | null>(null);
@@ -290,14 +365,29 @@ export function GooseComposer({
   const contextWarning = contextRiskText(contextRisk, loading);
   const controlsDisabled = disabled || loading;
   const modelPickerDisabled = controlsDisabled || Boolean(modelPicker?.disabled);
+  // "Agent 运行中" is only queueable when the parent gave us a stop handle (the
+  // detail route always does); a bare `loading` from a new-task submit must keep
+  // the single-button behaviour.
+  const queueMode = loading && queueWhileLoading && !disabled && Boolean(onStop);
+  // 运行中默认走「引导」：把这句并入当前轮，不打断。内核第一次报不支持
+  // （4010 / unknown method）就降级回入队，之后不再每轮重试。
+  const steerMode = queueMode && !steerUnsupported;
+  const queuedBuiltinCommand = useMemo(
+    () => (queueMode ? parseBuiltinComposerCommand(value) : null),
+    [queueMode, value],
+  );
   const submitText = selectedSkill
     ? buildSkillCommandText(selectedSkill.skill.name, value)
     : value.trim();
   const displayedTextLength = value.length;
   const canSend =
     (submitText.length > 0 || attachments.length > 0) &&
-    !controlsDisabled &&
-    !hasProcessingAttachment;
+    !disabled &&
+    !hasProcessingAttachment &&
+    (!loading || queueMode) &&
+    !queuedBuiltinCommand;
+  const showQueueHint =
+    queueMode && (value.trim().length > 0 || queuedCount > 0);
   // Two-tier slash palette: typing "/" lists top-level commands (/skill,
   // /compress) via slashToken (command mode); typing "/skill <name>" lists the
   // skill catalog via skillToken (skill mode). The two tokens are disjoint by
@@ -415,6 +505,42 @@ export function GooseComposer({
     setDismissedSlashToken("");
     focusTextareaAt(cursor);
   }, [focusTextareaAt, selectionEnd, selectionStart]);
+
+  const insertDroppedText = useCallback((raw: string) => {
+    const text = raw.replace(/[\r\n]+$/, "").trim();
+    if (!text) return;
+
+    const current = valueRef.current;
+    const textarea = textareaRef.current;
+    const rawStart = textarea?.selectionStart ?? selectionStart;
+    const rawEnd = textarea?.selectionEnd ?? selectionEnd;
+    const start = Math.max(0, Math.min(rawStart, current.length));
+    const end = Math.max(start, Math.min(rawEnd, current.length));
+    const cursor = start + text.length;
+
+    if (textarea && insertNativeText(textarea, text, start, end)) {
+      const inserted = textarea.value;
+      valueRef.current = inserted;
+      setValue(inserted);
+      setDismissedSlashToken("");
+      focusTextareaAt(cursor);
+      return;
+    }
+
+    const before = current.slice(0, start);
+    const after = current.slice(end);
+    const next = `${before}${text}${after}`;
+
+    valueRef.current = next;
+    setValue(next);
+    setDismissedSlashToken("");
+    focusTextareaAt(cursor);
+  }, [focusTextareaAt, selectionEnd, selectionStart]);
+
+  const insertDroppedTextRef = useRef(insertDroppedText);
+  useEffect(() => {
+    insertDroppedTextRef.current = insertDroppedText;
+  }, [insertDroppedText]);
 
   const stopVoiceRecording = useCallback(async () => {
     if (voiceStatusRef.current !== "recording") return;
@@ -650,6 +776,41 @@ export function GooseComposer({
   }, [appendAttachmentDrafts]);
 
   useEffect(() => {
+    const rememberDraggedSelection = () => {
+      draggedTextRef.current = window.getSelection()?.toString() ?? "";
+    };
+    const flushDraggedSelection = (event: Event) => {
+      const text = draggedTextRef.current;
+      if (!text) return;
+      if (draggedTextTimerRef.current !== null) {
+        window.clearTimeout(draggedTextTimerRef.current);
+      }
+      const { clientX, clientY } = event as MouseEvent;
+      draggedTextTimerRef.current = window.setTimeout(() => {
+        draggedTextTimerRef.current = null;
+        if (draggedTextRef.current !== text) return;
+        draggedTextRef.current = "";
+        const box = composerBoxRef.current?.getBoundingClientRect();
+        if (!box) return;
+        const inside = clientX >= box.left && clientX <= box.right
+          && clientY >= box.top && clientY <= box.bottom;
+        if (!inside) return;
+        insertDroppedTextRef.current(text);
+      }, DROPPED_TEXT_SETTLE_MS);
+    };
+    document.addEventListener("dragstart", rememberDraggedSelection, true);
+    document.addEventListener("dragend", flushDraggedSelection, true);
+    return () => {
+      document.removeEventListener("dragstart", rememberDraggedSelection, true);
+      document.removeEventListener("dragend", flushDraggedSelection, true);
+      if (draggedTextTimerRef.current !== null) {
+        window.clearTimeout(draggedTextTimerRef.current);
+        draggedTextTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     const onFileDrop = window.hermesDesktop?.onFileDrop;
     if (!onFileDrop) return;
 
@@ -675,10 +836,13 @@ export function GooseComposer({
         dragDepthRef.current = 0;
         setDragActive(false);
         if (payload.paths.length) {
+          draggedTextRef.current = "";
           addPathAttachments(payload.paths);
-        } else {
-          setSubmitError("未能读取拖拽文件路径，请使用 + 按钮添加附件。");
+          return;
         }
+        const droppedText = draggedTextRef.current || window.getSelection()?.toString() || "";
+        draggedTextRef.current = "";
+        insertDroppedTextRef.current(droppedText);
       }
     });
   }, [addPathAttachments, controlsDisabled]);
@@ -884,35 +1048,127 @@ export function GooseComposer({
     });
   };
 
-  const send = async () => {
+  const composerPayload = (): ComposerSubmitPayload => ({
+    text: submitText,
+    attachments,
+    workspacePath: workspacePath.trim() || undefined,
+    modelSelection: selectedModelRef.current ?? undefined,
+    reasoningEffort: reasoningPicker?.value ?? undefined,
+    skillCommandNames: skillPicker?.skills.map((skill) => skill.name),
+  });
+
+  const resetAfterSubmit = () => {
+    onDraftChange?.("");
+    setValue("");
+    setSelectedSkill(null);
+    setSelectionStart(0);
+    setSelectionEnd(0);
+    setDismissedSlashToken("");
+    setAttachments((current) => {
+      current.forEach(revokeAttachmentPreview);
+      return [];
+    });
+  };
+
+  // 降级路径：原样交给父级入队（detail 路由 busy 时会 park 进队列），行为与入队键一致。
+  const parkInQueue = async (payload: ComposerSubmitPayload, notice: string) => {
+    if (!onSend) {
+      setSteerNotice({ kind: "error", text: "当前没有可用的发送通道，内容已保留" });
+      return;
+    }
+    setSubmitError("");
+    markAttachmentsProcessing();
+    try {
+      await onSend?.(payload, { updateAttachment });
+      resetAfterSubmit();
+      setSteerNotice({ kind: "ok", text: notice });
+    } catch (error) {
+      restoreAttachmentState(error);
+    }
+  };
+
+  const requestSessionSteer = async (text: string): Promise<ComposerSteerResult> => {
+    if (onSteer) return (await onSteer(text)) ?? {};
+    return (
+      (await getGatewayClient().request<{ status?: string }>("session.steer", {
+        session_id: gwSessionId,
+        text,
+      })) ?? {}
+    );
+  };
+
+  const steer = async () => {
+    if (queuedBuiltinCommand) {
+      setSubmitError(`Agent 运行中，/${queuedBuiltinCommand.name} 需等当前回合结束再执行`);
+      return;
+    }
     if (!canSend) return;
-    const payload: ComposerSubmitPayload = {
-      text: submitText,
-      attachments,
-      workspacePath: workspacePath.trim() || undefined,
-      modelSelection: selectedModelRef.current ?? undefined,
-      reasoningEffort: reasoningPicker?.value ?? undefined,
-      skillCommandNames: skillPicker?.skills.map((skill) => skill.name),
-    };
+    const text = submitText.trim();
+    if (!text) {
+      setSteerNotice({ kind: "error", text: "引导内容不能为空" });
+      return;
+    }
+    const payload = composerPayload();
+    // 附件和 Skill 命令没法塞进「引导」这一句纯文本，直接走排队更诚实。
+    if (selectedSkill || attachments.length > 0) {
+      await parkInQueue(payload, "附件 / Skill 不能随引导发送，已改为排队");
+      return;
+    }
+    if (!onSteer && !gwSessionId) {
+      await parkInQueue(payload, "还没拿到内核会话 id，已改为排队");
+      return;
+    }
+    setSubmitError("");
+    setSteerNotice(null);
+    setSteerBusy(true);
+    try {
+      const result = await requestSessionSteer(text);
+      const status = result?.status ?? "";
+      if (status === "rejected") {
+        setSteerNotice({ kind: "error", text: "内核拒绝了这次引导，内容仍留在输入框" });
+        return;
+      }
+      setSteerNotice({
+        kind: "ok",
+        text: status === "redirected" ? "已改为当前轮的新指令" : "已并入当前轮",
+      });
+      resetAfterSubmit();
+    } catch (error) {
+      const info = classifyGatewayError(error);
+      if (
+        info.kind === "unsupported-method" ||
+        info.code === 4010 ||
+        STEER_UNSUPPORTED.test(info.message)
+      ) {
+        setSteerUnsupported(true);
+        await parkInQueue(payload, "当前内核不支持实时引导，已改为排队");
+        return;
+      }
+      setSteerNotice({ kind: "error", text: `引导失败：${humanizeGatewayError(error)}` });
+    } finally {
+      setSteerBusy(false);
+    }
+  };
+
+  const send = async () => {
+    if (queuedBuiltinCommand) {
+      setSubmitError(`Agent 运行中，/${queuedBuiltinCommand.name} 需等当前回合结束再执行`);
+      return;
+    }
+    if (!canSend) return;
+    const payload = composerPayload();
 
     setSubmitError("");
     markAttachmentsProcessing();
     try {
       await onSend?.(payload, { updateAttachment });
-      onDraftChange?.("");
-      setValue("");
-      setSelectedSkill(null);
-      setSelectionStart(0);
-      setSelectionEnd(0);
-      setDismissedSlashToken("");
-      setAttachments((current) => {
-        current.forEach(revokeAttachmentPreview);
-        return [];
-      });
+      resetAfterSubmit();
     } catch (error) {
       restoreAttachmentState(error);
     }
   };
+
+  const submitAction = () => (steerMode ? steer() : send());
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     const isComposing = isComposerComposing({
@@ -1003,8 +1259,22 @@ export function GooseComposer({
 
     if (shouldSubmit) {
       event.preventDefault();
-      void send();
+      void submitAction();
     }
+  };
+
+  const removeSelectedText = () => {
+    const current = valueRef.current;
+    const textarea = textareaRef.current;
+    const rawStart = textarea?.selectionStart ?? selectionStart;
+    const rawEnd = textarea?.selectionEnd ?? selectionEnd;
+    const start = Math.max(0, Math.min(rawStart, current.length));
+    const end = Math.max(start, Math.min(rawEnd, current.length));
+    if (start === end) return;
+    const next = `${current.slice(0, start)}${current.slice(end)}`;
+    valueRef.current = next;
+    setValue(next);
+    focusTextareaAt(start);
   };
 
   const handlePaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
@@ -1029,6 +1299,14 @@ export function GooseComposer({
         if (!file) return;
         addBrowserFiles([file]);
       });
+      return;
+    }
+    if (shouldConvertPasteToAttachment(text)) {
+      event.preventDefault();
+      removeSelectedText();
+      setSubmitError("");
+      appendAttachmentDrafts([createPastedTextAttachment(text)]);
+      setPasteNotice(largePasteNotice(text));
       return;
     }
     // A bare-URL paste offers to attach it as an `@url:` reference (only where
@@ -1092,21 +1370,32 @@ export function GooseComposer({
     event.preventDefault();
     dragDepthRef.current = 0;
     setDragActive(false);
+    draggedTextRef.current = "";
     if (controlsDisabled) return;
 
-    const paths: string[] = [];
-    const text = event.dataTransfer.getData("text/uri-list") || event.dataTransfer.getData("text/plain");
-    if (text) paths.push(...text.split(/\r?\n/));
-    for (const file of Array.from(event.dataTransfer.files)) {
-      const path = (file as File & { path?: string }).path;
-      if (path) paths.push(path);
+    const droppedFiles = Array.from(event.dataTransfer.files);
+    if (droppedFiles.length) {
+      const paths: string[] = [];
+      for (const file of droppedFiles) {
+        const path = (file as File & { path?: string }).path;
+        if (path) paths.push(path);
+      }
+      if (paths.length === droppedFiles.length) {
+        addPathAttachments(paths);
+      } else {
+        addBrowserFiles(droppedFiles);
+      }
+      return;
     }
 
+    const droppedText = event.dataTransfer.getData("text/uri-list")
+      || event.dataTransfer.getData("text/plain");
+    const paths = pathsFromDroppedText(droppedText);
     if (paths.length) {
       addPathAttachments(paths);
-    } else {
-      addBrowserFiles(event.dataTransfer.files);
+      return;
     }
+    insertDroppedText(droppedText);
   };
 
   const loadModelOptions = useCallback(async () => {
@@ -1207,6 +1496,7 @@ export function GooseComposer({
     <div className={s.wrapper} data-compact={compact} data-variant={variant}>
       <div
         className={s.box}
+        ref={composerBoxRef}
         data-disabled={disabled}
         data-drag-active={dragActive}
         data-flush-bottom={flushBottom}
@@ -1301,6 +1591,21 @@ export function GooseComposer({
           </div>
         ) : null}
 
+        {queuedBuiltinCommand ? (
+          <div className={s.queueHint} data-tone="warn" role="status">
+            <span>Agent 运行中，/{queuedBuiltinCommand.name} 需等当前回合结束再执行</span>
+          </div>
+        ) : showQueueHint ? (
+          <div className={s.queueHint} role="status">
+            <span>
+              {steerMode
+                ? "Agent 运行中，发送会并入当前轮，Alt 点击改为排队"
+                : "Agent 运行中，发送的内容会排队，本轮结束后自动发送"}
+              {queuedCount > 0 ? ` · 已排队 ${queuedCount} 条` : ""}
+            </span>
+          </div>
+        ) : null}
+
         <textarea
           ref={textareaRef}
           value={value}
@@ -1318,7 +1623,16 @@ export function GooseComposer({
           onPaste={handlePaste}
           onCompositionStart={() => { composingRef.current = true; }}
           onCompositionEnd={() => { setTimeout(() => { composingRef.current = false; }, 0); }}
-          placeholder={loading ? (loadingPlaceholder || "Hermes 正在响应...") : resolvedPlaceholder}
+          placeholder={
+            loading
+              ? (loadingPlaceholder ||
+                  (steerMode
+                    ? "Agent 运行中，可继续输入，发送会并入当前轮"
+                    : queueMode
+                      ? "Agent 运行中，可继续输入，发送会加入队列"
+                      : "Hermes 正在响应..."))
+              : resolvedPlaceholder
+          }
           rows={1}
           className={s.textarea}
           disabled={disabled}
@@ -1456,6 +1770,18 @@ export function GooseComposer({
           </div>
         ) : null}
 
+        {pasteNotice ? (
+          <div className={s.pasteNotice} role="status">
+            <span>{pasteNotice}</span>
+          </div>
+        ) : null}
+
+        {steerNotice ? (
+          <div className={s.steerNotice} data-kind={steerNotice.kind} role="status">
+            <span>{steerNotice.text}</span>
+          </div>
+        ) : null}
+
         {submitError ? (
           <ComposerErrorMessage
             message={submitError}
@@ -1581,9 +1907,8 @@ export function GooseComposer({
             ) : null}
             {loading && onStop ? (
               <button
-                className={s.sendButton}
+                className={s.stopButton}
                 type="button"
-                data-mode="stop"
                 onClick={() => void onStop()}
                 disabled={disabled}
                 aria-label="中止响应"
@@ -1591,18 +1916,43 @@ export function GooseComposer({
               >
                 <StopIcon />
               </button>
-            ) : (
+            ) : null}
+            {loading && !queueMode && onStop ? null : (
               <button
                 className={s.sendButton}
                 type="button"
                 data-ready={canSend}
-                onClick={() => void send()}
-                disabled={!canSend}
-                aria-label="发送消息"
-                title={`发送消息（${submitHint}）`}
+                data-queue={queueMode ? "true" : undefined}
+                data-steer={steerMode ? "true" : undefined}
+                onClick={(event) => {
+                  if (steerMode && !event.altKey) {
+                    void steer();
+                    return;
+                  }
+                  void send();
+                }}
+                disabled={!canSend || steerBusy}
+                aria-label={
+                  steerMode
+                    ? "引导（运行中，并入当前轮；Alt 点击改为排队）"
+                    : queueMode
+                      ? "发送（运行中，将加入队列）"
+                      : "发送消息"
+                }
+                title={
+                  steerMode
+                    ? "引导（不打断当前轮，并入这一轮；Alt 点击改为排队）"
+                    : queueMode
+                      ? "发送（运行中，将加入队列）"
+                      : `发送消息（${submitHint}）`
+                }
               >
-                <SendIcon />
-                <span>发送</span>
+                {steerMode ? (
+                  <Sparkles className={s.sendIcon} aria-hidden="true" />
+                ) : (
+                  <SendIcon />
+                )}
+                <span>{steerMode ? "引导" : queueMode ? "入队" : "发送"}</span>
               </button>
             )}
           </div>

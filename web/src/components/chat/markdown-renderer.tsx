@@ -1,3 +1,4 @@
+import type { CodeHighlighterPlugin, HighlightResult } from "@streamdown/code";
 import { cjk } from "@streamdown/cjk";
 import { createMathPlugin } from "@streamdown/math";
 import {
@@ -12,7 +13,7 @@ import {
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema, type Options as SanitizeSchema } from "rehype-sanitize";
 import { harden } from "rehype-harden";
-import { Streamdown, type DiagramPlugin } from "streamdown";
+import { Streamdown, parseMarkdownIntoBlocks, type DiagramPlugin } from "streamdown";
 import type { MermaidConfig } from "mermaid";
 import "katex/dist/katex.min.css";
 import { MessageImage } from "./message-image";
@@ -37,6 +38,308 @@ const ALLOWED_LINK_PROTOCOLS = ["http", "https", "irc", "ircs", "mailto", "xmpp"
 const ALLOWED_EXTERNAL_PROTOCOLS = new Set(["http:", "https:", "mailto:", "tel:", "obsidian:"]);
 const BLOCKED_EXTERNAL_PROTOCOLS = /^(?:javascript|data|file|vbscript|tauri):/i;
 const KatexSpanContext = createContext(false);
+
+type StreamdownPluginConfig = NonNullable<ComponentProps<typeof Streamdown>["plugins"]>;
+type StreamdownMathPlugin = NonNullable<StreamdownPluginConfig["math"]>;
+type CodeHighlightOptions = Parameters<CodeHighlighterPlugin["highlight"]>[0];
+type CodeThemePair = CodeHighlightOptions["themes"];
+
+const CODE_THEMES = ["github-light", "github-dark"] as unknown as CodeThemePair;
+const CODE_THROTTLE_MS = 120;
+const CODE_BLOCK_KEY_CHARS = 64;
+const CODE_MAX_HIGHLIGHT_CHARS = 120_000;
+const CODE_CACHE_MAX_ENTRIES = 192;
+const CODE_CACHE_MAX_CHARS = 3 * 1024 * 1024;
+const CODE_BLOCK_STATE_MAX_ENTRIES = 64;
+
+interface CachedCodeHighlight {
+  result: HighlightResult;
+  chars: number;
+}
+
+interface PendingCodeHighlight {
+  at: number;
+  code: string;
+  options: CodeHighlightOptions;
+  callback?: (result: HighlightResult) => void;
+  timer: ReturnType<typeof setTimeout> | null;
+}
+
+const codeHighlightCache = new Map<string, CachedCodeHighlight>();
+const pendingCodeHighlights = new Map<string, PendingCodeHighlight>();
+let codeHighlightCacheChars = 0;
+let codePluginPromise: Promise<CodeHighlighterPlugin | null> | null = null;
+let loadedCodePlugin: CodeHighlighterPlugin | null = null;
+let codePluginUnavailable = false;
+
+function codeCacheKey(language: string, code: string, themes: CodeHighlightOptions["themes"]): string {
+  const themeKey = themes
+    .map((theme) => (typeof theme === "string" ? theme : ((theme as { name?: string }).name ?? "")))
+    .join("/");
+  return `${themeKey}\u0000${language}\u0000${code}`;
+}
+
+function readCodeHighlight(key: string): HighlightResult | undefined {
+  const hit = codeHighlightCache.get(key);
+  if (!hit) return undefined;
+  codeHighlightCache.delete(key);
+  codeHighlightCache.set(key, hit);
+  return hit.result;
+}
+
+function writeCodeHighlight(key: string, result: HighlightResult, chars: number): void {
+  const previous = codeHighlightCache.get(key);
+  if (previous) {
+    codeHighlightCacheChars -= previous.chars;
+    codeHighlightCache.delete(key);
+  }
+  codeHighlightCache.set(key, { result, chars });
+  codeHighlightCacheChars += chars;
+  while (
+    codeHighlightCache.size > 1 &&
+    (codeHighlightCache.size > CODE_CACHE_MAX_ENTRIES || codeHighlightCacheChars > CODE_CACHE_MAX_CHARS)
+  ) {
+    const oldest = codeHighlightCache.keys().next().value;
+    if (oldest === undefined) break;
+    codeHighlightCacheChars -= codeHighlightCache.get(oldest)?.chars ?? 0;
+    codeHighlightCache.delete(oldest);
+  }
+}
+
+function codeBlockKey(options: CodeHighlightOptions): string {
+  return `${options.language}\u0000${options.code.slice(0, CODE_BLOCK_KEY_CHARS)}`;
+}
+
+function loadCodePlugin(): Promise<CodeHighlighterPlugin | null> {
+  codePluginPromise ??= import("@streamdown/code")
+    .then((module) => {
+      loadedCodePlugin = module.createCodePlugin({ themes: CODE_THEMES });
+      return loadedCodePlugin;
+    })
+    .catch(() => {
+      codePluginUnavailable = true;
+      return null;
+    });
+  return codePluginPromise;
+}
+
+function runCodeHighlight(
+  plugin: CodeHighlighterPlugin,
+  key: string,
+  options: CodeHighlightOptions,
+  callback?: (result: HighlightResult) => void,
+): void {
+  const previous = pendingCodeHighlights.get(key);
+  if (previous?.timer) clearTimeout(previous.timer);
+  const pending: PendingCodeHighlight = {
+    at: Date.now(),
+    code: options.code,
+    options,
+    callback,
+    timer: null,
+  };
+  pendingCodeHighlights.set(key, pending);
+  while (pendingCodeHighlights.size > CODE_BLOCK_STATE_MAX_ENTRIES) {
+    const oldest = pendingCodeHighlights.keys().next().value;
+    if (oldest === undefined) break;
+    pendingCodeHighlights.delete(oldest);
+  }
+  const settle = (result: HighlightResult) => {
+    writeCodeHighlight(codeCacheKey(options.language, options.code, options.themes), result, options.code.length);
+    if (pendingCodeHighlights.get(key) === pending) pending.callback?.(result);
+  };
+  try {
+    const immediate = plugin.highlight(options, settle);
+    if (immediate) settle(immediate);
+  } catch {
+    if (pendingCodeHighlights.get(key) === pending) pendingCodeHighlights.delete(key);
+  }
+}
+
+function flushPendingCodeHighlight(key: string): void {
+  const pending = pendingCodeHighlights.get(key);
+  const plugin = loadedCodePlugin;
+  if (!pending || !plugin) return;
+  pending.timer = null;
+  runCodeHighlight(plugin, key, pending.options, pending.callback);
+}
+
+const codeHighlightPlugin: CodeHighlighterPlugin = {
+  name: "shiki",
+  type: "code-highlighter",
+  getThemes: () => loadedCodePlugin?.getThemes() ?? CODE_THEMES,
+  getSupportedLanguages: () => loadedCodePlugin?.getSupportedLanguages() ?? [],
+  supportsLanguage: (language) => loadedCodePlugin?.supportsLanguage(language) ?? false,
+  highlight(options, callback) {
+    if (codePluginUnavailable) return null;
+    const { code, language } = options;
+    if (!code.trim() || code.length > CODE_MAX_HIGHLIGHT_CHARS) return null;
+
+    const cached = readCodeHighlight(codeCacheKey(language, code, options.themes));
+    if (cached) {
+      callback?.(cached);
+      return cached;
+    }
+
+    const plugin = loadedCodePlugin;
+    if (!plugin) {
+      void loadCodePlugin().then((loaded) => {
+        if (loaded) codeHighlightPlugin.highlight(options, callback);
+      });
+      return null;
+    }
+
+    if (!plugin.supportsLanguage(language)) return null;
+
+    const key = codeBlockKey(options);
+    const pending = pendingCodeHighlights.get(key);
+    if (pending && code.startsWith(pending.code) && Date.now() - pending.at < CODE_THROTTLE_MS) {
+      pending.code = code;
+      pending.options = options;
+      pending.callback = callback;
+      pending.timer ??= setTimeout(() => flushPendingCodeHighlight(key), CODE_THROTTLE_MS);
+      return null;
+    }
+
+    runCodeHighlight(plugin, key, options, callback);
+    return null;
+  },
+};
+
+interface HastNode {
+  type: string;
+  tagName?: string;
+  value?: string;
+  properties?: Record<string, unknown>;
+  children?: HastNode[];
+}
+
+type MathRehypeTransform = (tree: HastNode, file: unknown) => void;
+
+interface MathTarget {
+  scope: HastNode;
+  display: boolean;
+}
+
+const MATH_CACHE_MAX_ENTRIES = 256;
+const mathHtmlCache = new Map<string, HastNode[]>();
+
+function cloneHastNode(node: HastNode): HastNode {
+  const clone: HastNode = { type: node.type };
+  if (node.tagName !== undefined) clone.tagName = node.tagName;
+  if (node.value !== undefined) clone.value = node.value;
+  if (node.properties) clone.properties = { ...node.properties };
+  if (node.children) clone.children = node.children.map(cloneHastNode);
+  return clone;
+}
+
+function hastText(node: HastNode): string {
+  if (node.type === "text") return node.value ?? "";
+  if (!node.children) return "";
+  let text = "";
+  for (const child of node.children) text += hastText(child);
+  return text;
+}
+
+function hastClassName(node: HastNode): string[] {
+  const value = node.properties?.className;
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string");
+}
+
+function mathTargetOf(node: HastNode): MathTarget | null {
+  const classes = hastClassName(node);
+  if (classes.includes("math-inline")) return { scope: node, display: false };
+  if (classes.includes("math-display")) return { scope: node, display: true };
+  if (classes.includes("language-math")) return { scope: node, display: true };
+  if (node.tagName !== "pre") return null;
+  const only = node.children?.length === 1 ? node.children[0] : undefined;
+  if (only && only.type === "element" && hastClassName(only).includes("language-math")) {
+    return { scope: node, display: true };
+  }
+  return null;
+}
+
+function renderMathTarget(transform: MathRehypeTransform, file: unknown, target: MathTarget): HastNode[] | null {
+  const key = `${target.display ? "d" : "i"}\u0000${hastText(target.scope)}`;
+  let rendered = mathHtmlCache.get(key);
+  if (!rendered) {
+    const isolated: HastNode = { type: "root", children: [cloneHastNode(target.scope)] };
+    try {
+      transform(isolated, file);
+    } catch {
+      return null;
+    }
+    rendered = isolated.children ?? [];
+    if (rendered.length === 0) return null;
+    mathHtmlCache.set(key, rendered);
+    while (mathHtmlCache.size > MATH_CACHE_MAX_ENTRIES) {
+      const oldest = mathHtmlCache.keys().next().value;
+      if (oldest === undefined) break;
+      mathHtmlCache.delete(oldest);
+    }
+  }
+  return rendered.map(cloneHastNode);
+}
+
+function applyMemoizedMath(transform: MathRehypeTransform, file: unknown, node: HastNode): void {
+  const children = node.children;
+  if (!children?.length) return;
+  for (let index = 0; index < children.length; index += 1) {
+    const child = children[index];
+    const target = mathTargetOf(child);
+    if (target) {
+      const replacement = renderMathTarget(transform, file, target);
+      if (replacement) {
+        children.splice(index, 1, ...replacement);
+        index += replacement.length - 1;
+        continue;
+      }
+    }
+    applyMemoizedMath(transform, file, child);
+  }
+}
+
+function toRehypeTransform(plugin: StreamdownMathPlugin["rehypePlugin"]): MathRehypeTransform | null {
+  const [factory, options] = (Array.isArray(plugin) ? plugin : [plugin, undefined]) as [unknown, unknown];
+  if (typeof factory !== "function") return null;
+  try {
+    const transform = (factory as (options?: unknown) => unknown)(options);
+    return typeof transform === "function" ? (transform as MathRehypeTransform) : null;
+  } catch {
+    return null;
+  }
+}
+
+function createMemoizedMathPlugin(): StreamdownMathPlugin {
+  const base = createMathPlugin({ singleDollarTextMath: true });
+  const transform = toRehypeTransform(base.rehypePlugin);
+  if (!transform) return base;
+  const rehypePlugin = () => (tree: unknown, file: unknown) => {
+    applyMemoizedMath(transform, file, tree as HastNode);
+  };
+  return { ...base, rehypePlugin: rehypePlugin as unknown as StreamdownMathPlugin["rehypePlugin"] };
+}
+
+const PARSE_CACHE_MAX_ENTRIES = 4;
+const parsedBlockCache = new Map<string, string[]>();
+
+function parseMarkdownBlocks(markdown: string): string[] {
+  const cached = parsedBlockCache.get(markdown);
+  if (cached) {
+    parsedBlockCache.delete(markdown);
+    parsedBlockCache.set(markdown, cached);
+    return cached;
+  }
+  const blocks = parseMarkdownIntoBlocks(markdown);
+  parsedBlockCache.set(markdown, blocks);
+  while (parsedBlockCache.size > PARSE_CACHE_MAX_ENTRIES) {
+    const oldest = parsedBlockCache.keys().next().value;
+    if (oldest === undefined) break;
+    parsedBlockCache.delete(oldest);
+  }
+  return blocks;
+}
 
 // Structural match for streamdown's (non-exported) MermaidInstance interface.
 interface LazyMermaidInstance {
@@ -84,7 +387,8 @@ const lazyMermaidPlugin: DiagramPlugin = (() => {
 
 const streamdownPlugins = {
   cjk,
-  math: createMathPlugin({ singleDollarTextMath: true }),
+  code: codeHighlightPlugin,
+  math: createMemoizedMathPlugin(),
   mermaid: lazyMermaidPlugin,
 };
 
@@ -646,7 +950,8 @@ export const MarkdownText = memo(function MarkdownText({
       isAnimating={streaming}
       lineNumbers={false}
       linkSafety={streamdownLinkSafety}
-      mode="streaming"
+      mode={streaming ? "streaming" : "static"}
+      parseMarkdownIntoBlocksFn={parseMarkdownBlocks}
       plugins={streamdownPlugins}
       rehypePlugins={streamdownRehypePlugins}
       translations={streamdownTranslations}
