@@ -126,9 +126,25 @@ pub async fn connection_oauth_login(
     if let Some(existing) = app.get_webview_window(LOGIN_WINDOW_LABEL) {
         let _ = existing.destroy();
     }
+    // Match the login window's native title bar to the app theme instead of the
+    // OS theme: it is created outside the main webview, so it never receives the
+    // frontend `set_theme` call.
+    let login_theme = {
+        let state = app.state::<AppState>();
+        let home = match state.inner.lock() {
+            Ok(inner) => inner.hermes_home.clone(),
+            Err(_) => String::new(),
+        };
+        if !home.is_empty() && crate::ui_store::theme_is_dark(&home) {
+            tauri::Theme::Dark
+        } else {
+            tauri::Theme::Light
+        }
+    };
     let window = WebviewWindowBuilder::new(&app, LOGIN_WINDOW_LABEL, WebviewUrl::External(url))
         .title("登录远程 Hermes Agent")
         .inner_size(520.0, 720.0)
+        .theme(Some(login_theme))
         .build()
         .map_err(|e| AppError::Internal(format!("open login window: {e}")))?;
 

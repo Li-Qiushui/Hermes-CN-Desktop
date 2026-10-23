@@ -559,6 +559,25 @@ pub fn kv_value(hermes_home: &str, key: &str) -> AppResult<Option<Value>> {
 /// dangerous-command prompts (equivalent to the `--yolo` CLI flag).
 pub const YOLO_MODE_KEY: &str = "desktop.yoloMode";
 
+/// Theme preference key persisted by the web UI (`packages/shared-ui`).
+pub const THEME_KEY: &str = "hermes-theme";
+
+/// True when the persisted UI theme is one of the dark variants.
+///
+/// Native windows created outside the main webview (the OAuth login window)
+/// use this so their title bar matches the app instead of the OS theme.
+/// Unknown or unreadable values fail to `false` (light).
+pub fn theme_is_dark(hermes_home: &str) -> bool {
+    const DARK_VARIANTS: [&str; 4] = ["dark", "dark-modern", "dracula", "catppuccin-mocha"];
+    match kv_value(hermes_home, THEME_KEY) {
+        Ok(Some(value)) => value
+            .as_str()
+            .map(|name| DARK_VARIANTS.contains(&name))
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
 fn value_is_truthy(value: &Value) -> bool {
     match value {
         Value::Bool(b) => *b,
