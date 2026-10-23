@@ -70,3 +70,30 @@ it("treats a degraded kernel as repairable instead of fully offline", () => {
   expect(html).toContain("重试连接");
   expect(html).not.toContain("工作台暂时离线");
 });
+
+it("says the kernel is missing instead of failed when no hermes binary exists", () => {
+  vi.stubGlobal("window", {
+    __HERMES_RUNTIME__: {
+      platform: "tauri",
+      connectionMode: "managed",
+      backendReady: false,
+      backendDegraded: true,
+      kernelMissing: true,
+      backendDegradedReason: "本机未安装 Hermes 内核（找不到 hermes 可执行文件）",
+      backendRecoveryReason: "external-backend-unreachable",
+      dashboardApiBaseUrl: "http://127.0.0.1:9119",
+    },
+    location: { hash: "#/" },
+  });
+
+  const html = ReactDOMServer.renderToStaticMarkup(
+    <MemoryRouter initialEntries={["/"]}>
+      <OfflineShell />
+    </MemoryRouter>,
+  );
+
+  expect(html).toContain("本机未安装 Hermes 内核");
+  expect(html).toContain("先装内核，或者连远程");
+  expect(html).toContain("重新检测内核");
+  expect(html).not.toContain("内核未启动，已降级到手动连接");
+});

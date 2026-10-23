@@ -449,6 +449,8 @@ declare global {
       backendDegraded?: boolean;
       /** Message from the `degraded` runtime-status phase, for the UI to show. */
       backendDegradedReason?: string;
+      /** Degraded because this machine has no local Hermes kernel installed. */
+      kernelMissing?: boolean;
       /** Why only the offline repair shell is mounted instead of the backend UI. */
       backendRecoveryReason?: BackendRecoveryReason;
       guideState?: import("@hermes/protocol").GuideState;

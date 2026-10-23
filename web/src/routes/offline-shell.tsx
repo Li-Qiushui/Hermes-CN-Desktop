@@ -77,6 +77,44 @@ function OfflineHome() {
 
   const kernelRecovered = kernelRetry.message?.tone === "ok";
 
+  // No `hermes` binary on this machine: that is a missing component, not a
+  // failed start, so offer install + remote instead of "retry the kernel".
+  if (runtimeConfig?.kernelMissing && !kernelRecovered) {
+    return (
+      <OfflinePage
+        title="本机未安装 Hermes 内核"
+        sub="这台电脑上找不到 hermes 内核程序，桌面端先停在离线壳里。"
+      >
+        <div className={s.empty}>
+          <AlertTriangle size={32} />
+          <h2>先装内核，或者连远程</h2>
+          <p>
+            桌面端只是外壳，会话、模型、Skills 都由本机内核提供。装上 hermes 内核后点「重新连接内核」，
+            也可以去「连接」页填一台已经在跑 Hermes 的远程地址。
+          </p>
+          <div>
+            <Button
+              variant="solid"
+              tone="accent"
+              onClick={() => { window.location.hash = "#/connection"; }}
+            >
+              <Globe2 size={12} />去设置连接
+            </Button>
+            <RetryButton
+              onRetry={() => {
+                void kernelRetry.retry().then((outcome) => {
+                  if (outcome?.ok) window.setTimeout(() => { window.location.reload(); }, 1_200);
+                });
+              }}
+              label="重新检测内核"
+              loading={kernelRetry.retrying}
+            />
+          </div>
+        </div>
+      </OfflinePage>
+    );
+  }
+
   if (runtimeConfig?.backendDegraded || kernelRecovered) {
     const degradedReason = (runtimeConfig?.backendDegradedReason ?? "").trim();
     return (

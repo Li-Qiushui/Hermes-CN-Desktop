@@ -978,6 +978,14 @@ function showBootstrapOverlay(initialMessage: string): {
         detail.style.display = "block";
         copyButton.disabled = false;
         sub.textContent = "已降级启动";
+      } else if (phase === "kernel-missing") {
+        lastErrorMessage = msg || "本机未安装 Hermes 内核";
+        message.textContent =
+          "这台电脑上没有找到 Hermes 内核（hermes 可执行文件）。装上内核后重启本应用，或在「连接」页填写一台远程 Hermes 地址。";
+        errorText.textContent = lastErrorMessage;
+        detail.style.display = "block";
+        copyButton.disabled = false;
+        sub.textContent = "未安装内核";
       } else if (msg) {
         message.textContent = msg;
       }
@@ -1144,6 +1152,8 @@ export async function installTauriBridge(): Promise<void> {
     portable?: boolean;
     embedded?: boolean;
     backendReady?: boolean;
+    /** Degraded because the machine has no local kernel binary at all. */
+    kernelMissing?: boolean;
     guideState?: GuideState;
     managedRuntimeDesiredState?: import("@hermes/protocol").ManagedRuntimeDesiredState;
     managedRuntimeLifecycleState?: import("@hermes/protocol").ManagedRuntimeLifecycleState;
@@ -1241,6 +1251,7 @@ export async function installTauriBridge(): Promise<void> {
       : config.backendReady ?? Boolean(config.apiBaseUrl),
     backendDegraded: bootstrapDegradedReason !== null,
     backendDegradedReason: bootstrapDegradedReason ?? undefined,
+    kernelMissing: config.kernelMissing ?? false,
     backendRecoveryReason,
     guideState: config.guideState ?? "completed",
     managedRuntimeDesiredState: config.managedRuntimeDesiredState ?? "running",
