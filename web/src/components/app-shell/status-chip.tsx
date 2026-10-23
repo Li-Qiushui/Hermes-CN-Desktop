@@ -43,14 +43,15 @@ export function StatusChip() {
 
   const modelLabel = formatModelShort(modelInfo?.model);
   const hasModel = modelLabel !== "—";
-  const contextLabel = formatContext(
-    modelInfo?.effective_context_length ?? modelInfo?.auto_context_length,
-  );
-  const connectionLabel = kernelDegraded ? "内核异常" : gatewayOnline ? port : statusError ? "未连接" : "连接中";
+  const contextValue = modelInfo?.effective_context_length ?? modelInfo?.auto_context_length ?? null;
+  const contextLabel = formatContext(contextValue);
+  const hasContext = contextLabel !== "—";
+  const contextTokens = hasContext && contextValue ? `${Math.round(contextValue).toLocaleString("en-US")} tokens` : "";
+  const connectionLabel = kernelDegraded ? "内核异常" : gatewayOnline ? "已连接" : statusError ? "未连接" : "连接中";
   const summary = [
-    kernelDegraded ? "内核异常 · 已降级到手动连接" : `${modeLabel} ${gatewayOnline ? port : "未连接"}`,
+    kernelDegraded ? "内核异常 · 已降级到手动连接" : `${modeLabel} ${gatewayOnline ? `端口 ${port}` : "未连接"}`,
     hasModel ? `模型 ${modelLabel}` : null,
-    `上下文 ${contextLabel}`,
+    hasContext ? `上下文 ${contextTokens}（${contextLabel}）` : null,
   ].filter(Boolean).join(" · ");
 
   return (
@@ -61,12 +62,15 @@ export function StatusChip() {
           className={s.chip}
           data-state={open ? "open" : undefined}
           title={`${summary} · ${dashboardUrl}`}
-          aria-label={`连接 ${dashboardUrl}（${modeLabel}），模型 ${modelLabel}，上下文 ${contextLabel}`}
+          aria-label={`连接 ${dashboardUrl}（${modeLabel}），模型 ${modelLabel}，上下文 ${contextTokens || "未知"}`}
           data-no-drag
         >
           <StatusDot tone={tone} size="sm" />
-          <span className={s.chipStatus} data-tone={kernelDegraded || !gatewayOnline ? "danger" : undefined}>
-            {connectionLabel}
+          <span
+            className={s.chipStatus}
+            data-tone={kernelDegraded || !gatewayOnline ? "danger" : undefined}
+          >
+            {gatewayOnline && !kernelDegraded ? `端口 ${port}` : connectionLabel}
           </span>
           <span className={s.chipSep} aria-hidden="true">·</span>
           {hasModel ? (
@@ -75,7 +79,7 @@ export function StatusChip() {
               <span className={s.chipSep} aria-hidden="true">·</span>
             </>
           ) : null}
-          <span className={s.chipMeta}>{contextLabel}</span>
+          {hasContext ? <span className={s.chipMeta}>{contextLabel} tokens</span> : null}
           <ChevronDown size={12} className={s.chipChevron} aria-hidden="true" />
         </button>
       </Popover.Trigger>
@@ -127,8 +131,8 @@ export function StatusChip() {
           </div>
           <div className={s.popRow}>
             <span className={s.popLabel}>上下文</span>
-            <span className={s.popValue} title={contextLabel}>
-              {contextLabel}
+            <span className={s.popValue} title={contextTokens || contextLabel}>
+              {contextTokens ? `${contextTokens}（${contextLabel}）` : contextLabel}
             </span>
           </div>
           <button

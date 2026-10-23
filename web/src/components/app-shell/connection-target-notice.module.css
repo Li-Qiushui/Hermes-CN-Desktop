@@ -3,7 +3,7 @@
 .copy { flex: 1; min-width: 0; }
 .heading { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .heading strong { flex: 0 0 auto; color: var(--h-text); }
-.heading span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--h-text-2); font-family: var(--h-font-mono); }
+.heading span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--h-text-2); font-family: var(--h-font-cn); }
 .detail { margin-top: 4px; overflow: hidden; color: var(--h-danger); font-size: 9px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
 .actions { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; margin-left: auto; }
 .actions em { color: var(--h-text-2); font-style: normal; white-space: nowrap; }

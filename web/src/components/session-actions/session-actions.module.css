@@ -180,7 +180,7 @@
 
 .confirmListMore {
   color: var(--h-text-3);
-  font-family: var(--h-font-mono);
+  font-family: var(--h-font-cn);
 }
 
 .confirmError {
@@ -237,4 +237,22 @@
 .confirmDanger:disabled {
   cursor: default;
   opacity: 0.55;
+}
+
+.deleteNotice {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: var(--h-z-toast);
+  max-width: min(360px, calc(100% - 32px));
+  padding: 10px 12px;
+  border: 1px solid var(--h-err-border);
+  border-radius: 0;
+  background: var(--h-bg-pane);
+  color: var(--h-text);
+  font-family: var(--h-font-cn);
+  font-size: 12.5px;
+  line-height: 1.55;
+  word-break: break-word;
+  box-shadow: none;
 }

@@ -6,6 +6,7 @@ import { useBootstrapActiveProfile } from "@/hooks/use-profiles";
 import { readUiValue } from "@/lib/ui-store";
 import { settingsRouteForSlug } from "@/lib/app-routes";
 
+import { CapabilityRouteGuard } from "@/components/app-shell/capability-route-guard";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { ProfileSwitchOverlay } from "@/components/profile-switch-overlay";
 import { RuntimeUpdateOverlay } from "@/components/runtime-update-overlay";
@@ -92,6 +93,10 @@ function RouteLoadingFallback() {
   return <div className="route-loading" data-route-loading="true" />;
 }
 
+function withCapability(feature: Parameters<typeof CapabilityRouteGuard>[0]["feature"], node: ReactNode) {
+  return <CapabilityRouteGuard feature={feature}>{node}</CapabilityRouteGuard>;
+}
+
 function withSuspense(node: ReactNode) {
   return <Suspense fallback={<RouteLoadingFallback />}>{node}</Suspense>;
 }
@@ -107,7 +112,7 @@ function BackendApp() {
           <Routes>
             <Route path="/" element={withBoundary(<PanelRoute />)} />
             <Route path="/new" element={<NewTaskRedirect />} />
-            <Route path="/tasks/:taskId" element={withBoundary(<DetailRoute />)} />
+            <Route path="/tasks/:taskId" element={withBoundary(withCapability("session.detail", <DetailRoute />))} />
             <Route path="/history" element={withBoundary(<HistoryRoute />)} />
             <Route path="/projects" element={withBoundary(<ProjectsRoute />)} />
             <Route path="/projects/:workspacePath" element={withBoundary(<ProjectDetailRoute />)} />

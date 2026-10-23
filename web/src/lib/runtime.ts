@@ -569,6 +569,7 @@ declare global {
        *  scale setting. Fire-and-forget; far better than CSS `zoom`, which leaves
        *  viewport units un-scaled and overflows the fixed window. */
       setUiZoom?(factor: number): void;
+      setNativeTheme?(mode: "dark" | "light"): void;
     };
   }
 }

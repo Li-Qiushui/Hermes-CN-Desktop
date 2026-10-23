@@ -48,6 +48,12 @@ const THEME_VARIANTS = new Set<ThemeVariant>([
   "catppuccin-mocha",
 ]);
 const SCALE_VARIANTS = new Set<ScaleVariant>(["sm", "md", "lg", "xl", "2xl"]);
+const DARK_THEME_VARIANTS = new Set<ThemeVariant>([
+  "dark",
+  "dark-modern",
+  "dracula",
+  "catppuccin-mocha",
+]);
 
 function isThemeVariant(value: unknown): value is ThemeVariant {
   return typeof value === "string" && THEME_VARIANTS.has(value as ThemeVariant);
@@ -86,7 +92,10 @@ export const themeWriteAtom = atom(null, (_get, set, update: Partial<ThemeConfig
 
 /** The desktop bridge surface this module needs, kept local so shared-ui stays
  *  free of a hard dependency on the web app's global typings. */
-type DesktopZoomBridge = { setUiZoom?: (factor: number) => void };
+type DesktopAppearanceBridge = {
+  setUiZoom?: (factor: number) => void;
+  setNativeTheme?: (mode: "dark" | "light") => void;
+};
 
 export function applyThemeToDOM(config: ThemeConfig) {
   const root = document.documentElement;
@@ -95,8 +104,11 @@ export function applyThemeToDOM(config: ThemeConfig) {
   root.setAttribute("data-scale", config.scale);
 
   const factor = SCALE_FACTORS[config.scale] ?? 1;
-  const desktop = (globalThis as unknown as { hermesDesktop?: DesktopZoomBridge })
+  const desktop = (globalThis as unknown as { hermesDesktop?: DesktopAppearanceBridge })
     .hermesDesktop;
+
+  const nativeTheme = DARK_THEME_VARIANTS.has(config.theme) ? "dark" : "light";
+  desktop?.setNativeTheme?.(nativeTheme);
 
   // Prefer the native webview page zoom on the desktop. Page zoom reflows the
   // layout AND shrinks the layout viewport, so `100vw`/`100vh` keep tracking the

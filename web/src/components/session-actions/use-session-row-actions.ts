@@ -1,12 +1,14 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { SessionSummary } from "@hermes/protocol";
 import { exportSessionJson } from "@/lib/session-export";
 import { renameSession, type RenameDeps } from "@/lib/session-rename";
 import { togglePinnedSession, isSessionPinned, unpinSessions } from "@/lib/session-ui-state";
+import type { DeleteSessionsFailure, DeleteSessionsResult } from "@/hooks/use-sessions";
+import { showSessionDeleteNotice } from "./session-delete-notice";
 
 export interface UseSessionRowActionsOptions {
-  /** Delete sessions and resolve with the ids that actually succeeded. */
-  deleteSessions: (ids: string[]) => Promise<{ succeededIds: string[] } | undefined>;
+  /** Delete sessions and resolve with the ids that succeeded plus per-id failures. */
+  deleteSessions: (ids: string[]) => Promise<DeleteSessionsResult>;
   /** True while a delete request is in flight (disables menu/confirm buttons). */
   isDeleting: boolean;
   /** Gateway rename deps, typically destructured from `useGateway()`. */
@@ -83,6 +85,14 @@ export async function copyTextToClipboard(text: string): Promise<boolean> {
   }
 }
 
+function deleteFailureMessage(failed: DeleteSessionsFailure[], succeededCount: number): string {
+  const reason = failed[0]?.error ?? "未知错误";
+  if (succeededCount > 0) {
+    return `已删除 ${succeededCount} 个会话，${failed.length} 个删除失败：${reason}`;
+  }
+  return failed.length === 1 ? `删除失败：${reason}` : `${failed.length} 个会话删除失败：${reason}`;
+}
+
 /**
  * State machine for a single session's row actions (pin / rename / export /
  * archive / delete) backing the shared `SessionRowMenu` + action modals.
@@ -94,7 +104,7 @@ export async function copyTextToClipboard(text: string): Promise<boolean> {
  */
 export function useSessionRowActions({
   deleteSessions,
-  isDeleting,
+  isDeleting: externalDeleting,
   setSessionTitle,
   resumeSession,
   archive,
@@ -110,8 +120,10 @@ export function useSessionRowActions({
   const [renameSaving, setRenameSaving] = useState(false);
   const [deleteTargets, setDeleteTargets] = useState<SessionSummary[] | null>(null);
   const [deleteError, setDeleteError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
   const [exportError, setExportError] = useState("");
   const [copiedSessionId, setCopiedSessionId] = useState<string | null>(null);
+  const isDeleting = submitting || externalDeleting;
 
   const togglePin = useCallback((sessionId: string) => {
     if (setPinned) setPinned([sessionId], !isSessionPinned(sessionId));
@@ -212,37 +224,54 @@ export function useSessionRowActions({
   }, []);
 
   const closeDeleteDialog = useCallback(() => {
-    if (!isDeleting) {
-      setDeleteTargets(null);
-      setDeleteError("");
-    }
-  }, [isDeleting]);
+    if (submitting) return;
+    setDeleteTargets(null);
+    setDeleteError("");
+  }, [submitting]);
+
+  useEffect(() => {
+    if (submitting) return;
+    if (deleteTargets && deleteTargets.length === 0) setDeleteTargets(null);
+  }, [deleteTargets, submitting]);
 
   const confirmDelete = useCallback(async () => {
-    if (!deleteTargets?.length) return;
-    const ids = deleteTargets.map((session) => session.id);
-    const result = await deleteSessions(ids);
-    const succeededIds = result?.succeededIds ?? [];
+    if (!deleteTargets?.length || submitting) return;
+    const targets = deleteTargets;
+    const ids = targets.map((session) => session.id);
+    setSubmitting(true);
+    setDeleteError("");
+    let succeededIds: string[] = [];
+    let failed: DeleteSessionsFailure[] = [];
+    try {
+      const result = await deleteSessions(ids);
+      succeededIds = result.succeededIds ?? [];
+      failed = result.failed ?? [];
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "删除失败";
+      failed = targets.map((session) => ({ id: session.id, error: reason }));
+    } finally {
+      setSubmitting(false);
+    }
     if (succeededIds.length > 0) {
       // Defensive: the delete mutation already unpins, but unpinSessions is
       // idempotent (no write/event when nothing changed).
       unpinSessions(succeededIds);
       onDeleted?.(succeededIds);
     }
-    // 删除失败时以前是静默关窗，用户只看到会话还在、不知道被谁拒了。
-    // 现在把后端原文留在弹窗里，弹窗不关，失败可见。
-    const failures = "failed" in (result ?? {}) ? (result as { failed?: { error: string }[] }).failed : undefined;
-    if (failures && failures.length > 0) {
-      setDeleteError(
-        failures.length === 1
-          ? `删除失败：${failures[0].error}`
-          : `${failures.length} 个会话删除失败：${failures[0].error}`,
-      );
+    if (failed.length === 0) {
+      setDeleteError("");
+      setDeleteTargets(null);
       return;
     }
-    setDeleteError("");
-    setDeleteTargets(null);
-  }, [deleteSessions, deleteTargets, onDeleted]);
+    const message = deleteFailureMessage(failed, succeededIds.length);
+    if (succeededIds.length > 0) {
+      setDeleteError("");
+      setDeleteTargets(null);
+      showSessionDeleteNotice(message);
+      return;
+    }
+    setDeleteError(message);
+  }, [deleteSessions, deleteTargets, onDeleted, submitting]);
 
   return {
     openMenuId,

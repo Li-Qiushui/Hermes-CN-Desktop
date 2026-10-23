@@ -776,6 +776,14 @@ const tauriBridge = {
         console.warn("Failed to apply webview zoom", error);
       });
   },
+
+  setNativeTheme(mode: "dark" | "light"): void {
+    import("@tauri-apps/api/window")
+      .then(({ getCurrentWindow }) => getCurrentWindow().setTheme(mode))
+      .catch((error) => {
+        console.warn("Failed to apply native window theme", error);
+      });
+  },
 };
 
 // Overlay shown while the Rust side prepares the managed runtime and

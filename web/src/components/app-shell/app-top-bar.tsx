@@ -24,7 +24,7 @@ export function AppTopBar() {
     <header className={s.topbar} data-window-drag data-tauri-drag-region="deep">
       <div className={s.brand} data-no-drag>
         <span className={s.brandText}>
-          <HermesLogoMark size={20} />
+          <HermesLogoMark size={24} />
           <span className={s.wordmark}>Hermes Agent</span>
         </span>
       </div>

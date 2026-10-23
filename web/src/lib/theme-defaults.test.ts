@@ -76,4 +76,17 @@ describe("applyThemeToDOM interface scaling", () => {
     applyThemeToDOM({ theme: "light-modern", density: "comfortable", scale: "md" });
     expect(style.has("zoom")).toBe(false);
   });
+
+  it("mirrors the active skin onto the native window chrome", () => {
+    const modes: Array<"dark" | "light"> = [];
+    (globalThis as { hermesDesktop?: unknown }).hermesDesktop = {
+      setNativeTheme: (mode: "dark" | "light") => modes.push(mode),
+    };
+
+    applyThemeToDOM({ theme: "dark-modern", density: "comfortable", scale: "md" });
+    applyThemeToDOM({ theme: "dracula", density: "comfortable", scale: "md" });
+    applyThemeToDOM({ theme: "light-modern", density: "comfortable", scale: "md" });
+
+    expect(modes).toEqual(["dark", "dark", "light"]);
+  });
 });

@@ -2,7 +2,7 @@
    Inspired by prototypes/.topbar */
 
 .topbar {
-  --h-topbar-control-h: var(--h-button-height-sm);
+  --h-topbar-control-h: 32px;
   --h-topbar-control-radius: var(--h-r-sm);
   --h-topbar-control-bg: var(--h-bg-soft);
   --h-topbar-control-hover-bg: var(--h-bg-chip);
@@ -16,7 +16,7 @@
   display: flex;
   align-items: center;
   padding: var(--h-window-control-safe-top, 0px) 16px 0;
-  gap: 16px;
+  gap: 12px;
   border-bottom: 1px solid var(--h-line);
   background: var(--h-bg-pane);
   position: relative;
@@ -51,7 +51,7 @@
   flex: 1;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   overflow: hidden;
 }
 
@@ -64,7 +64,7 @@
 
 .wordmark {
   font-family: var(--h-font-ui);
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 700;
   font-style: normal;
   letter-spacing: -0.02em;
@@ -87,7 +87,7 @@
   flex-shrink: 0;
   color: color-mix(in srgb, var(--h-text) 76%, var(--h-text-3));
   font-family: var(--h-font-cn);
-  font-size: 9.5px;
+  font-size: 12.5px;
   font-weight: 650;
   letter-spacing: 0.035em;
 }
@@ -96,7 +96,7 @@
   flex-shrink: 0;
   color: var(--h-text-4);
   font-family: var(--h-font-mono);
-  font-size: 10px;
+  font-size: 12.5px;
   line-height: 1;
 }
 
@@ -105,7 +105,7 @@
   min-width: 0;
   color: var(--h-text-3);
   font-family: var(--h-font-mono);
-  font-size: 8.5px;
+  font-size: 12.5px;
   font-weight: 500;
   letter-spacing: 0.005em;
   line-height: 1.2;
@@ -121,6 +121,7 @@
   flex-wrap: nowrap;
   gap: 4px;
   margin-left: 0;
+  margin-right: auto;
   -webkit-app-region: no-drag;
   white-space: nowrap;
 }
@@ -128,8 +129,10 @@
 .navLink {
   flex: 0 0 auto;
   box-sizing: border-box;
-  height: var(--h-button-height-sm);
-  min-height: var(--h-button-height-sm);
+  height: var(--h-topbar-control-h);
+  min-height: var(--h-topbar-control-h);
+  min-width: 84px;
+  justify-content: center;
   padding: 0 12px;
   font-size: 13px;
   line-height: 1;
@@ -174,11 +177,11 @@
 }
 
 .search {
-  flex: 1 1 clamp(96px, 28vw, 360px);
+  flex: 0 1 240px;
   width: auto;
-  min-width: 96px;
-  max-width: 360px;
-  margin-left: auto;
+  min-width: 108px;
+  max-width: 240px;
+  margin-left: 0;
   height: var(--h-topbar-control-h);
   background: var(--h-topbar-control-bg);
   border: 1px solid var(--h-topbar-control-border);
@@ -188,8 +191,8 @@
   padding: 0 12px;
   gap: 8px;
   color: var(--h-topbar-control-color);
-  font-family: var(--h-font-mono);
-  font-size: 11px;
+  font-family: var(--h-font-cn);
+  font-size: 12.5px;
   cursor: pointer;
   -webkit-app-region: no-drag;
   user-select: none;
@@ -214,7 +217,8 @@
   flex: 0 0 auto;
   margin-left: auto;
   font-family: var(--h-font-mono);
-  font-size: 9.5px;
+  font-size: 12.5px;
+  line-height: 1.2;
   color: var(--h-text-3);
   border: 1px solid var(--h-line);
   background: var(--h-bg-pane);
@@ -238,7 +242,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 8px;
+  border-radius: 0;
   color: var(--h-topbar-control-color);
   border: 1px solid var(--h-topbar-control-border);
   background: var(--h-topbar-control-bg);
@@ -271,11 +275,13 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 28px;
+  flex: 0 1 auto;
+  min-width: 0;
+  height: var(--h-topbar-control-h);
   box-sizing: border-box;
   padding: 0 9px;
   border: 1px solid var(--h-line);
-  border-radius: 8px;
+  border-radius: 0;
   background: var(--h-bg-soft);
   color: var(--h-text-2);
   font-family: var(--h-font-cn);
@@ -301,15 +307,15 @@
 .chipValue {
   color: var(--h-text);
   font-weight: 500;
-  max-width: 180px;
+  max-width: 140px;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .chipStatus {
   color: var(--h-text-2);
-  font-family: var(--h-font-mono);
-  font-size: 13px;
+  font-family: var(--h-font-cn);
+  font-size: 12.5px;
 }
 
 .chipStatus[data-tone="danger"] {
@@ -318,14 +324,15 @@
 
 .chipSep {
   color: var(--h-text-3);
-  font-size: 13px;
+  font-size: 12.5px;
   line-height: 1;
 }
 
 .chipMeta {
   color: var(--h-text-3);
   font-family: var(--h-font-mono);
-  font-size: 13px;
+  font-size: 12.5px;
+  white-space: nowrap;
 }
 
 .chipChevron {
@@ -338,7 +345,7 @@
 .connectionPopover {
   width: 288px;
   padding: 10px;
-  border-radius: 8px;
+  border-radius: 0;
 }
 
 .popRow {
@@ -386,7 +393,7 @@
   margin-top: 4px;
   padding: 0 8px;
   border: 1px solid var(--h-line);
-  border-radius: 8px;
+  border-radius: 0;
   background: var(--h-bg-soft);
   color: var(--h-text);
   font-family: var(--h-font-cn);
@@ -421,7 +428,7 @@
   box-sizing: border-box;
   padding: 0 8px;
   border: 1px solid var(--h-line);
-  border-radius: 8px;
+  border-radius: 0;
   background: var(--h-bg-soft);
   color: var(--h-text);
   font-family: var(--h-font-cn);

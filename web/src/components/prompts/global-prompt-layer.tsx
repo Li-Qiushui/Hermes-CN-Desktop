@@ -6,6 +6,7 @@ import { ArrowUpRight, Clock3, Inbox, ListChecks, MessageCircleQuestion, ShieldA
 import type { SessionsResponse } from "@hermes/protocol";
 import { Button } from "@hermes/shared-ui";
 import { getGatewayClient } from "@/lib/gateway-client";
+import { useFeatureStatus } from "@/lib/gateway-capabilities";
 import {
   approvalChoices,
   buildApprovalRespondParams,
@@ -195,6 +196,9 @@ function PromptCard({ prompt, index, total, onResolved, onExpired }: PromptCardP
   const options = prompt.options ?? [];
   const fieldsFilled = fields.every((field) => (fieldValues[field.key] ?? "").trim().length > 0);
   const title = isApproval ? "需要确认执行" : isSetup ? "需要你选一个" : "需要你回答";
+  const clarifyStatus = useFeatureStatus("prompt.clarify");
+  const clarifyAnswerUnavailable = clarifyStatus === "unavailable";
+  const eventAnswerOnly = !isApproval && prompt.transport !== "server-request";
   const body = isApproval ? (
     <ApprovalBody prompt={prompt} />
   ) : (
@@ -275,7 +279,11 @@ function PromptCard({ prompt, index, total, onResolved, onExpired }: PromptCardP
 
       {error ? <div className={s.error}>{error}</div> : null}
 
-      {isApproval ? (
+      {clarifyAnswerUnavailable && eventAnswerOnly ? (
+        <p className={s.error}>
+          当前内核不支持该功能（clarify.respond），这条提问请在终端回答
+        </p>
+      ) : isApproval ? (
         <div className={s.actions}>
           {approvalChoices(prompt).map(({ choice, label: choiceLabel }) => (
             <Button

@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
 import { Button, LoadingState } from "@hermes/shared-ui";
+import { CapabilityGate } from "@/components/ui/capability-gate";
 import { Package, Plus, RefreshCw, Server } from "lucide-react";
 import type { McpCatalogEntry } from "@hermes/protocol";
 import {
@@ -179,15 +180,17 @@ export function McpRoute() {
       right={
         !isError ? (
           <span style={{ display: "inline-flex", gap: 8 }}>
-            <Button
-              variant="outline"
-              size="sm"
-              leadingIcon={<RefreshCw size={16} />}
-              loading={reloading}
-              onClick={() => runReload("已重新载入 MCP")}
-            >
-              重新载入
-            </Button>
+            <CapabilityGate feature="mcp.reload">
+              <Button
+                variant="outline"
+                size="sm"
+                leadingIcon={<RefreshCw size={16} />}
+                loading={reloading}
+                onClick={() => runReload("已重新载入 MCP")}
+              >
+                重新载入
+              </Button>
+            </CapabilityGate>
             <Button
               variant="solid"
               tone="accent"
