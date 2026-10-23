@@ -25,6 +25,7 @@ export interface KernelStatusView {
   port?: number | null;
   pid?: number | null;
   restarts?: number;
+  portFallback?: boolean;
   lastError?: string | null;
 }
 
@@ -78,10 +79,74 @@ export function isKernelDegraded(status: KernelStatusView | null | undefined): b
   return status?.mode === KERNEL_MODE_DEGRADED;
 }
 
+export function isKernelPortFallback(status: KernelStatusView | null | undefined): boolean {
+  return status?.portFallback === true;
+}
+
 export const KERNEL_RETRY_QUERY_KEY = ["kernel-status"] as const;
 
 export function isKernelReadyMode(mode: string | null | undefined): boolean {
   return mode === "attached" || mode === "spawned" || mode === "remote";
+}
+
+export interface KernelRuntimeSync {
+  ready: boolean;
+  baseUrlChanged: boolean;
+  previousBaseUrl: string | null;
+  baseUrl: string | null;
+}
+
+function runtimeBaseUrl(config: NonNullable<Window["__HERMES_RUNTIME__"]>): string | null {
+  const api = (config.apiBaseUrl ?? "").trim();
+  if (api) return api;
+  const dashboard = (config.dashboardApiBaseUrl ?? "").trim();
+  return dashboard || null;
+}
+
+export interface KernelRuntimeSyncOptions {
+  refreshDegradedReason?: boolean;
+}
+
+export function syncKernelRuntime(
+  status: KernelStatusView | null | undefined,
+  options: KernelRuntimeSyncOptions = {},
+): KernelRuntimeSync {
+  const outcome: KernelRuntimeSync = {
+    ready: false,
+    baseUrlChanged: false,
+    previousBaseUrl: null,
+    baseUrl: null,
+  };
+  if (typeof window === "undefined") return outcome;
+  const config = window.__HERMES_RUNTIME__;
+  if (!config || !status?.mode) return outcome;
+
+  if (isKernelReadyMode(status.mode)) {
+    outcome.ready = true;
+    config.backendDegraded = false;
+    config.backendDegradedReason = undefined;
+    const next = status.baseUrl?.trim();
+    if (!next) return outcome;
+    outcome.baseUrl = next;
+    const previous = runtimeBaseUrl(config);
+    outcome.previousBaseUrl = previous;
+    if (previous === next) {
+      config.dashboardApiBaseUrl = next;
+      return outcome;
+    }
+    outcome.baseUrlChanged = true;
+    if ((config.apiBaseUrl ?? "").trim()) config.apiBaseUrl = next;
+    config.dashboardApiBaseUrl = next;
+    return outcome;
+  }
+
+  if (status.mode === KERNEL_MODE_DEGRADED) {
+    config.backendDegraded = true;
+    if (options.refreshDegradedReason || !config.backendDegradedReason) {
+      config.backendDegradedReason = status.lastError ?? undefined;
+    }
+  }
+  return outcome;
 }
 
 export interface KernelRetryOutcome {
@@ -96,7 +161,12 @@ export function describeKernelRetry(status: KernelStatusView | null | undefined)
   return { ok: false, text: preview ? `内核仍未启动：${preview}` : "内核仍未启动" };
 }
 
-export async function retryKernel(): Promise<KernelStatusView | null> {
+export interface KernelRetrySync {
+  status: KernelStatusView;
+  sync: KernelRuntimeSync;
+}
+
+export async function retryKernelSync(): Promise<KernelRetrySync | null> {
   if (typeof window === "undefined") return null;
   const invoke = window.hermesDesktop?.retryKernel;
   if (typeof invoke !== "function") return null;
@@ -109,20 +179,16 @@ export async function retryKernel(): Promise<KernelStatusView | null> {
   }
   if (!next || typeof next.mode !== "string") return null;
 
+  const sync = syncKernelRuntime(next, { refreshDegradedReason: true });
   const config = window.__HERMES_RUNTIME__;
-  if (config) {
-    if (isKernelReadyMode(next.mode)) {
-      config.backendDegraded = false;
-      config.backendDegradedReason = undefined;
-      config.backendReady = true;
-      if (next.baseUrl) config.apiBaseUrl = next.baseUrl;
-    } else if (next.mode === KERNEL_MODE_DEGRADED) {
-      config.backendDegraded = true;
-      config.backendDegradedReason = next.lastError ?? undefined;
-    }
-  }
+  if (config && sync.ready) config.backendReady = true;
 
-  return next;
+  return { status: next, sync };
+}
+
+export async function retryKernel(): Promise<KernelStatusView | null> {
+  const result = await retryKernelSync();
+  return result ? result.status : null;
 }
 
 export function kernelErrorPreview(error: string | null | undefined, max = 120): string {

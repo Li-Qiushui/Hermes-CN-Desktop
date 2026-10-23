@@ -5,17 +5,32 @@ import { runtime } from "@/lib/runtime";
 import {
   KERNEL_RETRY_QUERY_KEY,
   describeKernelRetry,
-  retryKernel,
+  retryKernelSync,
+  syncKernelRuntime,
   type KernelRetryOutcome,
+  type KernelRuntimeSync,
   type KernelStatusView,
 } from "@/lib/kernel-status";
 
-function syncDegradedFlag(status: KernelStatusView): void {
-  const config = typeof window === "undefined" ? undefined : window.__HERMES_RUNTIME__;
-  if (!config) return;
-  if (status.mode !== "attached" && status.mode !== "spawned" && status.mode !== "remote") return;
-  config.backendDegraded = false;
-  config.backendDegradedReason = undefined;
+const KERNEL_MOVED_QUERY_KEYS = ["status", "sessions", "profiles", "desktop-runtime-info", "model-info"] as const;
+
+async function recoverAfterKernelMove(): Promise<void> {
+  const desktop = typeof window === "undefined" ? undefined : window.hermesDesktop;
+  if (typeof desktop?.refreshGatewayUrl === "function") {
+    await runtime.refreshGatewayUrl().catch(() => undefined);
+  }
+  await import("@/lib/gateway-client")
+    .then(({ forceExistingGatewayReconnect }) => forceExistingGatewayReconnect("kernel-restart"))
+    .catch(() => undefined);
+  await Promise.allSettled(
+    KERNEL_MOVED_QUERY_KEYS.map((key) => queryClient.invalidateQueries({ queryKey: [key] })),
+  );
+}
+
+function adoptKernelStatus(status: KernelStatusView): KernelRuntimeSync {
+  const sync = syncKernelRuntime(status);
+  if (sync.baseUrlChanged) void recoverAfterKernelMove();
+  return sync;
 }
 
 export function useKernelStatus() {
@@ -23,7 +38,7 @@ export function useKernelStatus() {
     queryKey: ["kernel-status"],
     queryFn: async () => {
       const next = await window.hermesDesktop!.kernelStatus!();
-      syncDegradedFlag(next);
+      adoptKernelStatus(next);
       return next;
     },
     enabled: typeof window !== "undefined" && runtime.platform !== "web" && Boolean(window.hermesDesktop?.kernelStatus),
@@ -51,7 +66,7 @@ export function useKernelStatusSnapshot(refetchMs = 5_000) {
       read()
         .then((next) => {
           if (cancelled) return;
-          syncDegradedFlag(next);
+          adoptKernelStatus(next);
           setStatus(next);
           setError(null);
         })
@@ -94,11 +109,13 @@ export function useKernelRetry(options: KernelRetryOptions = {}) {
     setRetrying(true);
     setMessage(null);
     try {
-      const next = await retryKernel();
+      const result = await retryKernelSync();
+      const next = result ? result.status : null;
       if (!next) {
         if (fallback) await fallback();
         return null;
       }
+      if (result?.sync.baseUrlChanged) await recoverAfterKernelMove();
       const outcome = describeKernelRetry(next);
       setMessage({ tone: outcome.ok ? "ok" : "error", text: outcome.text });
       onRetried?.(next);

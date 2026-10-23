@@ -8,6 +8,7 @@ import {
   kernelModeText,
   kernelRestartDisabledReason,
   retryKernel,
+  syncKernelRuntime,
 } from "./kernel-status";
 
 describe("describeKernelStatus", () => {
@@ -155,6 +156,65 @@ describe("retryKernel", () => {
     expect(isKernelDegraded(next)).toBe(true);
     expect(window.__HERMES_RUNTIME__?.backendDegraded).toBe(true);
     expect(window.__HERMES_RUNTIME__?.backendDegradedReason).toBe("端口 9119 仍被占用");
+  });
+});
+
+describe("syncKernelRuntime", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function installRuntime(runtime: Record<string, unknown>) {
+    vi.stubGlobal("window", { __HERMES_RUNTIME__: runtime });
+    return window.__HERMES_RUNTIME__!;
+  }
+
+  it("adopts a moved base url and asks callers to reconnect once", () => {
+    const config = installRuntime({ apiBaseUrl: "http://127.0.0.1:51274", backendDegraded: true });
+
+    const first = syncKernelRuntime({ mode: "spawned", baseUrl: "http://127.0.0.1:60303" });
+
+    expect(first.baseUrlChanged).toBe(true);
+    expect(first.previousBaseUrl).toBe("http://127.0.0.1:51274");
+    expect(config.apiBaseUrl).toBe("http://127.0.0.1:60303");
+    expect(config.dashboardApiBaseUrl).toBe("http://127.0.0.1:60303");
+    expect(config.backendDegraded).toBe(false);
+
+    const second = syncKernelRuntime({ mode: "spawned", baseUrl: "http://127.0.0.1:60303" });
+    expect(second.baseUrlChanged).toBe(false);
+    expect(second.baseUrl).toBe("http://127.0.0.1:60303");
+  });
+
+  it("keeps the vite dev proxy untouched but still records the dashboard origin", () => {
+    const config = installRuntime({ connectionMode: "local" });
+
+    expect(syncKernelRuntime({ mode: "attached", baseUrl: "http://127.0.0.1:60303" }).baseUrlChanged).toBe(true);
+    expect(config.apiBaseUrl).toBeUndefined();
+    expect(config.dashboardApiBaseUrl).toBe("http://127.0.0.1:60303");
+
+    expect(syncKernelRuntime({ mode: "attached", baseUrl: "http://127.0.0.1:60303" }).baseUrlChanged).toBe(false);
+  });
+
+  it("leaves a degraded kernel's endpoint alone and keeps the reason", () => {
+    const config = installRuntime({ apiBaseUrl: "http://127.0.0.1:9119", backendDegraded: false });
+
+    const outcome = syncKernelRuntime({ mode: "degraded", baseUrl: "http://127.0.0.1:60303", lastError: "启动失败" });
+
+    expect(outcome.baseUrlChanged).toBe(false);
+    expect(outcome.ready).toBe(false);
+    expect(config.apiBaseUrl).toBe("http://127.0.0.1:9119");
+    expect(config.backendDegraded).toBe(true);
+    expect(config.backendDegradedReason).toBe("启动失败");
+  });
+
+  it("does nothing while the kernel is restarting", () => {
+    const config = installRuntime({ apiBaseUrl: "http://127.0.0.1:51274", backendDegraded: false });
+
+    const outcome = syncKernelRuntime({ mode: "restarting", restarts: 2, baseUrl: "http://127.0.0.1:51274" });
+
+    expect(outcome.baseUrlChanged).toBe(false);
+    expect(config.backendDegraded).toBe(false);
+    expect(config.apiBaseUrl).toBe("http://127.0.0.1:51274");
   });
 });
 

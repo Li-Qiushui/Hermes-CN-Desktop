@@ -1,5 +1,11 @@
 import { parseGatewayEvent, type GatewayEvent } from "@hermes/protocol";
 import { debugBus } from "./debug-bus";
+import {
+  cachedUnsupportedMethod,
+  forgetGatewayCapabilities,
+  rememberUnsupportedMethod,
+} from "./gateway-capabilities";
+import { classifyGatewayError, GatewayRpcError } from "./gateway-result";
 import { runtime } from "./runtime";
 import {
   mergeReplayWindow,
@@ -57,6 +63,8 @@ interface PendingRequest {
   resolve: (v: unknown) => void;
   reject: (e: Error) => void;
   timer: ReturnType<typeof setTimeout>;
+  /** 出站请求的 method，错误帧分类要靠它认「哪个能力不支持」。 */
+  method?: string;
 }
 
 export interface GatewayRequestOptions {
@@ -254,6 +262,8 @@ export class GatewayClient {
         // 换了一条连接：内核重投的 open_requests 是「同一个 id」，上一条连接里的
         // 「已应答」记录不能跨连接生效，否则重连后的卡片点了也不发帧。
         this.settledServerRequests.clear();
+        // 换了连接就可能换了内核：上一轮「不支持某方法」的结论必须作废。
+        forgetGatewayCapabilities();
         this.setState("open");
         this.advertiseServerRequests();
         this.startHeartbeat();
@@ -421,7 +431,29 @@ export class GatewayClient {
       this.pending.delete(String(frame.id));
       clearTimeout(p.timer);
       if (frame.error) {
-        p.reject(new Error(frame.error.message ?? `RPC error ${frame.error.code}`));
+        const rawMessage = frame.error.message ?? `RPC error ${frame.error.code}`;
+        const code = typeof frame.error.code === "number" ? frame.error.code : undefined;
+        const info = classifyGatewayError(
+          new GatewayRpcError(rawMessage, { method: p.method, code }),
+        );
+        if (info.kind === "unsupported-method") {
+          // 首次报不支持才落缓存 + 记一条诊断；后续请求在 request() 里快失败。
+          const firstTime = !cachedUnsupportedMethod(info.method);
+          rememberUnsupportedMethod(info);
+          if (firstTime) {
+            debugBus.push({
+              type: "gateway",
+              level: "warn",
+              summary: `内核不支持该 RPC（${info.method ?? "未知方法"}），已降级`,
+              payload: { method: info.method, code: info.code },
+            });
+          }
+        }
+        p.reject(
+          info.kind === "unsupported-method"
+            ? new GatewayRpcError(info.message, { method: info.method, code: info.code, cause: rawMessage })
+            : new GatewayRpcError(rawMessage, { method: p.method, code }),
+        );
       } else {
         p.resolve(frame.result);
       }
@@ -929,6 +961,10 @@ export class GatewayClient {
     params?: Record<string, unknown>,
     options?: GatewayRequestOptions | number,
   ): Promise<T> {
+    const cached = cachedUnsupportedMethod(method);
+    if (cached) {
+      throw new GatewayRpcError(cached.message, { method, code: cached.code });
+    }
     const timeoutMs =
       typeof options === "number"
         ? options
@@ -951,7 +987,7 @@ export class GatewayClient {
         reject(new Error(`RPC timeout: ${method}`));
       }, timeoutMs);
 
-      this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer });
+      this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer, method });
       try {
         this.ws.send(JSON.stringify({ jsonrpc: "2.0", id, method, params: params ?? {} }));
       } catch (error) {
