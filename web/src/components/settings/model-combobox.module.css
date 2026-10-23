@@ -45,7 +45,9 @@
 }
 
 .option {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   width: 100%;
   padding: 8px 12px;
   border: none;
@@ -53,10 +55,41 @@
   color: var(--h-text);
   text-align: left;
   font-family: var(--h-font-mono, monospace);
-  font-size: 12px;
+  font-size: 12.5px;
   cursor: pointer;
   border-bottom: 1px solid var(--h-line-soft);
   user-select: none;
+}
+
+.optionLabel {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.star {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border: 1px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--h-text-3);
+  font-size: 12.5px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.star[data-on="true"] {
+  color: var(--h-accent);
+  border-color: var(--h-accent-border);
+}
+
+.star:hover {
+  border-color: var(--h-line);
+  color: var(--h-text);
 }
 .option:last-child {
   border-bottom: none;

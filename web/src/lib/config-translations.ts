@@ -391,9 +391,14 @@ const AUXILIARY_FIELD_CN: Record<string, string> = {
  * 未命中时由 `translateConfigOption` 回退到原值。
  */
 export const configOptionTranslations: Record<string, string> = {
-  "agent.service_tier::auto": "自动",
-  "agent.service_tier::default": "默认",
-  "agent.service_tier::flex": "弹性",
+  "agent.service_tier::standard": "标准",
+  "agent.service_tier::fast": "快速",
+  "agent.service_tier::ultrafast": "极速",
+  "agent.service_tier::normal": "标准",
+  "agent.service_tier::default": "标准",
+  "agent.service_tier::priority": "快速",
+  "agent.service_tier::auto": "自动（每轮开窗）",
+  "agent.service_tier::cold": "仅首轮",
   "context.engine::default": "默认",
   "context.engine::custom": "自定义",
   "terminal.backend::local": "本地",

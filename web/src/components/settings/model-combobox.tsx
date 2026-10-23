@@ -1,6 +1,15 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useAtom } from "jotai";
 import { Command } from "cmdk";
 import { Popover } from "@hermes/shared-ui";
+import {
+  favoriteModelsAtom,
+  hiddenModelsAtom,
+  isModelFavorite,
+  modelVisibilityKey,
+  toggleModelKey,
+  visibleModelOptions,
+} from "@/lib/model-visibility";
 import s from "./model-combobox.module.css";
 
 const MAX_VISIBLE = 200;
@@ -12,6 +21,7 @@ export interface ModelComboboxProps {
   options: string[];
   placeholder?: string;
   disabled?: boolean;
+  provider?: string;
 }
 
 export function filterOptions(options: string[], query: string): string[] {
@@ -27,11 +37,29 @@ export function ModelCombobox({
   options,
   placeholder,
   disabled,
+  provider,
 }: ModelComboboxProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState(value);
   const composingRef = useRef(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const [hidden] = useAtom(hiddenModelsAtom);
+  const [favorites, setFavorites] = useAtom(favoriteModelsAtom);
+
+  const selectableOptions = useMemo(
+    () =>
+      provider ? visibleModelOptions(options, hidden, favorites, provider) : options,
+    [options, hidden, favorites, provider],
+  );
+  const hiddenCount = useMemo(() => {
+    if (!provider) return 0;
+    const hiddenSet = new Set(hidden);
+    return options.filter((id) => hiddenSet.has(modelVisibilityKey(provider, id))).length;
+  }, [options, hidden, provider]);
+  const toggleFavorite = (model: string) => {
+    if (!provider) return;
+    setFavorites(toggleModelKey(favorites, modelVisibilityKey(provider, model)));
+  };
 
   // Reflect external value changes while the popover is closed.
   useEffect(() => {
@@ -45,10 +73,10 @@ export function ModelCombobox({
     inputRef.current?.setAttribute("aria-expanded", open ? "true" : "false");
   }, [open, query]);
 
-  const filtered = filterOptions(options, query);
+  const filtered = filterOptions(selectableOptions, query);
   const visible = filtered.slice(0, MAX_VISIBLE);
   const overflowCount = filtered.length - visible.length;
-  const isFreeForm = query.length > 0 && !options.includes(query);
+  const isFreeForm = query.length > 0 && !selectableOptions.includes(query);
 
   const commit = (next: string) => {
     onChange(next);
@@ -144,12 +172,34 @@ export function ModelCombobox({
                   className={s.option}
                   onSelect={() => commit(id)}
                 >
-                  {id}
+                  <span className={s.optionLabel}>{id}</span>
+                  {provider && (
+                    <button
+                      type="button"
+                      className={s.star}
+                      data-on={isModelFavorite(favorites, provider, id)}
+                      aria-label={
+                        isModelFavorite(favorites, provider, id) ? `取消收藏 ${id}` : `收藏 ${id}`
+                      }
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        toggleFavorite(id);
+                      }}
+                    >
+                      ★
+                    </button>
+                  )}
                 </Command.Item>
               ))}
             </Command.List>
             {overflowCount > 0 && (
               <div className={s.footer}>还有 {overflowCount} 条，请继续输入过滤</div>
+            )}
+            {hiddenCount > 0 && (
+              <div className={s.footer}>
+                已隐藏 {hiddenCount} 个模型，到「模型」页的模型可见性里恢复
+              </div>
             )}
           </Popover.Content>
         </Popover.Portal>

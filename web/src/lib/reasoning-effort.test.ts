@@ -4,9 +4,11 @@ import {
   REASONING_EFFORTS,
   REASONING_EFFORT_LABELS,
   REASONING_EFFORT_SHORT_LABELS,
+  buildReasoningEffortUpdate,
   isReasoningEffort,
   normalizeReasoningEffort,
   reasoningEffortFromConfig,
+  reasoningEffortSettingOptions,
 } from "./reasoning-effort";
 
 describe("reasoning-effort", () => {
@@ -76,6 +78,51 @@ describe("reasoning-effort", () => {
       expect(reasoningEffortFromConfig({ agent: {} })).toBeNull();
       expect(reasoningEffortFromConfig({ agent: { reasoning_effort: "" } })).toBeNull();
       expect(reasoningEffortFromConfig({ agent: "nope" })).toBeNull();
+    });
+  });
+
+  describe("设置页选项与写入", () => {
+    it("exposes the five settings rows with none rendered as 关闭", () => {
+      const options = reasoningEffortSettingOptions(null);
+      expect(options.map((option) => option.value)).toEqual([
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+      ]);
+      expect(options.map((option) => option.label)).toEqual(["关闭", "最小", "低", "中", "高"]);
+      expect(options[0].label).toBe("关闭");
+    });
+
+    it("keeps a high-tier current value selectable so the row is never blank", () => {
+      expect(reasoningEffortSettingOptions("xhigh").map((option) => option.value)).toEqual([
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+      ]);
+      expect(reasoningEffortSettingOptions("high")).toHaveLength(5);
+    });
+
+    it("writes agent.reasoning_effort without disturbing other keys", () => {
+      const config = {
+        agent: { max_turns: 160, service_tier: "fast", reasoning_effort: "low" },
+        model: { default: "deepseek-v4-flash" },
+      };
+      expect(buildReasoningEffortUpdate(config, "none")).toEqual({
+        agent: { max_turns: 160, service_tier: "fast", reasoning_effort: "none" },
+        model: { default: "deepseek-v4-flash" },
+      });
+      expect(config.agent.reasoning_effort).toBe("low");
+      expect(buildReasoningEffortUpdate({}, "high")).toEqual({
+        agent: { reasoning_effort: "high" },
+      });
+      expect(buildReasoningEffortUpdate({ agent: "nope" }, "high")).toEqual({
+        agent: { reasoning_effort: "high" },
+      });
     });
   });
 });

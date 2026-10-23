@@ -6,6 +6,7 @@ import {
   chatRuntimeBySessionAtom,
   createEmptyChatRuntime,
   drainLiveMessagesAtom,
+  hydrateSessionTimelineAtom,
   markSessionInterruptedAtom,
   markStreamsReconnectingAtom,
   pendingPromptsAtom,
@@ -1514,5 +1515,268 @@ describe("global prompts", () => {
     store.set(removePromptAtom, { sessionId: "s1", promptId: "p1" });
     expect(store.get(pendingPromptsAtom)).toEqual([]);
     expect(store.get(chatRuntimeBySessionAtom).s1.pendingApprovals).toEqual([]);
+  });
+});
+
+function snapshotTurnMessages(assistantText: string, assistantCreatedAt = 1_000): HermesUIMessage[] {
+  return [
+    runtimeMessage({
+      id: "stored-user-1",
+      role: "user",
+      createdAt: assistantCreatedAt - 100,
+      parts: [{ type: "text", text: "读一下配置" }],
+    }),
+    runtimeMessage({
+      id: "stored-assistant-2",
+      createdAt: assistantCreatedAt,
+      parts: [
+        {
+          type: "tool",
+          toolCallId: "t1",
+          name: "read",
+          state: "done",
+          output: "ok",
+          startedAt: 1_100,
+          completedAt: 1_200,
+        },
+        { type: "text", text: assistantText },
+      ],
+    }),
+  ];
+}
+
+function assistantMessages(runtime: ReturnType<typeof createEmptyChatRuntime>): HermesUIMessage[] {
+  return runtime.messages.filter((message) => message.role === "assistant");
+}
+
+describe("hydrateSessionTimelineAtom vs late stream frames", () => {
+  it("keeps one assistant bubble when a delta lands after the resume snapshot replaced the timeline", () => {
+    const store = createStore();
+    store.set(startPromptAtom, { sessionId: "s1", text: "读一下配置", now: 1_000 });
+    store.set(chatRuntimeBySessionAtom, (state) => ({
+      ...state,
+      s1: reduceGatewayEvent(
+        state.s1,
+        { type: "message.delta", session_id: "s1", payload: { text: "我先读文件" } },
+        1_300,
+      ),
+    }));
+
+    store.set(hydrateSessionTimelineAtom, {
+      sessionId: "s1",
+      messages: snapshotTurnMessages("我先读文件"),
+      running: true,
+    });
+    expect(store.get(chatRuntimeBySessionAtom).s1.activeAssistantId).toBe("live-assistant-1000");
+    expect(
+      store.get(chatRuntimeBySessionAtom).s1.messages.map((message) => message.id),
+    ).toEqual(["stored-user-1", "live-assistant-1000"]);
+
+    store.set(chatRuntimeBySessionAtom, (state) => ({
+      ...state,
+      s1: reduceGatewayEvent(
+        state.s1,
+        { type: "message.delta", session_id: "s1", payload: { text: "，再看结论" } },
+        2_000,
+      ),
+    }));
+
+    const runtime = store.get(chatRuntimeBySessionAtom).s1;
+    expect(assistantMessages(runtime)).toHaveLength(1);
+    expect(textFromParts(assistantMessages(runtime)[0].parts)).toBe("我先读文件，再看结论");
+    expect(runtime.streamStatus).toBe("streaming");
+  });
+
+  it("does not spawn a second assistant when message.complete arrives after the snapshot already holds the turn", () => {
+    const store = createStore();
+    store.set(startPromptAtom, { sessionId: "s1", text: "读一下配置", now: 1_000 });
+    store.set(chatRuntimeBySessionAtom, (state) => ({
+      ...state,
+      s1: reduceGatewayEvent(
+        state.s1,
+        { type: "message.delta", session_id: "s1", payload: { text: "我先读文件" } },
+        1_300,
+      ),
+    }));
+
+    store.set(hydrateSessionTimelineAtom, {
+      sessionId: "s1",
+      messages: snapshotTurnMessages("我先读文件，再看结论"),
+      running: true,
+    });
+
+    store.set(chatRuntimeBySessionAtom, (state) => ({
+      ...state,
+      s1: reduceGatewayEvent(
+        state.s1,
+        {
+          type: "message.complete",
+          session_id: "s1",
+          payload: { text: "我先读文件，再看结论" },
+        },
+        2_000,
+      ),
+    }));
+
+    const runtime = store.get(chatRuntimeBySessionAtom).s1;
+    expect(assistantMessages(runtime)).toHaveLength(1);
+    expect(assistantMessages(runtime)[0].status).toBe("complete");
+    expect(textFromParts(assistantMessages(runtime)[0].parts)).toBe("我先读文件，再看结论");
+    expect(runtime.streamStatus).toBe("complete");
+  });
+
+  it("does not fold a completed snapshot row into a live turn that has no text yet", () => {
+    const store = createStore();
+    store.set(startPromptAtom, { sessionId: "s1", text: "读一下配置", now: 100_000 });
+
+    store.set(hydrateSessionTimelineAtom, {
+      sessionId: "s1",
+      messages: snapshotTurnMessages("上一回合的完整回答"),
+      running: true,
+    });
+
+    const runtime = store.get(chatRuntimeBySessionAtom).s1;
+    expect(assistantMessages(runtime).map((message) => message.id)).toEqual(["stored-assistant-2"]);
+    expect(assistantMessages(runtime)[0].status).toBe("complete");
+    expect(runtime.activeAssistantId).toBeUndefined();
+  });
+
+  it("keeps a completed assistant row from the previous turn untouched when the next turn streams", () => {
+    const store = createStore();
+    store.set(startPromptAtom, { sessionId: "s1", text: "第一问", now: 1_000 });
+    store.set(chatRuntimeBySessionAtom, (state) => ({
+      ...state,
+      s1: reduceGatewayEvent(
+        state.s1,
+        { type: "message.delta", session_id: "s1", payload: { text: "第一答" } },
+        1_200,
+      ),
+    }));
+    store.set(chatRuntimeBySessionAtom, (state) => ({
+      ...state,
+      s1: reduceGatewayEvent(
+        state.s1,
+        { type: "message.complete", session_id: "s1", payload: { text: "第一答" } },
+        1_400,
+      ),
+    }));
+
+    store.set(startPromptAtom, { sessionId: "s1", text: "第二问", now: 9_000 });
+    store.set(chatRuntimeBySessionAtom, (state) => ({
+      ...state,
+      s1: reduceGatewayEvent(
+        state.s1,
+        { type: "message.delta", session_id: "s1", payload: { text: "第二答" } },
+        9_200,
+      ),
+    }));
+
+    const runtime = store.get(chatRuntimeBySessionAtom).s1;
+    const assistants = assistantMessages(runtime);
+    expect(assistants).toHaveLength(2);
+    expect(assistants[0].id).toBe("live-assistant-1000");
+    expect(assistants[0].status).toBe("complete");
+    expect(textFromParts(assistants[0].parts)).toBe("第一答");
+    expect(assistants[1].id).toBe("live-assistant-9000");
+    expect(textFromParts(assistants[1].parts)).toBe("第二答");
+  });
+
+  it("collapses streamed reasoning segments instead of writing the whole reasoning into the first part", () => {
+    const store = createStore();
+    store.set(startPromptAtom, { sessionId: "s1", text: "想一想", now: 1_000 });
+    store.set(chatRuntimeBySessionAtom, (state) => ({
+      ...state,
+      s1: reduceGatewayEvent(
+        state.s1,
+        { type: "message.start", session_id: "s1", payload: {} },
+        1_050,
+      ),
+    }));
+    store.set(chatRuntimeBySessionAtom, (state) => ({
+      ...state,
+      s1: reduceGatewayEvent(
+        state.s1,
+        { type: "reasoning.delta", session_id: "s1", payload: { text: "第一段。" } },
+        1_100,
+      ),
+    }));
+    store.set(chatRuntimeBySessionAtom, (state) => ({
+      ...state,
+      s1: reduceGatewayEvent(
+        state.s1,
+        { type: "message.delta", session_id: "s1", payload: { text: "看下工具" } },
+        1_200,
+      ),
+    }));
+    store.set(chatRuntimeBySessionAtom, (state) => ({
+      ...state,
+      s1: reduceGatewayEvent(
+        state.s1,
+        { type: "reasoning.delta", session_id: "s1", payload: { text: "第二段。" } },
+        1_300,
+      ),
+    }));
+    store.set(chatRuntimeBySessionAtom, (state) => ({
+      ...state,
+      s1: reduceGatewayEvent(
+        state.s1,
+        {
+          type: "message.complete",
+          session_id: "s1",
+          payload: { text: "看下工具最终答案", reasoning: "第一段。第二段。" },
+        },
+        1_400,
+      ),
+    }));
+
+    const parts = assistantMessages(store.get(chatRuntimeBySessionAtom).s1)[0].parts;
+    const reasoningParts = parts.filter((part) => part.type === "reasoning");
+    expect(reasoningParts).toHaveLength(1);
+    const reasoningText = reasoningParts
+      .map((part) => (part.type === "reasoning" ? part.text : ""))
+      .join("");
+    expect(reasoningText).toBe("第一段。第二段。");
+  });
+
+  it("still renders a single assistant bubble for a normal turn with no reconnect", () => {
+    const store = createStore();
+    store.set(startPromptAtom, { sessionId: "s1", text: "读一下配置", now: 1_000 });
+    store.set(chatRuntimeBySessionAtom, (state) => ({
+      ...state,
+      s1: reduceGatewayEvent(
+        state.s1,
+        { type: "message.start", session_id: "s1", payload: {} },
+        1_100,
+      ),
+    }));
+    store.set(chatRuntimeBySessionAtom, (state) => ({
+      ...state,
+      s1: reduceGatewayEvent(
+        state.s1,
+        { type: "message.delta", session_id: "s1", payload: { text: "先读文件" } },
+        1_200,
+      ),
+    }));
+    store.set(chatRuntimeBySessionAtom, (state) => ({
+      ...state,
+      s1: reduceGatewayEvent(
+        state.s1,
+        { type: "message.delta", session_id: "s1", payload: { text: "，再看结论" } },
+        1_300,
+      ),
+    }));
+    store.set(chatRuntimeBySessionAtom, (state) => ({
+      ...state,
+      s1: reduceGatewayEvent(
+        state.s1,
+        { type: "message.complete", session_id: "s1", payload: { text: "先读文件，再看结论" } },
+        1_400,
+      ),
+    }));
+
+    const runtime = store.get(chatRuntimeBySessionAtom).s1;
+    expect(assistantMessages(runtime)).toHaveLength(1);
+    expect(textFromParts(assistantMessages(runtime)[0].parts)).toBe("先读文件，再看结论");
+    expect(runtime.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
   });
 });

@@ -639,3 +639,26 @@
 .footNote {
   font-family: var(--h-font-mono);
 }
+
+.loadMore {
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--h-line);
+  border-radius: 0;
+  background: transparent;
+  color: var(--h-text-2);
+  font-family: var(--h-font-cn);
+  font-size: 12.5px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.loadMore:hover:not(:disabled) {
+  background: var(--h-bg-soft);
+  color: var(--h-text);
+}
+
+.loadMore:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

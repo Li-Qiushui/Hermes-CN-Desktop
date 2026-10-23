@@ -1,5 +1,6 @@
+import { useEffect, useState } from "react";
 import { useQuery, useInfiniteQuery, useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
-import { fetchJSON, deleteJSON, postJSON } from "@/lib/transport";
+import { fetchJSON, deleteJSON, patchJSON, postJSON } from "@/lib/transport";
 import { useActiveProfileName } from "@/hooks/use-profiles";
 import { unpinSessions } from "@/lib/session-ui-state";
 import { nextSessionPageOffset } from "@/lib/sidebar-session-lists";
@@ -10,6 +11,7 @@ import {
   SessionDetail,
   SessionsResponse,
   type SearchResult,
+  type SessionSummary,
 } from "@hermes/protocol";
 
 export const DELETE_SESSION_CONCURRENCY = 3;
@@ -245,45 +247,98 @@ export function useSession(id: string | undefined) {
   });
 }
 
-// 消息列表是切会话时详情页首屏的关键路径：30s 内重访直接渲染缓存（后台仍
-// refetch 校准），不再每次切换都回退到「加载对话中…」占位。运行中会话的实时
-// 内容走 Jotai runtime bucket，不依赖这里的新鲜度。
-export const SESSION_MESSAGES_STALE_TIME_MS = 30_000;
+export {
+  SESSION_MESSAGES_MAX_PAGE_SIZE,
+  SESSION_MESSAGES_PAGE_SIZE,
+  SESSION_MESSAGES_STALE_TIME_MS,
+  fetchSessionMessagesPage,
+  mergeEarlierMessages,
+  prefetchSessionMessages,
+  sessionMessagesPath,
+  sessionMessagesQueryKey,
+  useSessionMessages,
+  type FetchSessionMessagesPageOptions,
+  type SessionMessagesData,
+  type SessionMessagesPageResult,
+  type SessionMessagesPageState,
+  type SessionMessagesPagination,
+  type UseSessionMessagesResult,
+} from "@/hooks/use-session-messages";
 
-export function useSessionMessages(id: string | undefined) {
-  const profile = useActiveProfileName();
-  return useQuery<MessagesResponse>({
-    queryKey: ["session-messages", profile, id],
-    queryFn: ({ signal }) => fetchSessionMessages(id!, signal),
-    enabled: !!id,
-    staleTime: SESSION_MESSAGES_STALE_TIME_MS,
-  });
+export const SESSION_SEARCH_DEBOUNCE_MS = 250;
+export const SESSION_SEARCH_MIN_CHARS = 2;
+export const SESSION_SEARCH_LIMIT = 20;
+
+export function useDebouncedValue<T>(value: T, delayMs = SESSION_SEARCH_DEBOUNCE_MS): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    if (delayMs <= 0) {
+      setDebounced(value);
+      return;
+    }
+    const timer = setTimeout(() => setDebounced(value), delayMs);
+    return () => clearTimeout(timer);
+  }, [delayMs, value]);
+  return debounced;
 }
 
-// 侧边栏 / 历史列表 hover 时预取，点击进入详情页时数据已在缓存或在途。
-// prefetchQuery 对未过期数据是 no-op，hover 抖动不会放大后端压力。
-export function prefetchSessionMessages(
-  qc: QueryClient,
-  profile: string,
-  id: string | undefined,
-): void {
-  if (!id) return;
-  void qc.prefetchQuery({
-    queryKey: ["session-messages", profile, id],
-    queryFn: ({ signal }) => fetchSessionMessages(id, signal),
-    staleTime: SESSION_MESSAGES_STALE_TIME_MS,
-  });
+export function stripSearchHighlight(snippet: string | null | undefined): string {
+  if (typeof snippet !== "string") return "";
+  return snippet
+    .replace(/(>>>|<<<)/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
-export function useSessionSearch(q: string) {
+export function sessionSearchPath(query: string, limit = SESSION_SEARCH_LIMIT): string {
+  return `/api/sessions/search?q=${encodeURIComponent(query)}&limit=${limit}`;
+}
+
+export interface SessionSearchOptions {
+  enabled?: boolean;
+  limit?: number;
+}
+
+export function useSessionSearch(q: string, opts: SessionSearchOptions = {}) {
   const profile = useActiveProfileName();
-  return useQuery<{ results: SearchResult[] }>({
-    queryKey: ["sessions-search", profile, q],
-    queryFn: ({ signal }) => fetchJSON(`/api/sessions/search?q=${encodeURIComponent(q)}&limit=20`, { signal }, SearchResponse),
-    enabled: q.length >= 2,
+  const limit = opts.limit ?? SESSION_SEARCH_LIMIT;
+  const trimmed = q.trim();
+  const debounced = useDebouncedValue(trimmed, SESSION_SEARCH_DEBOUNCE_MS);
+  const enabled = (opts.enabled ?? true) && debounced.length >= SESSION_SEARCH_MIN_CHARS;
+  const query = useQuery<{ results: SearchResult[] }>({
+    queryKey: ["sessions-search", profile, debounced, limit],
+    queryFn: ({ signal }) => fetchJSON(sessionSearchPath(debounced, limit), { signal }, SearchResponse),
+    enabled,
     staleTime: 10_000,
+    placeholderData: (previous) => previous,
   });
+  return {
+    ...query,
+    debouncedQuery: debounced,
+    results: enabled ? query.data?.results ?? [] : [],
+    searchPending: enabled && query.isFetching,
+  };
 }
+
+export function searchResultsToSummaries(results: readonly SearchResult[]): SessionSummary[] {
+  return results.map((result) => ({
+    id: result.session_id,
+    model: result.model ?? "",
+    title: result.title ?? null,
+    preview: stripSearchHighlight(result.snippet),
+    source: result.source ?? undefined,
+    started_at: result.session_started ?? result.last_active ?? 0,
+    ended_at: null,
+    last_active: result.last_active ?? null,
+    message_count: result.message_count ?? 0,
+    input_tokens: 0,
+    output_tokens: 0,
+    estimated_cost_usd: null,
+    is_active: result.is_active,
+    archived: result.archived,
+  }));
+}
+
 
 function normalizeSessionIds(ids: Iterable<string>): string[] {
   const seen = new Set<string>();
@@ -295,8 +350,50 @@ function normalizeSessionIds(ids: Iterable<string>): string[] {
   });
 }
 
+/**
+ * 内核 >= 0.22.3 的会话写操作要带乐观锁：owner 拒绝没有 request_id / revision 的
+ * 写（409 client_upgrade_required），桌面上的表现就是「点删除没反应」。
+ * revision 现读现用，读详情和删除之间被别的客户端改过就 409 revision 冲突，重试一次即可。
+ */
+function newMutationRequestId(): string {
+  const cryptoApi = globalThis.crypto;
+  if (cryptoApi && typeof cryptoApi.randomUUID === "function") return cryptoApi.randomUUID();
+  return `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 async function deleteSessionRequest(id: string): Promise<void> {
-  await deleteJSON(`/api/sessions/${encodeURIComponent(id)}`, undefined, MutationOkResponse);
+  await deleteSessionWithFence(id, true);
+}
+
+async function deleteSessionWithFence(id: string, allowRetry: boolean): Promise<void> {
+  const path = `/api/sessions/${encodeURIComponent(id)}`;
+  let detail: SessionDetail | null = null;
+  try {
+    detail = await fetchJSON(path, undefined, SessionDetail);
+  } catch (error) {
+    // 会话已经不在了（比如另一个客户端先删了）：按幂等成功处理，别把幽灵行塞回侧栏。
+    if (error instanceof Error && error.message.startsWith("HTTP 404")) return;
+    throw error;
+  }
+  const params = new URLSearchParams({
+    request_id: newMutationRequestId(),
+    expected_revision: String(detail.runtime_revision ?? 0),
+  });
+  if (detail.runtime_generation !== null && detail.runtime_generation !== undefined) {
+    params.set("expected_generation", String(detail.runtime_generation));
+  }
+  try {
+    await deleteJSON(`${path}?${params.toString()}`, undefined, MutationOkResponse);
+  } catch (error) {
+    // 读详情到删除之间会话又被写过（另一个客户端/正在跑的回合），revision 对不上：
+    // 重读一次水位再发一遍；第二次还冲突就把后端原文抛给弹窗。
+    const message = error instanceof Error ? error.message : String(error);
+    if (allowRetry && message.startsWith("HTTP 409") && !message.includes("client_upgrade_required")) {
+      await deleteSessionWithFence(id, false);
+      return;
+    }
+    throw error;
+  }
 }
 
 export async function deleteSessionsInBatches(
@@ -501,6 +598,109 @@ export function useUnarchiveSession() {
       for (const [queryKey, data] of context?.searchSnapshots ?? []) {
         qc.setQueryData(queryKey, data);
       }
+    },
+    onSettled: () => {
+      invalidateSessionLists(qc);
+    },
+  });
+}
+
+export interface SessionFlagsPatch {
+  unread?: boolean;
+  pinned?: boolean;
+}
+
+export interface SessionFlagsTarget extends SessionFlagsPatch {
+  ids: string[];
+}
+
+async function patchSessionFlagsOnce(
+  id: string,
+  flags: SessionFlagsPatch,
+  allowRetry = true,
+): Promise<void> {
+  const path = `/api/sessions/${encodeURIComponent(id)}`;
+  const detail = await fetchJSON(path, undefined, SessionDetail);
+  const body: Record<string, unknown> = {
+    request_id: newMutationRequestId(),
+    expected_revision: detail.runtime_revision ?? 0,
+    ...flags,
+  };
+  if (detail.runtime_generation !== null && detail.runtime_generation !== undefined) {
+    body.expected_generation = detail.runtime_generation;
+  }
+  try {
+    await patchJSON(path, body, MutationOkResponse);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (allowRetry && message.startsWith("HTTP 409") && !message.includes("client_upgrade_required")) {
+      await patchSessionFlagsOnce(id, flags, false);
+      return;
+    }
+    throw error;
+  }
+}
+
+export async function patchSessionFlags(
+  ids: Iterable<string>,
+  flags: SessionFlagsPatch,
+  concurrency = DELETE_SESSION_CONCURRENCY,
+): Promise<{ succeededIds: string[]; failed: DeleteSessionsFailure[] }> {
+  const targets = normalizeSessionIds(ids);
+  const succeededIds: string[] = [];
+  const failed: DeleteSessionsFailure[] = [];
+  const workers = Math.max(1, Math.floor(concurrency));
+  let cursor = 0;
+
+  async function runWorker(): Promise<void> {
+    while (cursor < targets.length) {
+      const id = targets[cursor];
+      cursor += 1;
+      try {
+        await patchSessionFlagsOnce(id, flags);
+        succeededIds.push(id);
+      } catch (error) {
+        failed.push({ id, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+  }
+
+  await Promise.all(
+    Array.from({ length: Math.min(workers, targets.length) }, () => runWorker()),
+  );
+  const succeededSet = new Set(succeededIds);
+  return {
+    succeededIds: targets.filter((id) => succeededSet.has(id)),
+    failed: targets.flatMap((id) => {
+      const item = failed.find((entry) => entry.id === id);
+      return item ? [item] : [];
+    }),
+  };
+}
+
+export function useSetSessionFlags() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ ids, ...flags }: SessionFlagsTarget) => patchSessionFlags(ids, flags),
+    onSuccess: (result, variables) => {
+      if (variables.pinned === false && result.succeededIds.length > 0) {
+        unpinSessions(result.succeededIds);
+      }
+      qc.setQueriesData<SessionsResponse>({ queryKey: ["sessions"] }, (data) => {
+        if (!data) return data;
+        const targets = new Set(result.succeededIds);
+        if (targets.size === 0) return data;
+        const sessions = data.sessions.map((session) =>
+          targets.has(session.id)
+            ? {
+                ...session,
+                ...(variables.unread === undefined ? {} : { unread: variables.unread }),
+                ...(variables.pinned === undefined ? {} : { pinned: variables.pinned }),
+              }
+            : session,
+        );
+        return { ...data, sessions };
+      });
     },
     onSettled: () => {
       invalidateSessionLists(qc);

@@ -1,12 +1,15 @@
 import { useCallback, useState } from "react";
 import { Button, LoadingState } from "@hermes/shared-ui";
 import { Package, Plus, RefreshCw, Server } from "lucide-react";
-import type { McpCatalogEntry, McpServer, McpTestResult } from "@hermes/protocol";
+import type { McpCatalogEntry } from "@hermes/protocol";
 import {
   reloadMcp,
   useInstallCatalogEntry,
   useMcpCatalog,
+  useMcpRawServers,
   useMcpServersFull,
+  useSaveMcpRawServers,
+  useSaveToolFilter,
   useSetMcpEnabled,
   useTestMcpServer,
 } from "@/hooks/use-mcp";
@@ -16,8 +19,12 @@ import {
   McpDeleteDialog,
   McpInstallDialog,
   McpServerCard,
+  McpServerDetail,
 } from "@/components/mcp";
 import { errText } from "@/components/mcp/parse";
+import { readToolFilter, toggleToolInFilter } from "@/lib/mcp-tools";
+import { deriveServerStatus } from "@/lib/mcp-status";
+import type { McpServerWire, McpTestWire } from "@/lib/mcp-wire";
 import { SectionShell } from "./section-shell";
 import s from "./mcp.module.css";
 
@@ -34,24 +41,45 @@ export function McpRoute() {
   const setEnabled = useSetMcpEnabled();
   const testMut = useTestMcpServer();
   const installMut = useInstallCatalogEntry();
+  const saveToolFilter = useSaveToolFilter();
+  const rawServersQuery = useMcpRawServers();
+  const saveRaw = useSaveMcpRawServers();
 
   const [editor, setEditor] = useState<Editor | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
-  const [testResults, setTestResults] = useState<Record<string, McpTestResult>>({});
+  const [testResults, setTestResults] = useState<Record<string, McpTestWire>>({});
   const [testingName, setTestingName] = useState<string | null>(null);
   const [togglingName, setTogglingName] = useState<string | null>(null);
   const [installingName, setInstallingName] = useState<string | null>(null);
   const [reloading, setReloading] = useState(false);
+  const [expanded, setExpanded] = useState<string | null>(null);
 
   const servers = serversQuery.data ?? [];
   const isError = serversQuery.isError;
   const isLoading = serversQuery.isLoading;
   const enabledCount = servers.filter((srv) => srv.enabled).length;
 
+  const statusCounts = servers.reduce<Record<string, number>>((acc, srv) => {
+    const status = deriveServerStatus({
+      enabled: srv.enabled,
+      probing: testingName === srv.name,
+      tested: testResults[srv.name] !== undefined,
+      ok: testResults[srv.name]?.ok,
+      error: testResults[srv.name]?.error ?? null,
+      auth: srv.auth ?? null,
+    });
+    acc[status] = (acc[status] ?? 0) + 1;
+    return acc;
+  }, {});
+  const statusSummary = ["ok", "error", "needs-auth", "probing", "off", "unknown"]
+    .filter((key) => (statusCounts[key] ?? 0) > 0)
+    .map((key) => `${key} ${statusCounts[key]}`)
+    .join(" · ");
+
   const sub = isError
     ? "未接入"
     : serversQuery.data
-      ? `${enabledCount} / ${servers.length} 启用`
+      ? `${enabledCount} / ${servers.length} 启用${statusSummary ? ` · ${statusSummary}` : ""}`
       : isLoading
         ? "加载中…"
         : "—";
@@ -81,7 +109,7 @@ export function McpRoute() {
     }
   }, []);
 
-  const handleToggle = (server: McpServer) => {
+  const handleToggle = (server: McpServerWire) => {
     const next = !server.enabled;
     setTogglingName(server.name);
     setEnabled.mutate(
@@ -94,16 +122,29 @@ export function McpRoute() {
     );
   };
 
-  const handleTest = (server: McpServer) => {
+  const handleTest = (server: McpServerWire) => {
     setTestingName(server.name);
     testMut.mutate(server.name, {
       onSuccess: (res) => {
         setTestResults((prev) => ({ ...prev, [server.name]: res }));
         if (!res.ok) setNotice({ tone: "err", text: `${server.name}：${res.error ?? "连接失败"}` });
+        else setExpanded(server.name);
       },
       onError: (err) => setNotice({ tone: "err", text: errText(err) }),
       onSettled: () => setTestingName(null),
     });
+  };
+
+  const handleToggleTool = (server: McpServerWire, name: string, enabled: boolean) => {
+    const available = (testResults[server.name]?.tools ?? []).map((tool) => tool.name);
+    const next = toggleToolInFilter(readToolFilter(server.tools), available, name, enabled);
+    saveToolFilter.mutate(
+      { name: server.name, filter: next },
+      {
+        onSuccess: () => runReload(`已更新 ${server.name} 的工具开关`),
+        onError: (err) => setNotice({ tone: "err", text: errText(err) }),
+      },
+    );
   };
 
   const handleInstallClick = (entry: McpCatalogEntry) => {
@@ -161,7 +202,7 @@ export function McpRoute() {
       }
     >
       <p className={s.desc}>
-        Model Context Protocol 服务由 Hermes 网关托管。在这里添加、启停、测试服务，或从官方目录一键安装；改动通过官方 reload 即时生效，无需手改配置或重启。
+        Model Context Protocol 服务由 Hermes 网关托管。展开任一服务可逐工具开关、查看 stdio 与 Agent 两路日志、或整块编辑 mcpServers 原始 JSON；改动通过官方 reload 即时生效。
       </p>
 
       {notice && (
@@ -205,10 +246,31 @@ export function McpRoute() {
               result={testResults[server.name]}
               testing={testingName === server.name}
               toggling={togglingName === server.name}
+              expanded={expanded === server.name}
+              onToggleExpand={() =>
+                setExpanded((prev) => (prev === server.name ? null : server.name))
+              }
               onTest={() => handleTest(server)}
               onToggle={() => handleToggle(server)}
               onDelete={() => setEditor({ kind: "delete", name: server.name })}
-            />
+            >
+              <McpServerDetail
+                server={server}
+                result={testResults[server.name]}
+                testing={testingName === server.name}
+                savingTools={saveToolFilter.isPending}
+                rawServers={rawServersQuery.data}
+                savingRaw={saveRaw.isPending}
+                onTest={() => handleTest(server)}
+                onToggleTool={(name, enabled) => handleToggleTool(server, name, enabled)}
+                onSaveRaw={(value) =>
+                  saveRaw.mutate(value, {
+                    onSuccess: () => runReload("已保存 mcpServers 原始 JSON"),
+                    onError: (err) => setNotice({ tone: "err", text: errText(err) }),
+                  })
+                }
+              />
+            </McpServerCard>
           ))}
         </div>
       )}

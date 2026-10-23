@@ -20,7 +20,12 @@ import { CSS } from "@dnd-kit/utilities";
 import { useConfig, useModelInfo, useSaveConfig } from "@/hooks/use-config";
 import { useDeleteEnv, useEnvVars, useRevealEnv, useSetEnv } from "@/hooks/use-env";
 import { useGateway } from "@/hooks/use-gateway";
-import { providerModelsErrorText, useProviderModels } from "@/hooks/use-provider-models";
+import {
+  classifyProviderModelsError,
+  providerModelsErrorText,
+  readProviderModelsCache,
+  useProviderModels,
+} from "@/hooks/use-provider-models";
 import type { ModelInfo, ProviderProbeResult } from "@hermes/protocol";
 import {
   apiModeBadgeLabel,
@@ -52,6 +57,22 @@ import {
 import { getProviderIconUrl } from "@/lib/provider-icons";
 import { useOAuthProviders } from "@/hooks/use-oauth-providers";
 import { ModelCombobox } from "@/components/settings/model-combobox";
+import { ModelDefaultsRows } from "@/components/settings/model-defaults-rows";
+import { FallbackModelsEditor } from "@/components/settings/fallback-models-editor";
+import {
+  buildServiceTierUpdate,
+  serviceTierFromConfig,
+  type ServiceTier,
+} from "@/lib/provider-service-tier";
+import {
+  buildReasoningEffortUpdate,
+  reasoningEffortFromConfig,
+  type ReasoningEffort,
+} from "@/lib/reasoning-effort";
+import {
+  buildFallbackProvidersUpdate,
+  type FallbackEntry,
+} from "@/lib/provider-fallback";
 import { translateEnvCategory, translateEnvVar } from "@/lib/env-translations";
 import { rememberLastUsedModel } from "@/lib/last-used-model";
 import { useConfirm } from "@/lib/use-confirm";
@@ -678,6 +699,22 @@ export function ModelsSection() {
   const [auxSavingTask, setAuxSavingTask] = useState<AuxiliaryTaskId | "__all__" | "image_mode" | null>(null);
   const [auxSavedTask, setAuxSavedTask] = useState<AuxiliaryTaskId | "__all__" | "image_mode" | null>(null);
   const [auxError, setAuxError] = useState("");
+  const [tierDraft, setTierDraft] = useState<ServiceTier | null>(null);
+  const [effortDraft, setEffortDraft] = useState<ReasoningEffort | null | undefined>(undefined);
+  const [defaultsSaving, setDefaultsSaving] = useState(false);
+  const [defaultsError, setDefaultsError] = useState("");
+  const [defaultsSavedHint, setDefaultsSavedHint] = useState("");
+  const [fallbackSaving, setFallbackSaving] = useState(false);
+  const [fallbackError, setFallbackError] = useState("");
+  const [fallbackSavedHint, setFallbackSavedHint] = useState("");
+  const savedServiceTier = serviceTierFromConfig(config);
+  const savedReasoningEffort = reasoningEffortFromConfig(config);
+  const serviceTierDraft = tierDraft ?? savedServiceTier;
+  const reasoningEffortDraft =
+    effortDraft === undefined ? savedReasoningEffort : effortDraft;
+  const defaultsDirty =
+    serviceTierDraft !== savedServiceTier ||
+    (reasoningEffortDraft ?? null) !== (savedReasoningEffort ?? null);
   const customDialogTitleId = useId();
   const selectProvider = useCallback((providerId: string) => {
     if (!providerId || selectedProviderIdRef.current === providerId) return;
@@ -866,7 +903,9 @@ export function ModelsSection() {
     listProviderModels,
     customProviderMode === "local" ? "chat_completions" : customForm.apiMode,
   );
-  const liveModelIds = supportsModelListing ? modelsQuery.data?.models ?? [] : [];
+  const liveModelIds = supportsModelListing
+    ? modelsQuery.data?.models ?? readProviderModelsCache(selectedProvider?.id ?? "", providerForm.baseUrl)
+    : [];
   const mergedModelOptions = useMemo(() => {
     const set = new Set<string>();
     for (const id of liveModelIds) set.add(id);
@@ -876,12 +915,19 @@ export function ModelsSection() {
   }, [liveModelIds, selectedProvider, providerForm.model]);
   const customModelOptions = useMemo(() => {
     const set = new Set(customModelsQuery.data?.models ?? []);
+    if (customModelsQuery.isError) {
+      for (const id of readProviderModelsCache("custom-draft", customForm.baseUrl)) set.add(id);
+    }
     if (customForm.model) set.add(customForm.model);
     return Array.from(set);
-  }, [customModelsQuery.data?.models, customForm.model]);
+  }, [customModelsQuery.data?.models, customModelsQuery.isError, customForm.baseUrl, customForm.model]);
 
+  const refreshErrorSupported = !modelsQuery.isError ||
+    classifyProviderModelsError(modelsQuery.error) !== "unsupported";
   const refreshLabel = modelsQuery.isError
-      ? "刷新失败 重试"
+      ? refreshErrorSupported
+        ? "刷新失败 重试"
+        : "重试拉取"
       : modelsQuery.data
         ? `已加载 ${modelsQuery.data.models.length} 个`
         : "刷新模型列表";
@@ -891,8 +937,12 @@ export function ModelsSection() {
     return providerModelsErrorText(modelsQuery.error);
   }, [supportsModelListing, modelsQuery.isError, modelsQuery.error]);
 
+  const customRefreshErrorSupported = !customModelsQuery.isError ||
+    classifyProviderModelsError(customModelsQuery.error) !== "unsupported";
   const customRefreshLabel = customModelsQuery.isError
-      ? "刷新失败 重试"
+      ? customRefreshErrorSupported
+        ? "刷新失败 重试"
+        : "重试拉取"
       : customModelsQuery.data
         ? `已加载 ${customModelsQuery.data.models.length} 个`
         : "刷新模型列表";
@@ -1481,6 +1531,22 @@ export function ModelsSection() {
     onDelete: () => deleteEnv.mutate(key),
   });
 
+  const fallbackProviderOptions = useMemo(
+    () => orderedProviders.map((provider) => ({ id: provider.id, name: provider.name })),
+    [orderedProviders],
+  );
+
+  const fallbackModelOptionsFor = useCallback(
+    (providerId: string) => {
+      const provider = allProviders.find((entry) => entry.id === providerId);
+      const options = new Set<string>();
+      for (const model of provider?.models ?? []) options.add(model.id);
+      if (provider?.defaultModel) options.add(provider.defaultModel);
+      return Array.from(options);
+    },
+    [allProviders],
+  );
+
   if (configLoading || (envLoading && !envVars)) return <LoadingState variant="block" label="正在加载模型配置…" />;
   if (configIsError || !config) {
     const message = configError instanceof Error ? configError.message : "配置加载失败";
@@ -1534,6 +1600,42 @@ export function ModelsSection() {
     isLocalProvider: customProviderIsLocal,
     configuredContextWindow: customForm.contextWindow,
   });
+
+  const handleSaveModelDefaults = async () => {
+    if (!config) return;
+    setDefaultsSaving(true);
+    setDefaultsError("");
+    setDefaultsSavedHint("");
+    try {
+      let next = buildServiceTierUpdate(config, serviceTierDraft);
+      if (reasoningEffortDraft) next = buildReasoningEffortUpdate(next, reasoningEffortDraft);
+      await saveConfig.mutateAsync(next);
+      setTierDraft(null);
+      setEffortDraft(undefined);
+      setDefaultsSavedHint("默认参数已保存，下一轮生效");
+    } catch (error) {
+      setDefaultsError(error instanceof Error ? error.message : String(error || "保存失败"));
+    } finally {
+      setDefaultsSaving(false);
+    }
+  };
+
+  const handleSaveFallbackChain = async (entries: FallbackEntry[]) => {
+    if (!config) return;
+    setFallbackSaving(true);
+    setFallbackError("");
+    setFallbackSavedHint("");
+    try {
+      await saveConfig.mutateAsync(buildFallbackProvidersUpdate(config, entries));
+      setFallbackSavedHint(
+        entries.length > 0 ? `已保存 ${entries.length} 条备用模型` : "已清空备用模型链",
+      );
+    } catch (error) {
+      setFallbackError(error instanceof Error ? error.message : String(error || "保存失败"));
+    } finally {
+      setFallbackSaving(false);
+    }
+  };
 
   return (
     <div className={s.modelsSettings}>
@@ -1606,6 +1708,34 @@ export function ModelsSection() {
               </p>
             </div>
           </div>
+
+          <ModelDefaultsRows
+            serviceTier={serviceTierDraft}
+            reasoningEffort={reasoningEffortDraft}
+            saving={defaultsSaving}
+            dirty={defaultsDirty}
+            error={defaultsError}
+            savedHint={defaultsSavedHint}
+            onServiceTierChange={(tier) => {
+              setTierDraft(tier);
+              setDefaultsSavedHint("");
+            }}
+            onReasoningEffortChange={(effort) => {
+              setEffortDraft(effort);
+              setDefaultsSavedHint("");
+            }}
+            onSave={() => void handleSaveModelDefaults()}
+          />
+
+          <FallbackModelsEditor
+            value={config?.fallback_providers}
+            providers={fallbackProviderOptions}
+            modelOptionsFor={fallbackModelOptionsFor}
+            saving={fallbackSaving}
+            error={fallbackError}
+            savedHint={fallbackSavedHint}
+            onSave={handleSaveFallbackChain}
+          />
 
           <div className={s.providerPresetLayout}>
             <div className={s.providerGridPane}>
@@ -1769,6 +1899,7 @@ export function ModelsSection() {
                           <ModelCombobox
                             label="模型"
                             value={providerForm.model}
+                            provider={selectedProvider.id}
                             onChange={(next) => setProviderForm((prev) => ({ ...prev, model: next }))}
                             options={mergedModelOptions}
                           />
@@ -1789,7 +1920,9 @@ export function ModelsSection() {
                         <div className={s.modelPickerHint}>此服务商不提供 /models 端点，使用预设模型或手动输入即可</div>
                       )}
                       {refreshErrorText && (
-                        <div className={s.modelPickerError}>{refreshErrorText}</div>
+                        <div className={refreshErrorSupported ? s.modelPickerError : s.modelPickerHint}>
+                          {refreshErrorText}
+                        </div>
                       )}
                       <Field label="上下文窗口" className={s.fieldRow}>
                         <Input
@@ -2133,7 +2266,9 @@ export function ModelsSection() {
                 </div>
               </div>
               {customRefreshErrorText && (
-                <div className={s.modelPickerError}>{customRefreshErrorText}</div>
+                <div className={customRefreshErrorSupported ? s.modelPickerError : s.modelPickerHint}>
+                  {customRefreshErrorText}
+                </div>
               )}
               {customModelsQuery.data?.models.length === 0 && (
                 <div className={s.modelPickerHint}>服务端返回了空模型列表，也可以继续手动输入模型 ID。</div>

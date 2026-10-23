@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   AlertCircle,
@@ -7,6 +8,7 @@ import {
   Clock,
   FileText,
   Pause,
+  Pencil,
   Play,
   Plus,
   RefreshCw,
@@ -21,11 +23,26 @@ import {
   cronJobProfile,
   useCreateCronJob,
   useCronAction,
+  useCronDeliveryTargets,
   useCronJobs,
   useCronRunDetail,
+  useCronRunSessions,
   useCronRuns,
   useDeleteCronJob,
+  useUpdateCronJob,
 } from "@/hooks/use-cron";
+import { FALLBACK_DELIVERY_TARGETS, deliverySummary } from "@/lib/cron-delivery";
+import { DEFAULT_SCHEDULE_EXPR, presetForExpr, scheduleSummary } from "@/lib/cron-schedule";
+import { type CronEditorValues, createPayload, enabledAction, updatePayload } from "@/lib/cron-editor";
+import {
+  backendErrorMessage,
+  pendingRunExpired,
+  pendingRunSettled,
+  runStartedMs,
+  sessionIdForRun,
+} from "@/lib/cron-runs";
+import { CronJobEditor } from "@/components/cron/cron-job-editor";
+import { PendingRunRow } from "@/components/cron/pending-run-row";
 import { useConfirm } from "@/lib/use-confirm";
 import { SectionShell } from "./section-shell";
 import s from "./cron.module.css";
@@ -38,20 +55,12 @@ interface Feedback {
   message: string;
 }
 
-// 仅展示桌面端实际可接入的投递渠道（IM 接入当前支持飞书/微信，见
-// src/commands/im_onboarding.rs）。后端合法平台列表见
-// Hermes-CN-Core cron/scheduler.py 的 _KNOWN_DELIVERY_PLATFORMS。
-const DELIVERY_OPTIONS = [
-  { value: "local", label: "本地" },
-  { value: "feishu", label: "飞书" },
-  { value: "weixin", label: "微信" },
-  { value: "email", label: "Email" },
-];
-
-function deliveryLabel(value: string): string {
-  if (!value) return "本地";
-  return DELIVERY_OPTIONS.find((item) => item.value === value)?.label ?? value;
+interface PendingTrigger {
+  key: string;
+  requestedAt: number;
 }
+
+type EditorState = { mode: "create" } | { mode: "edit"; job: CronJob } | null;
 
 const STATUS_FILTERS: Array<{ value: StatusFilter; label: string }> = [
   { value: "all", label: "全部" },
@@ -73,14 +82,23 @@ function promptPreview(job: CronJob): string {
   return text(job.prompt) || (text(job.script) ? `脚本：${text(job.script)}` : "无任务描述");
 }
 
-function scheduleDisplay(job: CronJob): string {
+function jobScheduleExpr(job: CronJob): string {
   const schedule = job.schedule;
-  if (text(job.schedule_display)) return text(job.schedule_display);
-  if (typeof schedule === "string") return text(schedule) || "未设置";
+  if (typeof schedule === "string") return text(schedule);
   if (schedule && typeof schedule === "object") {
-    return text(schedule.display) || text(schedule.expr) || text(schedule.value) || "未设置";
+    return text(schedule.expr) || text(schedule.value);
   }
-  return "未设置";
+  return "";
+}
+
+function scheduleDisplay(job: CronJob): string {
+  const expr = jobScheduleExpr(job);
+  if (expr) return scheduleSummary(expr);
+  return text(job.schedule_display) || "未设置";
+}
+
+function jobModel(job: CronJob): string {
+  return text((job as Record<string, unknown>).model);
 }
 
 function jobState(job: CronJob): string {
@@ -195,14 +213,41 @@ function buildRunErrorMessage(error: unknown): string {
   return `加载运行历史失败：${raw}`;
 }
 
+function editorInitialValues(editor: EditorState, activeProfile: string): CronEditorValues {
+  if (!editor || editor.mode === "create") {
+    return {
+      profile: activeProfile || "default",
+      name: "",
+      prompt: "",
+      schedule: DEFAULT_SCHEDULE_EXPR,
+      deliver: "local",
+      model: "",
+      enabled: true,
+    };
+  }
+  const job = editor.job;
+  return {
+    profile: cronJobProfile(job),
+    name: text(job.name),
+    prompt: text(job.prompt),
+    schedule: jobScheduleExpr(job) || text(job.schedule_display) || DEFAULT_SCHEDULE_EXPR,
+    deliver: text(job.deliver) || "local",
+    model: jobModel(job),
+    enabled: !isPaused(job),
+  };
+}
+
 export function CronRoute() {
   const jobsQuery = useCronJobs();
   const profilesQuery = useProfiles();
   const activeProfile = useActiveProfileName();
   const createJob = useCreateCronJob();
+  const updateJob = useUpdateCronJob();
   const deleteJob = useDeleteCronJob();
   const cronAction = useCronAction();
+  const deliveryTargetsQuery = useCronDeliveryTargets(activeProfile);
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const { confirm } = useConfirm();
 
   const [query, setQuery] = useState("");
@@ -210,21 +255,19 @@ export function CronRoute() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [selectedRunFilename, setSelectedRunFilename] = useState<string | null>(null);
-  const [showCreate, setShowCreate] = useState(false);
-  const [newProfile, setNewProfile] = useState(activeProfile || "default");
-  const [newName, setNewName] = useState("");
-  const [newSchedule, setNewSchedule] = useState("");
-  const [newPrompt, setNewPrompt] = useState("");
-  const [newDeliver, setNewDeliver] = useState("local");
+  const [editor, setEditor] = useState<EditorState>(null);
+  const [editorError, setEditorError] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
+  const [pendingTrigger, setPendingTrigger] = useState<PendingTrigger | null>(null);
   const refreshTimersRef = useRef<number[]>([]);
 
   const jobs = jobsQuery.data ?? [];
   const profiles = profilesQuery.data ?? [];
-
-  useEffect(() => {
-    if (!newProfile) setNewProfile(activeProfile || "default");
-  }, [activeProfile, newProfile]);
+  const deliveryTargets = deliveryTargetsQuery.data ?? [];
+  const deliveryTargetsUnavailable = deliveryTargetsQuery.isError || deliveryTargets.length === 0;
+  const effectiveDeliveryTargets = deliveryTargetsUnavailable
+    ? FALLBACK_DELIVERY_TARGETS
+    : deliveryTargets;
 
   const filteredJobs = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -261,6 +304,10 @@ export function CronRoute() {
 
   const runsQuery = useCronRuns(selectedJob, 30);
   const runs = runsQuery.data ?? [];
+  const runSessionsQuery = useCronRunSessions(selectedJob, 30);
+  const runSessions = runSessionsQuery.data ?? [];
+  const runsRef = useRef<CronRun[]>(runs);
+  runsRef.current = runs;
 
   useEffect(() => {
     setSelectedRunFilename(null);
@@ -290,7 +337,19 @@ export function CronRoute() {
   const refetchCronData = useCallback(() => {
     void jobsQuery.refetch();
     void runsQuery.refetch();
-  }, [jobsQuery, runsQuery]);
+    void runSessionsQuery.refetch();
+  }, [jobsQuery, runsQuery, runSessionsQuery]);
+
+  const pollRef = useRef({
+    jobs: jobsQuery.refetch,
+    runs: runsQuery.refetch,
+    sessions: runSessionsQuery.refetch,
+  });
+  pollRef.current = {
+    jobs: jobsQuery.refetch,
+    runs: runsQuery.refetch,
+    sessions: runSessionsQuery.refetch,
+  };
 
   const queueFollowUpRefreshes = useCallback((job: CronJob) => {
     clearQueuedRefreshes();
@@ -299,40 +358,112 @@ export function CronRoute() {
       window.setTimeout(() => {
         void queryClient.invalidateQueries({ queryKey: ["cron-jobs"] });
         void queryClient.invalidateQueries({ queryKey: ["cron-runs", profile, job.id] });
-        refetchCronData();
+        void queryClient.invalidateQueries({ queryKey: ["cron-run-sessions", profile, job.id] });
       }, delay),
     );
-  }, [clearQueuedRefreshes, queryClient, refetchCronData]);
+  }, [clearQueuedRefreshes, queryClient]);
 
   useEffect(() => clearQueuedRefreshes, [clearQueuedRefreshes]);
 
-  const handleCreate = () => {
-    const schedule = newSchedule.trim();
-    const prompt = newPrompt.trim();
-    if (!schedule || !prompt) {
-      setFeedback({ tone: "error", message: "请填写调度表达式和 Prompt。" });
-      return;
-    }
+  useEffect(() => {
+    if (!pendingTrigger) return;
+    let stopped = false;
+
+    const step = () => {
+      if (stopped) return;
+      const watching = selectedJob !== null && jobKey(selectedJob) === pendingTrigger.key;
+      if (watching && pendingRunSettled(runsRef.current, pendingTrigger.requestedAt)) {
+        setPendingTrigger(null);
+        setFeedback({ tone: "info", message: "运行已落地，运行历史已刷新。" });
+        return;
+      }
+      if (pendingRunExpired(pendingTrigger.requestedAt)) {
+        setPendingTrigger(null);
+        setFeedback({
+          tone: "error",
+          message: "已等待 90 秒仍未出现运行记录：调度器可能已暂停或本轮 tick 未生效，请确认任务状态后重试。",
+        });
+        return;
+      }
+      if (watching) {
+        void pollRef.current.jobs();
+        void pollRef.current.runs();
+        void pollRef.current.sessions();
+      }
+    };
+
+    step();
+    const timer = window.setInterval(step, 3_000);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+  }, [pendingTrigger, selectedJob]);
+
+  const editorValues = editorInitialValues(editor, activeProfile);
+  const editorKey = editor
+    ? `${editor.mode}:${editor.mode === "edit" ? jobKey(editor.job) : "new"}`
+    : "closed";
+
+  const openCreate = () => {
+    setEditorError(null);
+    setEditor({ mode: "create" });
+  };
+
+  const openEdit = (job: CronJob) => {
+    setEditorError(null);
+    setEditor({ mode: "edit", job });
+  };
+
+  const closeEditor = () => {
+    setEditor(null);
+    setEditorError(null);
+  };
+
+  const handleCreate = (values: CronEditorValues) => {
+    setEditorError(null);
     createJob.mutate(
-      {
-        name: newName.trim() || undefined,
-        schedule,
-        prompt,
-        deliver: newDeliver,
-        profile: newProfile || "default",
-      },
+      { ...createPayload(values), profile: values.profile || "default" },
       {
         onSuccess: (job) => {
-          setShowCreate(false);
-          setNewName("");
-          setNewSchedule("");
-          setNewPrompt("");
-          setNewDeliver("local");
+          closeEditor();
           setProfileFilter("all");
           setSelectedKey(jobKey(job));
           setFeedback({ tone: "ok", message: `已创建定时任务「${titleOf(job)}」。` });
         },
-        onError: (err) => setFeedback({ tone: "error", message: `创建定时任务失败：${actionError(err)}` }),
+        onError: (err) => setEditorError(backendErrorMessage(err)),
+      },
+    );
+  };
+
+  const handleUpdate = (values: CronEditorValues, job: CronJob) => {
+    if (!editor || editor.mode !== "edit") return;
+    setEditorError(null);
+    const action = enabledAction(values, { enabled: !isPaused(job) });
+    updateJob.mutate(
+      {
+        id: job.id,
+        profile: cronJobProfile(job),
+        updates: updatePayload(values),
+      },
+      {
+        onSuccess: (updated) => {
+          if (action) {
+            cronAction.mutate(
+              { id: job.id, profile: cronJobProfile(job), action },
+              {
+                onError: (err) => setFeedback({
+                  tone: "error",
+                  message: `配置已保存，但${action === "pause" ? "暂停" : "恢复"}失败：${backendErrorMessage(err)}`,
+                }),
+              },
+            );
+          }
+          closeEditor();
+          setSelectedKey(jobKey(updated));
+          setFeedback({ tone: "ok", message: `已保存「${titleOf(updated)}」的修改。` });
+        },
+        onError: (err) => setEditorError(backendErrorMessage(err)),
       },
     );
   };
@@ -344,9 +475,10 @@ export function CronRoute() {
         onSuccess: (updated) => {
           setSelectedKey(jobKey(updated));
           if (action === "trigger") {
+            setPendingTrigger({ key: jobKey(updated), requestedAt: Date.now() });
             setFeedback({
               tone: "info",
-              message: `已触发「${titleOf(updated)}」，运行历史会在调度 tick 完成后自动刷新。`,
+              message: `已触发「${titleOf(updated)}」，正在排队等待调度器执行。`,
             });
             queueFollowUpRefreshes(updated);
             return;
@@ -355,7 +487,7 @@ export function CronRoute() {
         },
         onError: (err) => {
           const actionLabel = action === "pause" ? "暂停" : action === "resume" ? "恢复" : "触发";
-          setFeedback({ tone: "error", message: `${actionLabel}定时任务失败：${actionError(err)}` });
+          setFeedback({ tone: "error", message: `${actionLabel}定时任务失败：${backendErrorMessage(err)}` });
         },
       },
     );
@@ -373,12 +505,22 @@ export function CronRoute() {
       { id: job.id, profile: cronJobProfile(job) },
       {
         onSuccess: () => {
+          setPendingTrigger(null);
           setFeedback({ tone: "ok", message: `已删除定时任务「${titleOf(job)}」。` });
           setSelectedKey(null);
         },
-        onError: (err) => setFeedback({ tone: "error", message: `删除定时任务失败：${actionError(err)}` }),
+        onError: (err) => setFeedback({ tone: "error", message: `删除定时任务失败：${backendErrorMessage(err)}` }),
       },
     );
+  };
+
+  const openRun = (run: CronRun) => {
+    const sessionId = sessionIdForRun(runStartedMs(run), runSessions);
+    if (sessionId) {
+      navigate(`/tasks/${encodeURIComponent(sessionId)}`);
+      return;
+    }
+    setSelectedRunFilename(run.filename);
   };
 
   const headerRight = (
@@ -386,7 +528,7 @@ export function CronRoute() {
       <button type="button" className={s.headerButton} onClick={refetchCronData} disabled={jobsQuery.isFetching || runsQuery.isFetching}>
         <RefreshCw size={12} /> 刷新
       </button>
-      <button type="button" className={s.headerPrimary} onClick={() => setShowCreate(true)}>
+      <button type="button" className={s.headerPrimary} onClick={openCreate}>
         <Plus size={12} /> 新建任务
       </button>
     </div>
@@ -394,6 +536,9 @@ export function CronRoute() {
 
   const activeCount = jobs.filter((job) => matchesStatus(job, "active")).length;
   const errorCount = jobs.filter((job) => matchesStatus(job, "error")).length;
+  const pendingForSelected = pendingTrigger && selectedJob && pendingTrigger.key === jobKey(selectedJob)
+    ? pendingTrigger
+    : null;
 
   return (
     <SectionShell title="定时任务" sub={`${jobs.length} 个任务 · ${activeCount} 个活跃${errorCount ? ` · ${errorCount} 个异常` : ""}`} right={headerRight}>
@@ -449,28 +594,32 @@ export function CronRoute() {
         <main className={s.detailPane} aria-label="定时任务详情">
           {feedback ? <div className={s.feedback} data-tone={feedback.tone}>{feedback.message}</div> : null}
 
-          {showCreate ? (
-            <CreateJobPanel
+          {editor ? (
+            <CronJobEditor
+              key={editorKey}
+              mode={editor.mode}
+              initial={editorValues}
+              initialPreset={presetForExpr(editorValues.schedule).value}
               profiles={profiles.map((profile) => profile.name)}
               activeProfile={activeProfile || "default"}
-              profile={newProfile}
-              name={newName}
-              schedule={newSchedule}
-              prompt={newPrompt}
-              deliver={newDeliver}
-              creating={createJob.isPending}
-              onProfile={setNewProfile}
-              onName={setNewName}
-              onSchedule={setNewSchedule}
-              onPrompt={setNewPrompt}
-              onDeliver={setNewDeliver}
-              onCancel={() => setShowCreate(false)}
-              onSubmit={handleCreate}
+              targets={effectiveDeliveryTargets}
+              targetsUnavailable={deliveryTargetsUnavailable}
+              saving={createJob.isPending || updateJob.isPending}
+              saveError={editorError}
+              onSubmit={(values) => {
+                if (editor.mode === "edit") {
+                  handleUpdate(values, editor.job);
+                  return;
+                }
+                handleCreate(values);
+              }}
+              onCancel={closeEditor}
             />
           ) : selectedJob ? (
             <JobDetail
               job={selectedJob}
               busy={cronAction.isPending || deleteJob.isPending}
+              onEdit={() => openEdit(selectedJob)}
               onPauseResume={() => handleAction(selectedJob, isPaused(selectedJob) ? "resume" : "pause")}
               onTrigger={() => handleAction(selectedJob, "trigger")}
               onDelete={() => handleDelete(selectedJob)}
@@ -480,7 +629,7 @@ export function CronRoute() {
               <CalendarClock size={28} />
               <h2>选择或创建一个定时任务</h2>
               <p>这里会展示任务配置、Prompt 和最近执行状态。</p>
-              <button type="button" className={s.primaryButton} onClick={() => setShowCreate(true)}>新建任务</button>
+              <button type="button" className={s.primaryButton} onClick={openCreate}>新建任务</button>
             </div>
           )}
         </main>
@@ -499,27 +648,47 @@ export function CronRoute() {
           {selectedJob && runsQuery.isError ? (
             <div className={s.errorState}>{buildRunErrorMessage(runsQuery.error)}</div>
           ) : null}
-          {selectedJob && !runsQuery.isLoading && !runsQuery.isError && runs.length === 0 ? (
+          {selectedJob && !runsQuery.isLoading && !runsQuery.isError && runs.length === 0 && !pendingForSelected ? (
             <div className={s.empty}>尚无运行记录。立即运行一次后，记录会出现在这里。</div>
           ) : null}
 
+          {pendingForSelected ? <PendingRunRow requestedAt={pendingForSelected.requestedAt} /> : null}
+
           <div className={s.runList}>
-            {runs.map((run) => (
-              <button
-                key={run.filename}
-                type="button"
-                className={s.runRow}
-                data-selected={selectedRun?.filename === run.filename ? "true" : undefined}
-                onClick={() => setSelectedRunFilename(run.filename)}
-              >
-                <StatusDot tone={runTone(run.status)} />
-                <span className={s.runMain}>
-                  <span className={s.runTitle}>{runStatusLabel(run.status)} · {run.summary}</span>
-                  <span className={s.runMeta}>{formatFullTime(run.started_at)} · {Math.ceil(run.size_bytes / 1024)} KB</span>
-                </span>
-                <span className={s.runAgo}>{relativeTime(run.started_at)}</span>
-              </button>
-            ))}
+            {runs.map((run) => {
+              const sessionId = sessionIdForRun(runStartedMs(run), runSessions);
+              return (
+                <div
+                  key={run.filename}
+                  className={s.runRow}
+                  data-selected={selectedRun?.filename === run.filename ? "true" : undefined}
+                >
+                  <StatusDot tone={runTone(run.status)} />
+                  <button
+                    type="button"
+                    className={s.runOpen}
+                    onClick={() => openRun(run)}
+                    title={sessionId ? "打开该次运行的会话" : "查看只读输出"}
+                  >
+                    <span className={s.runTitle}>{runStatusLabel(run.status)} · {run.summary}</span>
+                    <span className={s.runMeta}>
+                      {formatFullTime(run.started_at)} · {Math.ceil(run.size_bytes / 1024)} KB
+                      {sessionId ? " · 可打开会话" : " · 仅输出"}
+                    </span>
+                  </button>
+                  <span className={s.runAgo}>{relativeTime(run.started_at)}</span>
+                  {sessionId ? (
+                    <button
+                      type="button"
+                      className={s.runOutputButton}
+                      onClick={() => setSelectedRunFilename(run.filename)}
+                    >
+                      输出
+                    </button>
+                  ) : null}
+                </div>
+              );
+            })}
           </div>
 
           {selectedRun ? (
@@ -544,78 +713,18 @@ export function CronRoute() {
   );
 }
 
-interface CreateJobPanelProps {
-  profiles: string[];
-  activeProfile: string;
-  profile: string;
-  name: string;
-  schedule: string;
-  prompt: string;
-  deliver: string;
-  creating: boolean;
-  onProfile: (value: string) => void;
-  onName: (value: string) => void;
-  onSchedule: (value: string) => void;
-  onPrompt: (value: string) => void;
-  onDeliver: (value: string) => void;
-  onCancel: () => void;
-  onSubmit: () => void;
-}
-
-function CreateJobPanel(props: CreateJobPanelProps) {
-  const profileOptions = props.profiles.length > 0 ? props.profiles : [props.activeProfile || "default"];
-  return (
-    <section className={s.card}>
-      <div className={s.cardHeader}>
-        <div>
-          <h1>新建定时任务</h1>
-          <p>保持任务指令自包含；系统会按计划唤起 Agent 执行。</p>
-        </div>
-      </div>
-      <div className={s.formGrid}>
-        <label className={s.field}>
-          <span>Profile</span>
-          <select value={props.profile || props.activeProfile} onChange={(event) => props.onProfile(event.target.value)}>
-            {profileOptions.map((profile) => <option key={profile} value={profile}>{profile}</option>)}
-          </select>
-        </label>
-        <label className={s.field}>
-          <span>发送目标</span>
-          <select value={props.deliver} onChange={(event) => props.onDeliver(event.target.value)}>
-            {DELIVERY_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
-          </select>
-        </label>
-        <label className={s.field}>
-          <span>名称（可选）</span>
-          <input value={props.name} onChange={(event) => props.onName(event.target.value)} placeholder="例如：每日 SEO 巡检" />
-        </label>
-        <label className={s.field}>
-          <span>调度表达式</span>
-          <input value={props.schedule} onChange={(event) => props.onSchedule(event.target.value)} placeholder="0 9 * * *" />
-        </label>
-        <label className={`${s.field} ${s.fieldFull}`}>
-          <span>Prompt</span>
-          <textarea value={props.prompt} onChange={(event) => props.onPrompt(event.target.value)} placeholder="描述每次定时执行的任务目标、边界和输出要求…" />
-        </label>
-      </div>
-      <div className={s.formActions}>
-        <button type="button" className={s.secondaryButton} onClick={props.onCancel} disabled={props.creating}>取消</button>
-        <button type="button" className={s.primaryButton} onClick={props.onSubmit} disabled={props.creating}>{props.creating ? "创建中…" : "创建任务"}</button>
-      </div>
-    </section>
-  );
-}
-
 interface JobDetailProps {
   job: CronJob;
   busy: boolean;
+  onEdit: () => void;
   onPauseResume: () => void;
   onTrigger: () => void;
   onDelete: () => void;
 }
 
-function JobDetail({ job, busy, onPauseResume, onTrigger, onDelete }: JobDetailProps) {
+function JobDetail({ job, busy, onEdit, onPauseResume, onTrigger, onDelete }: JobDetailProps) {
   const paused = isPaused(job);
+  const expr = jobScheduleExpr(job);
   return (
     <section className={s.card}>
       <div className={s.cardHeader}>
@@ -623,6 +732,7 @@ function JobDetail({ job, busy, onPauseResume, onTrigger, onDelete }: JobDetailP
           <div className={s.breadcrumb}>自动化功能 / {cronJobProfile(job)}</div>
           <div className={s.detailActions}>
             <span className={s.statusBadge} data-tone={statusTone(job)}>{statusLabel(job)}</span>
+            <button type="button" className={s.secondaryButton} onClick={onEdit} disabled={busy}><Pencil size={16} /> 编辑</button>
             <button type="button" className={s.secondaryButton} onClick={onPauseResume} disabled={busy}>
               {paused ? <Play size={16} /> : <Pause size={16} />}{paused ? "恢复" : "暂停"}
             </button>
@@ -645,27 +755,27 @@ function JobDetail({ job, busy, onPauseResume, onTrigger, onDelete }: JobDetailP
 
       <div className={s.detailGrid}>
         <div className={s.detailItem}>
-          <span>运行环境</span>
-          <strong>本地</strong>
+          <span>调度表达式</span>
+          <strong>{expr || "未设置"}</strong>
         </div>
         <div className={s.detailItem}>
           <span>Profile</span>
           <strong>{cronJobProfile(job)}</strong>
         </div>
         <div className={s.detailItem}>
-          <span>发送目标</span>
-          <strong>{deliveryLabel(text(job.deliver))}</strong>
+          <span>投递目标</span>
+          <strong>{deliverySummary(text(job.deliver))}</strong>
         </div>
         <div className={s.detailItem}>
-          <span>任务 ID</span>
-          <strong>{job.id}</strong>
+          <span>模型</span>
+          <strong>{jobModel(job) || "默认模型"}</strong>
         </div>
       </div>
 
       {text(job.last_error) ? <div className={s.lastError}>{job.last_error}</div> : null}
 
       <section className={s.promptCard}>
-        <div className={s.promptHeader}>Prompt</div>
+        <div className={s.promptHeader}>Prompt · {job.id}</div>
         <pre>{text(job.prompt) || text(job.script) || "（无任务描述）"}</pre>
       </section>
     </section>

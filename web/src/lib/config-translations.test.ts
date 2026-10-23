@@ -43,4 +43,13 @@ describe("translateConfigOption", () => {
   it("renders the empty option as the default placeholder", () => {
     expect(translateConfigOption("agent.service_tier", "")).toBe("(默认)");
   });
+
+  it("maps the kernel's real service_tier words instead of auto/default/flex", () => {
+    expect(translateConfigOption("agent.service_tier", "standard")).toBe("标准");
+    expect(translateConfigOption("agent.service_tier", "fast")).toBe("快速");
+    expect(translateConfigOption("agent.service_tier", "ultrafast")).toBe("极速");
+    expect(translateConfigOption("agent.service_tier", "normal")).toBe("标准");
+    expect(translateConfigOption("agent.service_tier", "priority")).toBe("快速");
+    expect(translateConfigOption("agent.service_tier", "flex")).toBe("flex");
+  });
 });

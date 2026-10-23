@@ -418,13 +418,47 @@ function appendReasoningPart(parts: HermesMessagePart[], text: string): HermesMe
   return next;
 }
 
+// reasoning.available 的 payload 是「这一段思考」的全文，更新最后一段 reasoning，
+// 不能回写第一段：回写会让更早的段落变成整段副本。
 function upsertReasoningPart(parts: HermesMessagePart[], text: string): HermesMessagePart[] {
   if (!text) return parts;
   const next = withoutProgressParts(parts);
-  const index = next.findIndex((part) => part.type === "reasoning");
+  let index = -1;
+  for (let cursor = next.length - 1; cursor >= 0; cursor -= 1) {
+    if (next[cursor].type === "reasoning") {
+      index = cursor;
+      break;
+    }
+  }
   if (index === -1) return [...next, { type: "reasoning", text }];
-  next[index] = { ...next[index], type: "reasoning", text };
+  const part = next[index];
+  if (part.type !== "reasoning") return next;
+  const merged = part.text.startsWith(text)
+    ? part.text
+    : text.startsWith(part.text)
+      ? text
+      : part.text + text;
+  next[index] = { ...part, text: merged };
   return next;
+}
+
+// message.complete 的 reasoning 是整回合全文：把所有 reasoning 段折叠成一段，
+// 否则「整段回写第一段 + 其余分段还在」会让同一回合出现多个推理过程块。
+function collapseReasoningParts(parts: HermesMessagePart[], text: string): HermesMessagePart[] {
+  const next = withoutProgressParts(parts);
+  const kept: HermesMessagePart[] = [];
+  let inserted = false;
+  for (const part of next) {
+    if (part.type !== "reasoning") {
+      kept.push(part);
+      continue;
+    }
+    if (inserted) continue;
+    inserted = true;
+    kept.push({ ...part, text });
+  }
+  if (!inserted) kept.push({ type: "reasoning", text });
+  return kept;
 }
 
 function upsertProgressPart(parts: HermesMessagePart[], text: string): HermesMessagePart[] {
@@ -681,12 +715,12 @@ function finalizeAssistantParts(
   let parts = withoutProgressParts(message.parts);
   const finalText = typeof payload.text === "string" ? payload.text : "";
   const finalReasoning = normalizeReasoningText(
-    typeof payload.reasoning === "string" ? payload.reasoning : reasoningFromParts(parts),
+    typeof payload.reasoning === "string" ? payload.reasoning : "",
   );
 
   parts = mergeFinalTextPart(parts, finalText);
   if (finalReasoning) {
-    parts = upsertReasoningPart(parts, finalReasoning);
+    parts = collapseReasoningParts(parts, finalReasoning);
   }
   parts = appendImageParts(parts, imagePartsFromPayload(payload));
 
@@ -1152,22 +1186,34 @@ export const resetStreamStateAtom = atom(null, (_get, set, sessionId: string) =>
 
 // 全量 resume 拿到的 `messages` 快照覆盖时间线：补帧判定退化（水位超前 /
 // epoch 变化 / seq 缺口）时只有这条路径能保证时间线不缺不重。
+// 覆盖时不能整段丢掉正在流的那条 live 消息：快照里的同一条回复用的是服务端
+// id，而后续实时帧只会更新 live id，丢了就再 append 一条（同一条回复两个气泡）。
+// 所以把快照里对应回合的内容并进 live 那条，id 始终以 live 行为准。
 export const hydrateSessionTimelineAtom = atom(
   null,
   (_get, set, params: { sessionId: string; messages: HermesUIMessage[]; running?: boolean }) => {
     const now = Date.now();
+    const running = params.running === true;
     set(chatRuntimeBySessionAtom, (state) =>
-      updateSessionRuntime(state, params.sessionId, (runtime) => ({
-        ...runtime,
-        messages: params.messages,
-        streamStatus: params.running ? "streaming" : "idle",
-        statusMessage: "",
-        statusKind: undefined,
-        activeAssistantId: undefined,
-        interrupted: false,
-        updatedAt: now,
-        lastActivityAt: now,
-      })),
+      updateSessionRuntime(state, params.sessionId, (runtime) => {
+        const live = running ? liveTurnAssistant(runtime) : undefined;
+        const reconciled = live ? foldSnapshotTurnIntoLive(live, params.messages, runtime) : undefined;
+        return {
+          ...runtime,
+          messages: reconciled ? reconciled.messages : params.messages,
+          streamStatus: running ? "streaming" : "idle",
+          statusMessage: "",
+          statusKind: undefined,
+          activeAssistantId: reconciled
+            ? reconciled.assistantId
+            : params.messages.some((message) => message.id === runtime.activeAssistantId)
+              ? runtime.activeAssistantId
+              : undefined,
+          interrupted: false,
+          updatedAt: now,
+          lastActivityAt: now,
+        };
+      }),
     );
   },
 );
@@ -1192,6 +1238,71 @@ export const markSessionInterruptedAtom = atom(null, (_get, set, sessionId: stri
 function storedAssistantIsAfterTurn(message: HermesUIMessage, turnStartedAt: number | undefined): boolean {
   if (turnStartedAt === undefined) return true;
   return message.createdAt >= turnStartedAt - 1_000;
+}
+
+function liveTurnAssistant(runtime: ChatSessionRuntime): HermesUIMessage | undefined {
+  if (runtime.activeAssistantId) {
+    const active = runtime.messages.find((message) => message.id === runtime.activeAssistantId);
+    if (active) return active;
+  }
+  return [...runtime.messages]
+    .reverse()
+    .find((message) => message.role === "assistant" && message.status === "streaming");
+}
+
+interface FoldedSnapshotTurn {
+  messages: HermesUIMessage[];
+  assistantId: string;
+}
+
+// 快照覆盖时间线时把 in-flight 回合并进 live 那条：快照里的 assistant 用服务端
+// id，后续实时帧只会更新 live id，留着两份就是同一条回复两个气泡。内容以更完整
+// 的那份为准，id/定位始终保留 live 的（React key、稳定性层都靠它）。
+function foldSnapshotTurnIntoLive(
+  live: HermesUIMessage,
+  messages: HermesUIMessage[],
+  runtime: ChatSessionRuntime,
+): FoldedSnapshotTurn | undefined {
+  if (messages.some((message) => message.id === live.id)) {
+    return { messages, assistantId: live.id };
+  }
+
+  let tailIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index].role === "assistant") {
+      tailIndex = index;
+      break;
+    }
+  }
+  if (tailIndex === -1) return undefined;
+
+  const tail = messages[tailIndex]!;
+  const liveText = looseComparableText(textFromParts(withoutProgressParts(live.parts)));
+  const tailText = looseComparableText(textFromParts(withoutProgressParts(tail.parts)));
+  const sameTurnText =
+    liveText.length > 0 &&
+    tailText.length > 0 &&
+    (tailText.startsWith(liveText) || liveText.startsWith(tailText));
+  const sameTurnIdleStart =
+    liveText.length === 0 &&
+    runtime.turnStartedAt !== undefined &&
+    storedAssistantIsAfterTurn(tail, runtime.turnStartedAt);
+  if (!sameTurnText && !sameTurnIdleStart) return undefined;
+
+  const folded: HermesUIMessage = {
+    ...tail,
+    id: live.id,
+    sessionId: live.sessionId,
+    createdAt: live.createdAt,
+    status: "streaming",
+    parts: tailText.length >= liveText.length ? tail.parts : live.parts,
+    metadata: tail.metadata ?? live.metadata,
+  };
+
+  return {
+    messages: messages.map((message, index) => (index === tailIndex ? folded : message)),
+    assistantId: live.id,
+  };
 }
 
 function isRecoverableStoredAssistant(

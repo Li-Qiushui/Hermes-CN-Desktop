@@ -1,5 +1,6 @@
 import type { HermesMessagePart, HermesUIMessage, SessionSummary } from "@hermes/protocol";
 import { resolvePersistentSessionId, resolveSessionIdAliases } from "@/lib/session-map";
+import { isKernelInjectedNotice } from "@/lib/kernel-notice";
 import type { ChatRuntimeBySession, ChatSessionRuntime } from "@/stores/chat";
 
 function hasPendingPrompt(runtime: ChatSessionRuntime): boolean {
@@ -133,7 +134,9 @@ function messageText(message: HermesUIMessage): string {
 }
 
 function firstUserPreview(runtime: ChatSessionRuntime): string | undefined {
-  const user = runtime.messages.find((message) => message.role === "user");
+  const user = runtime.messages.find(
+    (message) => message.role === "user" && !isKernelInjectedNotice(messageText(message)),
+  );
   const preview = user ? messageText(user) : "";
   return preview || undefined;
 }

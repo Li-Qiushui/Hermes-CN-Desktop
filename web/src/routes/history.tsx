@@ -19,11 +19,18 @@ import { activeSessionIdAtom } from "@/stores/ui";
 import { useActiveProfileName } from "@/hooks/use-profiles";
 import {
   prefetchSessionMessages,
+  searchResultsToSummaries,
   useArchiveSession,
   useDeleteSessions,
-  useSessions,
+  usePagedSessions,
+  useSessionSearch,
   useUnarchiveSession,
 } from "@/hooks/use-sessions";
+import {
+  allSessionPagesLoaded,
+  mergeSessionPages,
+  sessionPagesTotal,
+} from "@/lib/sidebar-session-lists";
 import { useGateway } from "@/hooks/use-gateway";
 import { useSessionBranch } from "@/hooks/use-session-branch";
 import { isSessionRunning } from "@/lib/session-activity";
@@ -44,8 +51,10 @@ import {
   unpinSessions,
 } from "@/lib/session-ui-state";
 import {
-  normalizeWorkspacePath,
+  buildSessionWorkspaceOptions,
+  filterSessionsByWorkspace,
   readSessionWorkspaceMap,
+  sessionWorkspacePath,
   subscribeWorkspaceChanges,
   workspaceNameFromPath,
 } from "@/lib/workspaces";
@@ -238,7 +247,17 @@ export function HistoryRoute() {
   // the Rust proxy) so both scopes share one query and their counts are always
   // known; we split client-side by `archived`. The sidebar keeps the default
   // active-only query, so archived sessions never leak there.
-  const { data, isLoading, isError } = useSessions(PAGE_SIZE, 0, { includeArchived: true });
+  const pagedSessions = usePagedSessions(PAGE_SIZE, { includeArchived: true });
+  const isLoading = pagedSessions.isLoading;
+  const isError = pagedSessions.isError;
+  const sessionPages = pagedSessions.data?.pages ?? [];
+  const data = pagedSessions.data
+    ? {
+        sessions: mergeSessionPages(sessionPages),
+        total: sessionPagesTotal(sessionPages),
+      }
+    : undefined;
+  const loadedAll = sessionPages.length > 0 && allSessionPagesLoaded(sessionPages);
   const archiveSession = useArchiveSession();
   const unarchiveSession = useUnarchiveSession();
   const deleteSessions = useDeleteSessions();
@@ -248,6 +267,8 @@ export function HistoryRoute() {
   const [archiveScope, setArchiveScope] = useState<ArchiveScope>("active");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [selectedSource, setSelectedSource] = useState<string | null>(null);
+  const [selectedWorkspace, setSelectedWorkspace] = useState<string | null>(null);
+  const [workspacePopoverOpen, setWorkspacePopoverOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [popoverOpen, setPopoverOpen] = useState(false);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
@@ -260,6 +281,7 @@ export function HistoryRoute() {
   const [deleteTargets, setDeleteTargets] = useState<SessionSummary[] | null>(null);
   const [deleteFeedback, setDeleteFeedback] = useState<string | null>(null);
   const [exportError, setExportError] = useState("");
+  const serverSearch = useSessionSearch(searchQuery);
 
   const [titleOverrides, setTitleOverrides] = useState(readSessionTitleOverrides);
   const [workspaceMap, setWorkspaceMap] = useState(readSessionWorkspaceMap);
@@ -283,14 +305,21 @@ export function HistoryRoute() {
     [],
   );
 
-  const sessions = useMemo(
-    () =>
-      (data?.sessions ?? []).map((session) => {
-        const overridden = titleOverrides[session.id];
-        return overridden ? { ...session, title: overridden } : session;
-      }),
-    [data?.sessions, titleOverrides],
-  );
+  const remoteSearchHits = useMemo(() => {
+    if (searchQuery.trim().length < 2 || serverSearch.results.length === 0) {
+      return [] as SessionSummary[];
+    }
+    const known = new Set((data?.sessions ?? []).map((session) => session.id));
+    return searchResultsToSummaries(serverSearch.results).filter((session) => !known.has(session.id));
+  }, [data?.sessions, searchQuery, serverSearch.results]);
+
+  const sessions = useMemo(() => {
+    const local = (data?.sessions ?? []).map((session) => {
+      const overridden = titleOverrides[session.id];
+      return overridden ? { ...session, title: overridden } : session;
+    });
+    return [...local, ...remoteSearchHits];
+  }, [data?.sessions, remoteSearchHits, titleOverrides]);
 
   // Counts for the scope toggle, derived from the single archived-inclusive set.
   const activeCount = useMemo(() => sessions.filter((x) => !x.archived).length, [sessions]);
@@ -359,11 +388,25 @@ export function HistoryRoute() {
 
   const overflowCount = Math.max(0, sourceCounts.size - inlineSourceKeys.length);
 
+  const workspaceOptions = useMemo(
+    () => buildSessionWorkspaceOptions(scopedSessions, workspaceMap),
+    [scopedSessions, workspaceMap],
+  );
+
+  useEffect(() => {
+    if (!selectedWorkspace) return;
+    if (workspaceOptions.some((option) => option.path === selectedWorkspace)) return;
+    setSelectedWorkspace(null);
+  }, [selectedWorkspace, workspaceOptions]);
+
   // visible sessions after all filters, with day grouping
   const filtered = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
+    const workspaceScoped = selectedWorkspace
+      ? filterSessionsByWorkspace(scopedSessions, workspaceMap, selectedWorkspace)
+      : scopedSessions;
     const matches: SessionSummary[] = [];
-    for (const session of scopedSessions) {
+    for (const session of workspaceScoped) {
       const live = isSessionRunning(session, runtimeBySession);
       const status = classifySession(session, live).kind;
       if (statusFilter !== "all" && status !== statusFilter) continue;
@@ -380,7 +423,15 @@ export function HistoryRoute() {
     }
     matches.sort((a, b) => lastActivitySec(b) - lastActivitySec(a));
     return matches;
-  }, [runtimeBySession, searchQuery, selectedSource, scopedSessions, statusFilter]);
+  }, [
+    runtimeBySession,
+    searchQuery,
+    selectedSource,
+    selectedWorkspace,
+    scopedSessions,
+    statusFilter,
+    workspaceMap,
+  ]);
 
   const dayGroups = useMemo(() => {
     const groups = new Map<string, { label: string; sessions: SessionSummary[]; sortKey: number }>();
@@ -730,6 +781,75 @@ export function HistoryRoute() {
             <span className={s.segCount}>{archivedCount}</span>
           </button>
         </div>
+
+        <div className={s.segAnchor}>
+          <Popover.Root open={workspacePopoverOpen} onOpenChange={setWorkspacePopoverOpen}>
+            <Popover.Trigger asChild>
+              <button
+                type="button"
+                className={s.segItem}
+                data-active={selectedWorkspace ? "true" : undefined}
+                data-action="workspace-filter"
+                aria-label="按工作区分组筛选"
+                title="按工作区筛选会话"
+              >
+                工作区：{selectedWorkspace ? workspaceNameFromPath(selectedWorkspace) : "全部"}
+                <ChevronDown size={12} className={workspacePopoverOpen ? s.chevOpen : undefined} />
+              </button>
+            </Popover.Trigger>
+            <Popover.Portal>
+              <Popover.Content
+                className={s.popover}
+                align="start"
+                side="bottom"
+                role="dialog"
+                aria-label="工作区筛选"
+              >
+                <div className={s.popBody}>
+                  <div
+                    className={s.popRow}
+                    data-checked={selectedWorkspace === null ? "true" : undefined}
+                    role="option"
+                    aria-selected={selectedWorkspace === null}
+                    data-workspace-option="all"
+                    onClick={() => {
+                      setSelectedWorkspace(null);
+                      setWorkspacePopoverOpen(false);
+                    }}
+                  >
+                    <span className={s.popName}>全部工作区</span>
+                    <span className={s.popCount}>{scopedSessions.length}</span>
+                  </div>
+                  {workspaceOptions.length === 0 ? (
+                    <div className={s.popEmpty}>暂无工作区信息</div>
+                  ) : (
+                    workspaceOptions.map((option) => {
+                      const active = selectedWorkspace === option.path;
+                      return (
+                        <div
+                          key={option.path}
+                          className={s.popRow}
+                          data-checked={active ? "true" : undefined}
+                          data-workspace-option={option.path}
+                          role="option"
+                          aria-selected={active}
+                          title={option.path}
+                          onClick={() => {
+                            setSelectedWorkspace(active ? null : option.path);
+                            setWorkspacePopoverOpen(false);
+                          }}
+                        >
+                          <span className={s.popName}>{option.name}</span>
+                          <span className={s.popCount}>{option.count}</span>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </Popover.Content>
+            </Popover.Portal>
+          </Popover.Root>
+        </div>
         </div>
       </div>
 
@@ -811,7 +931,7 @@ export function HistoryRoute() {
                   const selected = selectedSessionIds.has(session.id);
                   const pinned = pinnedSessionIds.has(session.id);
                   const menuDisabled = live || deleteSessions.isPending;
-                  const workspacePath = normalizeWorkspacePath(workspaceMap[session.id]);
+                  const workspacePath = sessionWorkspacePath(session, workspaceMap);
                   const workspaceName = workspacePath
                     ? workspaceNameFromPath(workspacePath)
                     : "";
@@ -904,9 +1024,21 @@ export function HistoryRoute() {
         <span>
           共 {filtered.length} 个会话 · {formatTokens(totalTokens)} tokens
         </span>
-        {data && data.total > sessions.length ? (
-          <span className={s.footNote}>展示前 {sessions.length} 条 / 共 {data.total} 条</span>
-        ) : null}
+        {data && !loadedAll ? (
+          <button
+            type="button"
+            className={s.loadMore}
+            data-action="load-more"
+            disabled={pagedSessions.isFetchingNextPage}
+            onClick={() => void pagedSessions.fetchNextPage()}
+          >
+            {pagedSessions.isFetchingNextPage
+              ? "加载中…"
+              : `加载更多（已加载 ${sessions.length} / ${data.total}）`}
+          </button>
+        ) : (
+          <span className={s.footNote}>已加载全部 {sessions.length} 条</span>
+        )}
       </div>
 
       {renamingSession ? (

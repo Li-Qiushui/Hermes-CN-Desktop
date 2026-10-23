@@ -14,6 +14,10 @@ import {
   writePinnedWorkspaceProjectPaths,
   workspaceNameFromPath,
   workspaceStorageScope,
+  buildSessionWorkspaceOptions,
+  filterSessionsByWorkspace,
+  newSessionHrefForWorkspace,
+  sessionWorkspacePath,
 } from "./workspaces";
 import { rememberSessionMapping } from "./session-map";
 import { __resetUiStoreForTests, writeUiValue } from "./ui-store";
@@ -219,5 +223,49 @@ describe("workspace persistence helpers", () => {
 
     (window as any).__HERMES_RUNTIME__.dashboardApiBaseUrl = "https://one.example/hermes";
     expect(readWorkspaceProjects()[0]?.path).toBe("/srv/one");
+  });
+});
+
+describe("会话工作区归属", () => {
+  const sessions = [
+    { id: "s1", cwd: "/repo/a" },
+    { id: "s2", cwd: "/repo/a/sub" },
+    { id: "s3", cwd: null },
+    { id: "s4", cwd: "/repo/b/" },
+    { id: "s5", cwd: "" },
+  ];
+  const sessionMap = { s3: "/repo/mapped", s5: "/repo/a" };
+
+  it("后端 cwd 优先，缺失时才用本地映射", () => {
+    expect(sessionWorkspacePath(sessions[0], sessionMap)).toBe("/repo/a");
+    expect(sessionWorkspacePath(sessions[2], sessionMap)).toBe("/repo/mapped");
+    expect(sessionWorkspacePath({ id: "nope", cwd: null }, {})).toBe("");
+  });
+
+  it("汇总出工作区选项并按会话数排序", () => {
+    const options = buildSessionWorkspaceOptions(sessions, sessionMap);
+
+    expect(options.map((option) => [option.name, option.count])).toEqual([
+      ["a", 3],
+      ["b", 1],
+      ["mapped", 1],
+    ]);
+  });
+
+  it("筛选包含子目录下的会话，空目标返回全部", () => {
+    expect(filterSessionsByWorkspace(sessions, sessionMap, "/repo/a").map((s) => s.id)).toEqual([
+      "s1",
+      "s2",
+      "s5",
+    ]);
+    expect(filterSessionsByWorkspace(sessions, sessionMap, "/repo/b").map((s) => s.id)).toEqual([
+      "s4",
+    ]);
+    expect(filterSessionsByWorkspace(sessions, sessionMap, "")).toHaveLength(sessions.length);
+  });
+
+  it("新建会话链接带上工作区参数", () => {
+    expect(newSessionHrefForWorkspace("/repo/a/")).toBe("/?workspace=%2Frepo%2Fa");
+    expect(newSessionHrefForWorkspace("")).toBe("/");
   });
 });

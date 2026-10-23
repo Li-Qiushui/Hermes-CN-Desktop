@@ -290,3 +290,85 @@ export function subscribeWorkspaceChanges(listener: () => void): () => void {
     unsubscribe();
   };
 }
+
+export interface WorkspaceScopedSession {
+  id: string;
+  cwd?: string | null;
+}
+
+export interface SessionWorkspaceOption {
+  path: string;
+  name: string;
+  count: number;
+}
+
+export function sessionWorkspacePath(
+  session: WorkspaceScopedSession,
+  sessionWorkspaceMap: Record<string, string>,
+): string {
+  const fromBackend = normalizeWorkspacePath(session.cwd);
+  if (fromBackend) return fromBackend;
+  return normalizeWorkspacePath(sessionWorkspaceMap[session.id]);
+}
+
+function workspaceCoversPath(candidate: string, target: string): boolean {
+  const cleanCandidate = normalizeWorkspacePath(candidate).replace(/\\/g, "/");
+  const cleanTarget = normalizeWorkspacePath(target).replace(/\\/g, "/");
+  if (!cleanCandidate || !cleanTarget) return false;
+  return cleanCandidate === cleanTarget || cleanCandidate.startsWith(`${cleanTarget}/`);
+}
+
+export function buildSessionWorkspaceOptions(
+  sessions: readonly WorkspaceScopedSession[],
+  sessionWorkspaceMap: Record<string, string>,
+  nameOf: (path: string) => string = workspaceNameFromPath,
+): SessionWorkspaceOption[] {
+  const seen = new Map<string, string>();
+  for (const session of sessions) {
+    const path = sessionWorkspacePath(session, sessionWorkspaceMap);
+    if (!path) continue;
+    const key = path.replace(/\\/g, "/");
+    if (!seen.has(key)) seen.set(key, path);
+  }
+
+  // 子目录会话折回它所属的工作区根，避免同一个项目在筛选里出现两层。
+  const paths = Array.from(seen.keys());
+  const rootOf = (path: string): string => {
+    const candidates = paths.filter((candidate) => workspaceCoversPath(path, candidate));
+    return candidates.sort((a, b) => a.length - b.length)[0] ?? path;
+  };
+
+  const counts = new Map<string, number>();
+  for (const session of sessions) {
+    const path = sessionWorkspacePath(session, sessionWorkspaceMap);
+    if (!path) continue;
+    const root = rootOf(path.replace(/\\/g, "/"));
+    counts.set(root, (counts.get(root) ?? 0) + 1);
+  }
+
+  return Array.from(counts.entries())
+    .map(([key, count]) => ({
+      path: seen.get(key) ?? key,
+      name: nameOf(key) || key,
+      count,
+    }))
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, "zh-Hans-CN"));
+}
+
+export function filterSessionsByWorkspace<T extends WorkspaceScopedSession>(
+  sessions: readonly T[],
+  sessionWorkspaceMap: Record<string, string>,
+  targetPath: string,
+): T[] {
+  const target = normalizeWorkspacePath(targetPath);
+  if (!target) return [...sessions];
+  return sessions.filter((session) =>
+    workspaceCoversPath(sessionWorkspacePath(session, sessionWorkspaceMap), target),
+  );
+}
+
+export function newSessionHrefForWorkspace(path: string): string {
+  const normalized = normalizeWorkspacePath(path);
+  return normalized ? `/?workspace=${encodeURIComponent(normalized)}` : "/";
+}
+

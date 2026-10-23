@@ -4,9 +4,12 @@ import { sessionDisplayTitle } from "@/lib/session-title";
 import { translateCategory, translateSkill } from "@/lib/skill-translations";
 import type { WorkspaceProject } from "@/lib/workspaces";
 import { WANDER_MEMORY_PATHS } from "@/lib/wander-memory/paths";
+import { APP_PAGE_ROUTES, APP_SETTINGS_SECTIONS, settingsDeepLink } from "@/lib/app-routes";
 
 export type CommandPaletteGroupId =
   | "commands"
+  | "pages"
+  | "settings"
   | "wanderMemory"
   | "sessions"
   | "projects"
@@ -76,10 +79,21 @@ interface FilterOptions {
   maxPerGroup?: number;
 }
 
-const GROUP_ORDER: CommandPaletteGroupId[] = ["commands", "wanderMemory", "sessions", "projects", "skills", "files"];
+const GROUP_ORDER: CommandPaletteGroupId[] = [
+  "commands",
+  "pages",
+  "settings",
+  "wanderMemory",
+  "sessions",
+  "projects",
+  "skills",
+  "files",
+];
 
 export const COMMAND_PALETTE_GROUP_LABELS: Record<CommandPaletteGroupId, string> = {
   commands: "命令",
+  pages: "页面",
+  settings: "设置",
   wanderMemory: "Wander 记忆",
   sessions: "会话",
   projects: "项目",
@@ -500,6 +514,53 @@ export function buildFileItems(files: readonly CommandPaletteFileCandidate[]): C
   }));
 }
 
+function commandNavigateTargets(): Set<string> {
+  return new Set(
+    COMMAND_PALETTE_COMMANDS.flatMap((item) =>
+      item.action.type === "navigate" ? [item.action.to] : [],
+    ),
+  );
+}
+
+export function buildPageRouteItems(): CommandPaletteItem[] {
+  const covered = commandNavigateTargets();
+  return APP_PAGE_ROUTES.filter((entry) => !covered.has(entry.path)).map((entry, index) =>
+    makeNavigateItem({
+      id: `page-${entry.path}`,
+      group: "pages",
+      label: entry.label,
+      subtitle: entry.subtitle,
+      keywords: [...entry.keywords, entry.path, "page", "route", "页面", "路由"].filter(Boolean),
+      icon: entry.icon,
+      to: entry.path,
+      defaultVisible: false,
+      priority: 100 + index,
+    }),
+  );
+}
+
+export function buildSettingsItems(): CommandPaletteItem[] {
+  return APP_SETTINGS_SECTIONS.map((section, index) =>
+    makeNavigateItem({
+      id: `settings-${section.slug}`,
+      group: "settings",
+      label: section.label,
+      subtitle: section.subtitle,
+      keywords: [
+        ...section.keywords,
+        section.slug,
+        section.shortLabel,
+        `settings/${section.slug}`,
+        settingsDeepLink(section.slug),
+      ].filter(Boolean),
+      icon: section.icon,
+      to: settingsDeepLink(section.slug),
+      defaultVisible: false,
+      priority: 200 + index,
+    }),
+  );
+}
+
 export function buildCommandPaletteItems({
   sessions,
   projects,
@@ -508,6 +569,8 @@ export function buildCommandPaletteItems({
 }: BuildCommandPaletteItemsInput): CommandPaletteItem[] {
   return [
     ...COMMAND_PALETTE_COMMANDS,
+    ...buildPageRouteItems(),
+    ...buildSettingsItems(),
     ...buildSessionItems(sessions ?? []),
     ...buildProjectItems(projects ?? []),
     ...buildSkillItems(skills ?? []),

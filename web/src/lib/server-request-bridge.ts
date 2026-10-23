@@ -304,6 +304,27 @@ async function lockClarifyAnswer(
 }
 
 /**
+ * 内联 clarify 卡「确认并继续」：本地暂存全部答案，确认后按题目原顺序逐条落锁
+ * （clarify.lock），不用 Promise.all —— 内核按批维护剩余题目，并发落锁会让
+ * remaining 判定错乱。任一题送不到就停在原地，卡片留着可重试。
+ */
+export async function submitClarifyBatchAnswers(
+  prompts: PendingPrompt[],
+  answers: Record<string, string | null>,
+): Promise<boolean> {
+  for (const prompt of prompts) {
+    const requestId = prompt.serverRequestId;
+    const questionId = prompt.questionId;
+    if (!requestId || !questionId) return false;
+    const batch = batches.get(requestId);
+    if (!batch || !batch.open) return false;
+    const sent = await lockClarifyAnswer(prompt, questionId, answers[questionId] ?? null, batch);
+    if (!sent) return false;
+  }
+  return true;
+}
+
+/**
  * Answer a pending server-request prompt; the response frame goes out here.
  * 返回 false ＝ 应答帧没发出去（socket 未 OPEN），调用方必须保留卡片让用户重试；
  * 返回 "pending" ＝ clarify 锁帧异步在飞，结果由 onSettled 回调告知，移除卡片由落锁成功后负责。

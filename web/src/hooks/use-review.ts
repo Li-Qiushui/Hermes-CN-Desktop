@@ -47,6 +47,8 @@ export interface UseReview {
   shipInfo: ReviewShipInfo;
   shipBusy: boolean;
   actionError: string | null;
+  /** 拉取改动列表失败的原因（桥接/远程模式/权限等），null 表示没出错。 */
+  loadError: string | null;
   treeMode: ReviewTreeMode;
   commitDefault: CommitAction;
   refresh: () => void;
@@ -77,6 +79,10 @@ export function useReview(workspaceRoot: string, active: boolean): UseReview {
   const [shipInfo, setShipInfo] = useState<ReviewShipInfo>(EMPTY_SHIP);
   const [shipBusy, setShipBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  // 拉列表失败的原因。以前这里直接把错误吞掉（catch 里只清空 files），
+  // 结果「改动」页在远程连接、cwd 不可读、git 不可用等情况下都是一张白板，
+  // 用户只看到「没有拉取代码」而不知道该改哪里。现在把原文留下来显示。
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [treeMode, setTreeModeState] = useState<ReviewTreeMode>(() =>
     readStored(TREE_MODE_KEY, "tree", ["tree", "list"]),
   );
@@ -96,6 +102,7 @@ export function useReview(workspaceRoot: string, active: boolean): UseReview {
 
     if (!active || !cwd || !bridge) {
       setFiles([]);
+      setLoadError(null);
       // No backend verdict available — stay neutral so the "not a repo" empty
       // state never shows for a bridge/cwd gap (those have their own states).
       setIsRepo(true);
@@ -107,6 +114,7 @@ export function useReview(workspaceRoot: string, active: boolean): UseReview {
     try {
       const result = await bridge.list({ repoPath: cwd, scope: "uncommitted", baseRef: null });
       if (seq !== refreshSeq.current) return result.files;
+      setLoadError(null);
       setFiles(result.files);
       // The backend runs `git rev-parse --is-inside-work-tree`; trust its verdict.
       setIsRepo(result.isRepo);
@@ -119,8 +127,11 @@ export function useReview(workspaceRoot: string, active: boolean): UseReview {
         setDiff(null);
       }
       return result.files;
-    } catch {
-      if (seq === refreshSeq.current) setFiles([]);
+    } catch (error) {
+      if (seq === refreshSeq.current) {
+        setFiles([]);
+        setLoadError(error instanceof Error ? error.message : String(error));
+      }
       return [];
     } finally {
       if (seq === refreshSeq.current) setLoading(false);
@@ -332,6 +343,7 @@ export function useReview(workspaceRoot: string, active: boolean): UseReview {
     shipInfo,
     shipBusy,
     actionError,
+    loadError,
     treeMode,
     commitDefault,
     refresh: () => void refresh(),

@@ -77,3 +77,33 @@ export function reasoningEffortFromConfig(
     (agent as Record<string, unknown>)["reasoning_effort"],
   );
 }
+
+// 设置页暴露的五档（官方 desktop 同款），xhigh / max 仍可通过会话内的
+// composer 菜单选择，这里只在「当前配置已经落在高档位」时补进选项。
+export const SETTINGS_REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high"] as const;
+
+export function reasoningEffortSettingOptions(
+  current?: ReasoningEffort | null,
+): { value: ReasoningEffort; label: string }[] {
+  const values: ReasoningEffort[] = [...SETTINGS_REASONING_EFFORTS];
+  if (current && !values.includes(current)) values.push(current);
+  return values.map((value) => ({
+    value,
+    label: value === "none" ? "关闭" : REASONING_EFFORT_SHORT_LABELS[value],
+  }));
+}
+
+export function buildReasoningEffortUpdate(
+  config: Record<string, any> | undefined | null,
+  effort: ReasoningEffort,
+): Record<string, any> {
+  const base = config && typeof config === "object" ? config : {};
+  const agent = base.agent && typeof base.agent === "object" ? base.agent : {};
+  return {
+    ...base,
+    agent: {
+      ...agent,
+      reasoning_effort: isReasoningEffort(effort) ? effort : DEFAULT_REASONING_EFFORT,
+    },
+  };
+}

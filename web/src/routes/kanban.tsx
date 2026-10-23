@@ -18,6 +18,7 @@ import {
   Eye,
   ExternalLink,
   Folder,
+  FolderPlus,
   Inbox,
   ListTodo,
   Play,
@@ -34,21 +35,33 @@ import { CopyButton } from "@/components/ui/copy-button";
 import { Dropdown, type DropdownOption } from "@/components/ui/dropdown";
 import { PageSkeleton } from "@/components/page-skeleton";
 import { BoardColumn } from "@/components/kanban/board-column";
+import { BoardDialog, type BoardCreateInput } from "@/components/kanban/board-dialog";
 import { NewTaskDialog, type NewTaskInput } from "@/components/kanban/new-task-dialog";
 import { TaskDrawer } from "@/components/kanban/task-drawer";
+import { KanbanToolsetNotice } from "@/components/kanban/toolset-notice";
 import {
   useAddKanbanComment,
+  useAddKanbanLink,
+  useArchiveKanbanBoard,
   useBulkKanbanTasks,
+  useCreateKanbanBoard,
   useCreateKanbanTask,
+  useDecomposeKanbanTask,
+  useDeleteKanbanAttachment,
   useDeleteKanbanTask,
   useKanbanAssignees,
   useKanbanBoard,
   useKanbanBoards,
   useKanbanDiagnostics,
+  useKanbanProfiles,
   useKanbanTask,
   useKanbanTaskLog,
   useKanbanWorkflow,
+  useReassignKanbanTask,
+  useReclaimKanbanTask,
+  useRemoveKanbanLink,
   useUpdateKanbanTask,
+  useUploadKanbanAttachment,
 } from "@/hooks/use-kanban";
 import { useKanbanEvents } from "@/hooks/use-kanban-events";
 import { useStatus } from "@/hooks/use-status";
@@ -91,6 +104,14 @@ import {
   type KanbanTask,
   type KanbanWorkflowColumn,
 } from "@/lib/kanban";
+import {
+  buildBlockPatch,
+  buildUnblockPatch,
+  parseDecomposeOutcome,
+  profileOptions,
+  type DecomposeOutcome,
+  type LinkCandidate,
+} from "@/lib/kanban-orchestration";
 import { SectionShell } from "./section-shell";
 import s from "./kanban.module.css";
 
@@ -389,6 +410,58 @@ export function KanbanRoute() {
   const bulkMutation = useBulkKanbanTasks(boardSlug);
   const deleteMutation = useDeleteKanbanTask(boardSlug);
 
+  const profilesQuery = useKanbanProfiles();
+  const addLinkMutation = useAddKanbanLink(boardSlug);
+  const removeLinkMutation = useRemoveKanbanLink(boardSlug);
+  const reassignMutation = useReassignKanbanTask(boardSlug);
+  const reclaimMutation = useReclaimKanbanTask(boardSlug);
+  const decomposeMutation = useDecomposeKanbanTask(boardSlug);
+  const uploadMutation = useUploadKanbanAttachment(boardSlug);
+  const deleteAttachmentMutation = useDeleteKanbanAttachment(boardSlug);
+  const createBoardMutation = useCreateKanbanBoard();
+  const archiveBoardMutation = useArchiveKanbanBoard();
+
+  const [swimlanes, setSwimlanes] = useState(false);
+  const [boardDialogOpen, setBoardDialogOpen] = useState(false);
+  const [boardDialogError, setBoardDialogError] = useState<string | null>(null);
+  const [decomposeOutcome, setDecomposeOutcome] = useState<DecomposeOutcome | null>(null);
+
+  const profileNames = useMemo(
+    () => profileOptions(profilesQuery.data?.profiles).map((option) => option.value),
+    [profilesQuery.data],
+  );
+
+  const boardTasks = useMemo<LinkCandidate[]>(() => {
+    const columns = searchableBoard?.columns ?? [];
+    return columns.flatMap((column) =>
+      column.tasks.map((task) => ({ id: task.id, title: task.title, status: task.status })),
+    );
+  }, [searchableBoard]);
+
+  const orchestrationBusy = decomposeMutation.isPending
+    ? "decompose"
+    : addLinkMutation.isPending ||
+        removeLinkMutation.isPending ||
+        reassignMutation.isPending ||
+        uploadMutation.isPending ||
+        deleteAttachmentMutation.isPending ||
+        updateMutation.isPending
+      ? "action"
+      : null;
+
+  const orchestrationError = useMemo(() => {
+    for (const mutation of [
+      addLinkMutation,
+      removeLinkMutation,
+      reassignMutation,
+      uploadMutation,
+      deleteAttachmentMutation,
+    ]) {
+      if (mutation.isError) return errorText(mutation.error);
+    }
+    return null;
+  }, [addLinkMutation, removeLinkMutation, reassignMutation, uploadMutation, deleteAttachmentMutation]);
+
   const selectedDiagnostics = useMemo(() => {
     if (!selectedId) return null;
     const row = diagnosticsQuery.data?.diagnostics?.find((entry) => entry.task_id === selectedId);
@@ -540,6 +613,196 @@ export function KanbanRoute() {
     [commentMutation, pushToast, selectedId],
   );
 
+  useEffect(() => {
+    setDecomposeOutcome(null);
+  }, [selectedId]);
+
+  const handleAddLink = useCallback(
+    async (role: "parent" | "child", otherId: string) => {
+      if (!selectedId) return;
+      const parentId = role === "parent" ? otherId : selectedId;
+      const childId = role === "parent" ? selectedId : otherId;
+      try {
+        await addLinkMutation.mutateAsync({ parentId, childId, taskId: selectedId });
+        pushToast("ok", role === "parent" ? "已加为父任务" : "已加为子任务");
+      } catch (error) {
+        pushToast("error", `加依赖失败：${errorText(error)}`);
+      }
+    },
+    [addLinkMutation, pushToast, selectedId],
+  );
+
+  const handleRemoveLink = useCallback(
+    async (role: "parent" | "child", otherId: string) => {
+      if (!selectedId) return;
+      const parentId = role === "parent" ? otherId : selectedId;
+      const childId = role === "parent" ? selectedId : otherId;
+      try {
+        await removeLinkMutation.mutateAsync({ parentId, childId, taskId: selectedId });
+        pushToast("ok", "依赖已移除");
+      } catch (error) {
+        pushToast("error", `移除依赖失败：${errorText(error)}`);
+      }
+    },
+    [pushToast, removeLinkMutation, selectedId],
+  );
+
+  const patchSelected = useCallback(
+    async (body: Record<string, unknown>, okMessage: string) => {
+      if (!selectedId) return;
+      try {
+        await updateMutation.mutateAsync({ id: selectedId, body });
+        pushToast("ok", okMessage);
+      } catch (error) {
+        pushToast("error", `操作失败：${errorText(error)}`);
+      }
+    },
+    [pushToast, selectedId, updateMutation],
+  );
+
+  const handleBlock = useCallback(
+    (reason: string) => void patchSelected(buildBlockPatch(reason), "已标记为阻塞"),
+    [patchSelected],
+  );
+
+  const handleUnblock = useCallback(
+    () => void patchSelected(buildUnblockPatch(), "阻塞已解除"),
+    [patchSelected],
+  );
+
+  const handleDecompose = useCallback(async () => {
+    if (!selectedId) return;
+    try {
+      const result = await decomposeMutation.mutateAsync({ taskId: selectedId });
+      const outcome = parseDecomposeOutcome(result);
+      setDecomposeOutcome(outcome);
+      pushToast(outcome.ok ? "ok" : "warn", outcome.message);
+    } catch (error) {
+      const message = errorText(error);
+      setDecomposeOutcome({ ok: false, message, childIds: [], newTitle: null });
+      pushToast("error", `拆解请求失败：${message}`);
+    }
+  }, [decomposeMutation, pushToast, selectedId]);
+
+  const handleReassign = useCallback(
+    async (profile: string, reclaimFirst: boolean) => {
+      if (!selectedId) return;
+      try {
+        await reassignMutation.mutateAsync({ taskId: selectedId, profile, reclaimFirst });
+        pushToast("ok", `已重派给 ${profile}`);
+      } catch (error) {
+        pushToast("error", `重派失败：${errorText(error)}`);
+      }
+    },
+    [pushToast, reassignMutation, selectedId],
+  );
+
+  const handleUploadAttachment = useCallback(
+    async (file: File) => {
+      if (!selectedId) return;
+      try {
+        await uploadMutation.mutateAsync({ taskId: selectedId, file });
+        pushToast("ok", `已上传 ${file.name}`);
+      } catch (error) {
+        pushToast("error", `上传失败：${errorText(error)}`);
+      }
+    },
+    [pushToast, selectedId, uploadMutation],
+  );
+
+  const handleDeleteAttachment = useCallback(
+    async (attachmentId: number) => {
+      if (!selectedId) return;
+      const confirmed = await confirm({
+        title: "删除附件",
+        body: "确认删除这个附件？文件会从磁盘上移除。",
+        confirmLabel: "删除",
+        danger: true,
+      });
+      if (!confirmed) return;
+      try {
+        await deleteAttachmentMutation.mutateAsync({ taskId: selectedId, attachmentId });
+        pushToast("ok", "附件已删除");
+      } catch (error) {
+        pushToast("error", `删除附件失败：${errorText(error)}`);
+      }
+    },
+    [confirm, deleteAttachmentMutation, pushToast, selectedId],
+  );
+
+  const handleDiagnosticAction = useCallback(
+    async (kind: string, payload?: Record<string, unknown> | null) => {
+      if (!selectedId) return;
+      if (kind === "unblock") {
+        handleUnblock();
+        return;
+      }
+      if (kind === "reclaim") {
+        try {
+          await reclaimMutation.mutateAsync({ taskId: selectedId, reason: "手动回收（看板诊断）" });
+          pushToast("ok", "已回收占用，任务回到待执行");
+        } catch (error) {
+          pushToast("error", `回收失败：${errorText(error)}`);
+        }
+        return;
+      }
+      const reclaimFirst = payload?.reclaim_first === true;
+      pushToast(
+        "warn",
+        kind === "reassign"
+          ? `在下方「重派」里选 profile${reclaimFirst ? "（建议勾选先回收占用）" : ""}`
+          : "这条建议需要手动处理",
+      );
+    },
+    [handleUnblock, pushToast, reclaimMutation, selectedId],
+  );
+
+  const handleCreateBoard = useCallback(
+    async (input: BoardCreateInput) => {
+      setBoardDialogError(null);
+      try {
+        const result = await createBoardMutation.mutateAsync({
+          body: { slug: input.slug, name: input.name || undefined, icon: input.icon || undefined, switch: true },
+        });
+        const created = result?.board?.slug ?? input.slug;
+        setBoardDialogOpen(false);
+        boardSlugRef.current = true;
+        setBoardSlug(created);
+        setBoardView("active");
+        setSelectedId(null);
+        setBulkSelected([]);
+        setOverrides({});
+        pushToast("ok", `看板 ${created} 已创建`);
+      } catch (error) {
+        setBoardDialogError(errorText(error));
+      }
+    },
+    [createBoardMutation, pushToast],
+  );
+
+  const handleArchiveBoard = useCallback(async () => {
+    const board = boards.find((item) => item.slug === boardSlug);
+    const label = board?.name || boardSlug;
+    const confirmed = await confirm({
+      title: "归档当前看板",
+      body: `确认归档「${label}」？看板会移到 boards/_archived/，卡不会再出现在任何视图里，之后可以手动恢复。`,
+      confirmLabel: "归档",
+      danger: true,
+    });
+    if (!confirmed) return;
+    try {
+      await archiveBoardMutation.mutateAsync({ slug: boardSlug });
+      boardSlugRef.current = true;
+      setBoardSlug("default");
+      setSelectedId(null);
+      setBulkSelected([]);
+      setOverrides({});
+      pushToast("ok", `已归档「${label}」`);
+    } catch (error) {
+      pushToast("error", `归档失败：${errorText(error)}`);
+    }
+  }, [archiveBoardMutation, boardSlug, boards, confirm, pushToast]);
+
   const runBulk = useCallback(
     async (patch: Record<string, unknown>, label: string) => {
       const ids = [...bulkSelected];
@@ -657,6 +920,7 @@ export function KanbanRoute() {
       }
     >
       <div className={s.page}>
+        <KanbanToolsetNotice />
         <div className={s.toolbar}>
           <Dropdown
             ariaLabel="选择看板"
@@ -671,6 +935,29 @@ export function KanbanRoute() {
               setBulkSelected([]);
             }}
           />
+
+          <button
+            type="button"
+            className={s.secondaryButton}
+            onClick={() => {
+              setBoardDialogError(null);
+              setBoardDialogOpen(true);
+            }}
+          >
+            <FolderPlus size={14} aria-hidden="true" />
+            新建看板
+          </button>
+
+          <button
+            type="button"
+            className={s.secondaryButton}
+            onClick={() => void handleArchiveBoard()}
+            disabled={archiveBoardMutation.isPending || boards.length <= 1}
+            title={boards.length <= 1 ? "至少保留一个看板" : "归档当前看板"}
+          >
+            <Archive size={14} aria-hidden="true" />
+            归档看板
+          </button>
 
           <div className={s.segmented} role="group" aria-label="活跃或已归档">
             <button
@@ -760,6 +1047,15 @@ export function KanbanRoute() {
             <span>自动折叠空列</span>
           </label>
 
+          <label className={s.toggle}>
+            <input
+              type="checkbox"
+              checked={swimlanes}
+              onChange={(event) => setSwimlanes(event.target.checked)}
+            />
+            <span>按负责人分泳道</span>
+          </label>
+
           {boardView === "active" ? (
             <label className={s.toggle}>
               <input
@@ -844,6 +1140,7 @@ export function KanbanRoute() {
                   selectedId={selectedId}
                   bulkSelectedIds={bulkSelected}
                   canDrag={boardView === "active"}
+                  swimlanes={swimlanes}
                   onOpenTask={setSelectedId}
                   onToggleSelectTask={toggleBulkSelection}
                   onExpandDone={() => setShowDone(true)}
@@ -912,10 +1209,35 @@ export function KanbanRoute() {
         commenting={commentMutation.isPending}
         columns={allowedStatusOptions(workflowQuery.data, selectedTask?.status ?? "", workflowColumns)}
         assignees={assigneeNames}
+        profiles={profileNames}
+        boardTasks={boardTasks}
+        orchestrationBusy={orchestrationBusy}
+        orchestrationError={orchestrationError}
+        decompose={decomposeOutcome}
         saving={updateMutation.isPending}
         onClose={() => setSelectedId(null)}
         onSave={(patch) => void handleSaveDrawer(patch)}
         onAddComment={(body) => void handleAddComment(body)}
+        onAddLink={(role, otherId) => void handleAddLink(role, otherId)}
+        onRemoveLink={(role, otherId) => void handleRemoveLink(role, otherId)}
+        onBlock={(reason) => void handleBlock(reason)}
+        onUnblock={() => void handleUnblock()}
+        onDecompose={() => void handleDecompose()}
+        onReassign={(profile, reclaimFirst) => void handleReassign(profile, reclaimFirst)}
+        onUploadAttachment={(file) => void handleUploadAttachment(file)}
+        onDeleteAttachment={(attachmentId) => void handleDeleteAttachment(attachmentId)}
+        onDiagnosticAction={(kind, payload) => void handleDiagnosticAction(kind, payload)}
+      />
+
+      <BoardDialog
+        open={boardDialogOpen}
+        submitting={createBoardMutation.isPending}
+        error={boardDialogError}
+        onClose={() => {
+          setBoardDialogOpen(false);
+          setBoardDialogError(null);
+        }}
+        onSubmit={(input) => void handleCreateBoard(input)}
       />
 
       <NewTaskDialog

@@ -31,6 +31,7 @@ import {
   type PendingPrompt,
 } from "@/stores/chat";
 import { activeSessionIdAtom } from "@/stores/ui";
+import { inlinePromptClaimsAtom } from "@/stores/inline-prompts";
 import s from "./global-prompt-layer.module.css";
 
 const EXPIRY_NOTICE_MS = 6_000;
@@ -488,6 +489,7 @@ export function GlobalPromptLayer() {
   const removePrompt = useSetAtom(removePromptAtom);
   const activeSessionId = useAtomValue(activeSessionIdAtom);
   const setActiveSessionId = useSetAtom(activeSessionIdAtom);
+  const inlineClaimed = useAtomValue(inlinePromptClaimsAtom);
   const gwSessionId = useAtomValue(gwSessionIdAtom);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -495,10 +497,12 @@ export function GlobalPromptLayer() {
   const noticeTimer = useRef<number | null>(null);
   const baseline = useRef(0);
 
-  const prompts = useMemo(
-    () => [...eventPrompts, ...serverPrompts].sort((a, b) => a.receivedAt - b.receivedAt),
-    [eventPrompts, serverPrompts],
-  );
+  const prompts = useMemo(() => {
+    const claimed = new Set(inlineClaimed);
+    return [...eventPrompts, ...serverPrompts]
+      .filter((prompt) => !claimed.has(prompt.promptId))
+      .sort((a, b) => a.receivedAt - b.receivedAt);
+  }, [eventPrompts, serverPrompts, inlineClaimed]);
 
   if (prompts.length > baseline.current) baseline.current = prompts.length;
   if (prompts.length === 0) baseline.current = 0;

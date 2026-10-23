@@ -5,22 +5,62 @@ import {
   AlertTriangle,
   Cable,
   CheckCircle2,
+  Cloud,
   ExternalLink,
   Globe2,
+  MonitorSmartphone,
   RefreshCw,
   RotateCcw,
+  ShieldCheck,
+  ShieldOff,
+  Terminal,
   XCircle,
 } from "lucide-react";
 import { StatusResponse } from "@hermes/protocol";
 import type {
   AuthIdentity,
   AuthProviderInfo,
+  ConnectionConfigInput,
   ConnectionConfigView,
   ConnectionMode,
   TestConnectionResult,
 } from "@hermes/protocol";
 import { Alert, Button, Input, LoadingIndicator } from "@hermes/shared-ui";
 import { notifyConnectionAuthRestored } from "@/lib/connection-auth-events";
+import {
+  CONNECTION_KIND_LABELS,
+  DEFAULT_CLOUD_URL,
+  DEFAULT_SSH_TARGET,
+  createConnectionId,
+  hasSshErrors,
+  nextConnectionName,
+  readActiveConnectionId,
+  readConnectionRegistry,
+  removeAndPersist,
+  sshTargetSummary,
+  tokenRefFor,
+  upsertAndPersist,
+  validateSshTarget,
+  writeActiveConnectionId,
+  type GatewayMode,
+  type SavedConnection,
+  type SavedSshTarget,
+  type SshValidationErrors,
+} from "@/lib/connection-registry";
+import { loadSshHosts, type SshHostEntry } from "@/lib/ssh-config";
+import { ApiKeysSection } from "@/components/settings/connection/api-keys-section";
+import { ConnectionModeCards } from "@/components/settings/connection/mode-cards";
+import { DevicePanel } from "@/components/settings/connection/device-panel";
+import { SavedConnectionsList } from "@/components/settings/connection/saved-connections";
+import { SshTargetFields } from "@/components/settings/connection/ssh-target-fields";
+import { closeSshTunnel, openSshTunnel, probeSshTarget } from "@/components/settings/connection/ssh-bridge";
+import {
+  getSecretStorageStatus,
+  readConnectionToken,
+  saveConnectionToken,
+  type SecretStorageStatus,
+} from "@/components/settings/connection/secret-store";
+import c from "@/components/settings/connection/connection.module.css";
 import {
   connectionTargetLabel,
   isKernelDegraded,
@@ -42,10 +82,11 @@ interface SettingsSectionProps {
   onApplied?: (mode: ConnectionMode) => Promise<void> | void;
 }
 
-type ExternalTarget = "local" | "remote";
+type ExternalTarget = GatewayMode;
 type ProbeStatus = "idle" | "probing" | "reachable" | "unreachable" | "authRequired";
 type ConnectionMessage = { tone: "ok" | "error"; text: string; hint?: string };
 type PendingAction = { target: ExternalTarget; kind: "test" | "save" | "apply" };
+type PanelTab = "connection" | "devices" | "keys";
 
 interface DiagnosticsSnapshot {
   version: string;
@@ -133,6 +174,15 @@ function withLocalDashboardHint(message: ConnectionMessage, target: ExternalTarg
   return { ...message, hint: LOCAL_DASHBOARD_RECOVERY_HINT };
 }
 
+function initialGatewayMode(): GatewayMode {
+  if (typeof window === "undefined") return "local";
+  return window.__HERMES_RUNTIME__?.connectionMode === "remote" ? "remote" : "local";
+}
+
+function modeFromConnectionMode(mode: ConnectionMode | undefined): GatewayMode {
+  return mode === "remote" ? "remote" : "local";
+}
+
 /**
  * 内核降级提示：desktop 起不来本机内核、退回配置地址时置顶显示。
  * 只做展示 + 一个重试回调，方便单测直接渲染。
@@ -214,6 +264,70 @@ export function ConnectionSection({
   const [diagError, setDiagError] = useState("");
   const [diagLoading, setDiagLoading] = useState(false);
 
+  const [mode, setMode] = useState<GatewayMode>(() => initialGatewayMode());
+  const modeTouched = useRef(false);
+  const [panel, setPanel] = useState<PanelTab>("connection");
+  const [sshTarget, setSshTarget] = useState<SavedSshTarget>({ ...DEFAULT_SSH_TARGET });
+  const [sshErrors, setSshErrors] = useState<SshValidationErrors>({});
+  const [sshHosts, setSshHosts] = useState<SshHostEntry[]>([]);
+  const [sshConfigPath, setSshConfigPath] = useState<string | null>(null);
+  const [sshConfigError, setSshConfigError] = useState("");
+  const [sshHostsLoading, setSshHostsLoading] = useState(false);
+  const [probeMessage, setProbeMessage] = useState<ConnectionMessage | null>(null);
+  const [cloudUrl, setCloudUrl] = useState(DEFAULT_CLOUD_URL);
+  const [registry, setRegistry] = useState<SavedConnection[]>(() => readConnectionRegistry());
+  const [activeId, setActiveId] = useState<string | null>(() => readActiveConnectionId());
+  const [switchingId, setSwitchingId] = useState<string | null>(null);
+  const [secretStatus, setSecretStatus] = useState<SecretStorageStatus | null>(null);
+
+  const selectMode = (next: GatewayMode) => {
+    modeTouched.current = true;
+    setMode(next);
+    setMessage(null);
+    setProbeMessage(null);
+  };
+
+  const changeSshTarget = (patch: Partial<SavedSshTarget>) => {
+    setSshTarget((current) => {
+      const merged = { ...current, ...patch };
+      if (patch.host !== undefined) {
+        const entry = sshHosts.find((item) => item.aliases.includes(patch.host!.trim()));
+        if (entry) {
+          merged.user = entry.user ?? "";
+          merged.port = entry.port ?? DEFAULT_SSH_TARGET.port;
+          merged.keyPath = entry.identityFile ?? "";
+        }
+      }
+      return merged;
+    });
+    setSshErrors({});
+  };
+
+  useEffect(() => {
+    if (!supported) return;
+    const desktopBridge = window.hermesDesktop;
+    if (!desktopBridge?.windowType) return;
+    setSshHostsLoading(true);
+    loadSshHosts()
+      .then((result) => {
+        setSshHosts(result.hosts);
+        setSshConfigPath(result.configPath);
+        setSshConfigError(result.error ?? "");
+      })
+      .finally(() => setSshHostsLoading(false));
+  }, [supported]);
+
+  useEffect(() => {
+    if (!supported) return;
+    let cancelled = false;
+    void getSecretStorageStatus().then((status) => {
+      if (!cancelled) setSecretStatus(status);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [supported]);
+
   useEffect(() => {
     if (!desktop?.getConnectionConfig) return;
     desktop
@@ -231,6 +345,12 @@ export function ConnectionSection({
   const envOverride = config?.envOverride ?? false;
   const busy = pending !== null;
   const disabled = !supported || envOverride || busy || (externalOnly && !config);
+
+  useEffect(() => {
+    if (!config || modeTouched.current) return;
+    setMode(modeFromConnectionMode(config.mode));
+  }, [config]);
+
   const trimmedLocalUrl = localUrl.trim() || DEFAULT_LOCAL_URL;
   const trimmedRemoteUrl = remoteUrl.trim();
   const effectiveMode = config?.effectiveMode ?? "managed";
@@ -368,8 +488,12 @@ export function ConnectionSection({
   const remoteReady = gated
     ? Boolean(identity)
     : Boolean(trimmedRemoteUrl && (tokenInput.trim() || config?.remoteTokenSet));
+  const cloudReady = gated
+    ? Boolean(identity)
+    : Boolean(cloudUrl.trim() && (tokenInput.trim() || config?.remoteTokenSet));
   const localReady = Boolean(trimmedLocalUrl);
-  const readyFor = (target: ExternalTarget) => (target === "local" ? localReady : remoteReady);
+  const readyFor = (target: ExternalTarget) =>
+    target === "local" ? localReady : target === "cloud" ? cloudReady : target === "ssh" ? true : remoteReady;
   const identityLabel = identity
     ? identity.displayName || identity.email || identity.userId || "已登录"
     : null;
@@ -401,16 +525,45 @@ export function ConnectionSection({
   });
 
   const handleTest = async (target: ExternalTarget) => {
-    if (!desktop?.testConnectionConfig) return;
     setMessage(null);
+    if (target === "ssh") {
+      const errors = validateSshTarget(sshTarget);
+      setSshErrors(errors);
+      if (hasSshErrors(errors)) {
+        setMessage({ tone: "error", text: "SSH 目标字段有误，先修正标红的项" });
+        return;
+      }
+      setPending({ target, kind: "test" });
+      setProbeMessage(null);
+      try {
+        const result = await probeSshTarget(sshTarget);
+        setProbeMessage(
+          result.ok
+            ? {
+                tone: "ok",
+                text: `SSH 可达（${result.host}${result.version ? ` · ${result.version}` : ""}）`,
+              }
+            : {
+                tone: "error",
+                text: result.error ?? "SSH 探测失败",
+                hint: result.stderr?.trim() || undefined,
+              },
+        );
+      } finally {
+        setPending(null);
+      }
+      return;
+    }
+    if (!desktop?.testConnectionConfig) return;
+    const remoteUrlForTarget = target === "local" ? undefined : target === "cloud" ? cloudUrl.trim() : trimmedRemoteUrl;
     setPending({ target, kind: "test" });
     try {
       const result = await desktop.testConnectionConfig({
-        mode: target,
+        mode: target === "local" ? "local" : "remote",
         localUrl: target === "local" ? trimmedLocalUrl : undefined,
-        remoteUrl: target === "remote" ? trimmedRemoteUrl : undefined,
-        remoteToken: target === "remote" && !gated ? tokenInput || undefined : undefined,
-        remoteAuthMode: target === "remote" ? (gated ? "oauth" : "token") : undefined,
+        remoteUrl: remoteUrlForTarget,
+        remoteToken: target === "local" || gated ? undefined : tokenInput || undefined,
+        remoteAuthMode: target === "local" ? undefined : gated ? "oauth" : "token",
       });
       setMessage(withLocalDashboardHint(testResultSummary(result), target));
     } catch (error) {
@@ -420,27 +573,115 @@ export function ConnectionSection({
     }
   };
 
+  const targetUrl = (target: ExternalTarget): string => {
+    if (target === "local") return trimmedLocalUrl;
+    if (target === "cloud") return cloudUrl.trim();
+    return trimmedRemoteUrl;
+  };
+
+  const persistRegistryEntry = async (
+    kind: GatewayMode,
+    name: string,
+    url: string,
+    token: string,
+    ssh: SavedSshTarget | null,
+  ): Promise<SavedConnection> => {
+    const existing = registry.find((item) =>
+      kind === "ssh" ? item.kind === "ssh" && sshTargetSummary(item.ssh ?? DEFAULT_SSH_TARGET) === name : item.kind === kind && item.url === url,
+    );
+    const id = existing?.id ?? createConnectionId(kind);
+    let tokenRef: string | null = existing?.tokenRef ?? null;
+    if (token.trim()) {
+      const saved = await saveConnectionToken(tokenRefFor(id), token.trim());
+      if (saved.ok) tokenRef = tokenRefFor(id);
+      else if (saved.reason === "unsupported") {
+        setMessage({
+          tone: "error",
+          text: "本系统未启用加密存储，令牌不会落盘；连接后如需切换请重新填写。",
+        });
+      }
+    }
+    const entry: SavedConnection = {
+      id,
+      kind,
+      name: existing?.name ?? (name || nextConnectionName(registry, kind)),
+      url,
+      tokenRef,
+      ssh: ssh ? { ...ssh } : null,
+      createdAt: existing?.createdAt ?? Date.now(),
+      lastUsedAt: Date.now(),
+    };
+    setRegistry(upsertAndPersist(entry));
+    setActiveId(entry.id);
+    writeActiveConnectionId(entry.id);
+    return entry;
+  };
+
   const submit = async (target: ExternalTarget, apply: boolean) => {
+    if (target === "ssh") {
+      const errors = validateSshTarget(sshTarget);
+      setSshErrors(errors);
+      if (hasSshErrors(errors)) {
+        setMessage({ tone: "error", text: "SSH 目标字段有误，先修正标红的项" });
+        return;
+      }
+      setMessage(null);
+      setPending({ target, kind: apply ? "apply" : "save" });
+      try {
+        const entry = await persistRegistryEntry(
+          "ssh",
+          sshTargetSummary(sshTarget),
+          "",
+          "",
+          sshTarget,
+        );
+        if (!apply) {
+          setMessage({ tone: "ok", text: "已保存 SSH 目标，之后可在连接列表里一键切换" });
+          return;
+        }
+        const tunnel = await openSshTunnel(`conn-${entry.id}`, sshTarget);
+        const result = await desktop!.applyConnectionConfig!({ mode: "local", localUrl: tunnel.remoteUrl });
+        if (result.ok) {
+          setMessage({ tone: "ok", text: `SSH 隧道已建立（本地端口 ${tunnel.localPort}），正在重新加载界面…` });
+          if (onApplied) {
+            await onApplied("local");
+            return;
+          }
+          window.setTimeout(() => window.location.reload(), 600);
+          return;
+        }
+        await closeSshTunnel(`conn-${entry.id}`);
+        setMessage({ tone: "error", text: result.error ?? "SSH 隧道已断开：远端内核没连上" });
+      } catch (error) {
+        setMessage({ tone: "error", text: error instanceof Error ? error.message : String(error) });
+      } finally {
+        setPending(null);
+      }
+      return;
+    }
+
     if (!readyFor(target)) {
       setMessage({
         tone: "error",
-        text: target === "remote" ? "请先填写远程地址和会话令牌" : "请先填写本机连接地址",
+        text: target === "remote" || target === "cloud" ? "请先填写地址和会话令牌" : "请先填写本机连接地址",
       });
       return;
     }
     setMessage(null);
     setPending({ target, kind: apply ? "apply" : "save" });
     try {
+      const url = targetUrl(target);
       const payload = {
-        mode: target as ConnectionMode,
+        mode: (target === "local" ? "local" : "remote") as ConnectionMode,
         localUrl: target === "local" ? trimmedLocalUrl : undefined,
-        remoteUrl: target === "remote" ? trimmedRemoteUrl : undefined,
-        remoteToken: target === "remote" && !gated ? tokenInput || undefined : undefined,
-        remoteAuthMode: target === "remote" ? (gated ? ("oauth" as const) : ("token" as const)) : undefined,
+        remoteUrl: target === "local" ? undefined : url,
+        remoteToken: target === "local" || gated ? undefined : tokenInput || undefined,
+        remoteAuthMode: target === "local" ? undefined : gated ? ("oauth" as const) : ("token" as const),
       };
       if (apply) {
         const result = await desktop!.applyConnectionConfig!(payload);
         if (result.ok) {
+          await persistRegistryEntry(target, url || CONNECTION_KIND_LABELS[target], url, tokenInput, null);
           setMessage({ tone: "ok", text: "已切换，正在重新加载界面…" });
           if (onApplied) {
             await onApplied(target as ConnectionMode);
@@ -453,6 +694,7 @@ export function ConnectionSection({
       } else {
         const view = await desktop!.saveConnectionConfig!(payload);
         setConfig(view);
+        await persistRegistryEntry(target, url || CONNECTION_KIND_LABELS[target], url, tokenInput, null);
         setTokenInput("");
         setMessage({ tone: "ok", text: "已保存，重启桌面端后生效" });
       }
@@ -461,6 +703,54 @@ export function ConnectionSection({
     } finally {
       setPending(null);
     }
+  };
+
+  const handleSwitchConnection = async (connection: SavedConnection) => {
+    setMessage(null);
+    setSwitchingId(connection.id);
+    try {
+      let payload: ConnectionConfigInput;
+      if (connection.kind === "local") {
+        payload = { mode: "local", localUrl: connection.url || trimmedLocalUrl };
+      } else if (connection.kind === "ssh") {
+        const tunnel = await openSshTunnel(`conn-${connection.id}`, connection.ssh ?? DEFAULT_SSH_TARGET);
+        payload = { mode: "local", localUrl: tunnel.remoteUrl };
+      } else {
+        const token = connection.tokenRef ? await readConnectionToken(connection.tokenRef) : null;
+        payload = {
+          mode: "remote",
+          remoteUrl: connection.url,
+          remoteToken: token ?? undefined,
+          remoteAuthMode: "token",
+        };
+      }
+      const result = await desktop!.applyConnectionConfig!(payload);
+      if (!result.ok) {
+        setMessage({ tone: "error", text: result.error ?? "切换失败" });
+        return;
+      }
+      writeActiveConnectionId(connection.id);
+      setActiveId(connection.id);
+      setRegistry(upsertAndPersist({ ...connection, lastUsedAt: Date.now() }));
+      setMessage({ tone: "ok", text: `已切换到「${connection.name}」，正在重新加载界面…` });
+      if (onApplied) {
+        await onApplied(connection.kind === "ssh" ? "local" : payload.mode ?? "local");
+        return;
+      }
+      window.setTimeout(() => window.location.reload(), 600);
+    } catch (error) {
+      setMessage({ tone: "error", text: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setSwitchingId(null);
+    }
+  };
+
+  const handleDeleteConnection = (connection: SavedConnection) => {
+    const next = removeAndPersist(connection.id);
+    setRegistry(next);
+    if (activeId === connection.id) setActiveId(null);
+    if (connection.kind === "ssh") void closeSshTunnel(`conn-${connection.id}`);
+    setMessage({ tone: "ok", text: `已删除「${connection.name}」` });
   };
 
   const handleOpenBrowser = async () => {
@@ -602,6 +892,119 @@ export function ConnectionSection({
         </Alert>
       )}
 
+      {!externalOnly && (
+        <div className={c.tabBar} role="tablist" aria-label="连接子页">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={panel === "connection"}
+            className={c.tab}
+            data-active={panel === "connection" ? "true" : "false"}
+            data-testid="panel-tab-connection"
+            onClick={() => setPanel("connection")}
+          >
+            <Cable size={13} aria-hidden="true" />
+            连接
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={panel === "devices"}
+            className={c.tab}
+            data-active={panel === "devices" ? "true" : "false"}
+            data-testid="panel-tab-devices"
+            onClick={() => setPanel("devices")}
+          >
+            <MonitorSmartphone size={13} aria-hidden="true" />
+            设备
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={panel === "keys"}
+            className={c.tab}
+            data-active={panel === "keys" ? "true" : "false"}
+            data-testid="panel-tab-keys"
+            onClick={() => setPanel("keys")}
+          >
+            <ShieldCheck size={13} aria-hidden="true" />
+            API 密钥
+          </button>
+        </div>
+      )}
+
+      {!externalOnly && panel === "devices" ? (
+        <ConnSection
+          icon={MonitorSmartphone}
+          title="设备"
+          description="当前内核与桌面端的连接情况。内核没有上报客户端清单的接口，这里列出本机可确认的信息。"
+        >
+          <DevicePanel
+            kernelMode={kernelStatus?.mode ?? null}
+            kernelPort={kernelStatus?.port ?? null}
+            kernelPid={kernelStatus?.pid ?? null}
+            version={diag?.version ?? null}
+            gatewayState={diag?.gatewayState ?? null}
+            activeMode={mode}
+            localKernelAddress={kernelAddressValue}
+            connections={registry}
+          />
+        </ConnSection>
+      ) : !externalOnly && panel === "keys" ? (
+        <ApiKeysSection showHeading={false} />
+      ) : (
+        <>
+          {!externalOnly && (
+            <ConnSection
+              icon={Cable}
+              title="连接模式"
+              description="先选目标类型，再填这一类的连接参数；保存后会进下面的连接列表。"
+            >
+              <ConnectionModeCards
+                value={mode}
+                onChange={selectMode}
+                disabled={disabled}
+                currentMode={modeFromConnectionMode(config?.mode)}
+              />
+              <div
+                className={c.notice}
+                data-tone={secretStatus?.available ? "ok" : "warn"}
+                data-testid="secret-storage-status"
+              >
+                {secretStatus?.available ? (
+                  <ShieldCheck size={14} aria-hidden="true" />
+                ) : (
+                  <ShieldOff size={14} aria-hidden="true" />
+                )}
+                <span>
+                  {secretStatus === null
+                    ? "正在检测系统加密存储…"
+                    : secretStatus.available
+                      ? `连接令牌使用系统 DPAPI 加密存储（${secretStatus.scheme.toUpperCase()}），磁盘上只有密文，连接时再解密。`
+                      : "本系统未启用加密存储：连接令牌不会写入磁盘，切换连接时需要重新填写。"}
+                </span>
+              </div>
+            </ConnSection>
+          )}
+
+          {!externalOnly && (
+            <ConnSection
+              icon={MonitorSmartphone}
+              title="已保存的连接"
+              description="本机保存过的连接目标，点「切换」直接生效；令牌只存加密引用。"
+            >
+              <SavedConnectionsList
+                items={registry}
+                activeId={activeId}
+                onSelect={(connection) => void handleSwitchConnection(connection)}
+                onDelete={handleDeleteConnection}
+                busyId={switchingId}
+                disabled={disabled}
+              />
+            </ConnSection>
+          )}
+
+      {(mode === "local" || externalOnly) && (
       <ConnSection
         icon={Cable}
         title="本机内核"
@@ -683,7 +1086,9 @@ export function ConnectionSection({
           </Alert>
         )}
       </ConnSection>
+      )}
 
+      {(mode === "remote" || externalOnly) && (
       <ConnSection
         icon={Globe2}
         title="远程连接"
@@ -870,6 +1275,153 @@ export function ConnectionSection({
           切换远程连接后需要重启桌面端生效；本机内核与远程连接互斥，同一时间只有一个连接目标。
         </div>
       </ConnSection>
+      )}
+
+      {mode === "cloud" && (
+      <ConnSection
+        icon={Cloud}
+        title="云端实例"
+        description="连接 Nous 云端托管的 Hermes 实例：地址由云端控制台给出，令牌用于鉴权。"
+        badge={config?.mode === "remote" && cloudUrl.trim() && config.remoteUrl === cloudUrl.trim() ? <span className={s.connSectionBadge}>当前目标</span> : undefined}
+      >
+        <div className={s.row}>
+          <div className={s.rowLeft}>
+            <div className={s.rowLabel}>实例地址</div>
+            <div className={s.rowSub}>云端实例网关地址，形如 https://your-agent.cloud.nousresearch.com</div>
+          </div>
+          <div className={s.rowRight}>
+            <Input
+              mono
+              style={{ minWidth: 280 }}
+              value={cloudUrl}
+              placeholder={DEFAULT_CLOUD_URL}
+              disabled={disabled}
+              onChange={(event) => setCloudUrl(event.target.value)}
+              spellCheck={false}
+              data-testid="cloud-url-input"
+            />
+          </div>
+        </div>
+
+        <div className={s.row}>
+          <div className={s.rowLeft}>
+            <div className={s.rowLabel}>实例令牌</div>
+            <div className={s.rowSub}>云端实例的会话令牌，保存时走系统加密存储，磁盘上只留密文引用。</div>
+          </div>
+          <div className={s.rowRight}>
+            <Input
+              type="password"
+              style={{ minWidth: 280 }}
+              value={tokenInput}
+              placeholder={tokenPlaceholder}
+              disabled={disabled}
+              onChange={(event) => setTokenInput(event.target.value)}
+              autoComplete="off"
+              spellCheck={false}
+              data-testid="cloud-token-input"
+            />
+          </div>
+        </div>
+
+        <div className={s.connSectionActions}>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => void handleTest("cloud")}
+            disabled={disabled || !cloudUrl.trim()}
+            loading={pending?.target === "cloud" && pending.kind === "test"}
+            leadingIcon={<Cable size={12} />}
+          >
+            测试连接
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => void submit("cloud", false)}
+            disabled={disabled || !cloudReady}
+            loading={pending?.target === "cloud" && pending.kind === "save"}
+          >
+            仅保存
+          </Button>
+          <Button
+            type="button"
+            variant="solid"
+            tone="accent"
+            onClick={() => void submit("cloud", true)}
+            disabled={disabled || !cloudReady}
+            loading={pending?.target === "cloud" && pending.kind === "apply"}
+          >
+            保存并连接云端
+          </Button>
+        </div>
+        <div className={s.connSectionNote}>
+          云端实例复用远程连接通道（协议侧仍是 remote），切换后同样需要重载界面生效。
+        </div>
+      </ConnSection>
+      )}
+
+      {mode === "ssh" && (
+      <ConnSection
+        icon={Terminal}
+        title="SSH 远端"
+        description="用 ssh 端口转发接入远端内核：桌面端起 -L 隧道，再把连接目标指向本地隧道端口。"
+      >
+        <SshTargetFields
+          target={sshTarget}
+          errors={sshErrors}
+          onChange={changeSshTarget}
+          hosts={sshHosts}
+          hostsLoading={sshHostsLoading}
+          configPath={sshConfigPath}
+          configError={sshConfigError}
+          disabled={disabled}
+        />
+
+        {probeMessage && (
+          <Alert className={s.connResult} tone={probeMessage.tone} size="sm" data-testid="ssh-probe-result">
+            <div>{probeMessage.text}</div>
+            {probeMessage.hint && <div className={s.connResultHint}>{probeMessage.hint}</div>}
+          </Alert>
+        )}
+
+        <div className={s.connSectionActions}>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => void handleTest("ssh")}
+            disabled={disabled || !sshTarget.host.trim()}
+            loading={pending?.target === "ssh" && pending.kind === "test"}
+            leadingIcon={<Terminal size={12} />}
+            data-testid="ssh-probe-button"
+          >
+            测试连接（ssh 探针）
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => void submit("ssh", false)}
+            disabled={disabled}
+            loading={pending?.target === "ssh" && pending.kind === "save"}
+          >
+            仅保存
+          </Button>
+          <Button
+            type="button"
+            variant="solid"
+            tone="accent"
+            onClick={() => void submit("ssh", true)}
+            disabled={disabled}
+            loading={pending?.target === "ssh" && pending.kind === "apply"}
+            data-testid="ssh-connect-button"
+          >
+            建立隧道并连接
+          </Button>
+        </div>
+        <div className={s.connSectionNote}>
+          探针会在远端执行 <code>hermes --version</code>，用真实 ssh 连接判断可达性；隧道建好后由内核从远端页面读取会话令牌。
+        </div>
+      </ConnSection>
+      )}
 
       <ConnSection
         icon={Activity}
@@ -922,12 +1474,26 @@ export function ConnectionSection({
           </Button>
         </div>
       </ConnSection>
+        </>
+      )}
 
       {message && (
         <Alert className={s.connResult} tone={message.tone} size="sm">
           <div>{message.text}</div>
           {message.hint && <div className={s.connResultHint}>{message.hint}</div>}
         </Alert>
+      )}
+
+      {!externalOnly && (
+        <div className={s.connSectionActions} data-testid="api-keys-entry">
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={() => setPanel("keys")}
+          >
+            打开「API 密钥」分区（工具密钥 / 网关密钥）
+          </Button>
+        </div>
       )}
     </div>
   );

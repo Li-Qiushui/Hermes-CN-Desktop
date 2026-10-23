@@ -547,14 +547,46 @@
   border-radius: 0;
   padding: 8px 8px;
   display: grid;
-  grid-template-columns: 12px minmax(0, 1fr) auto;
+  grid-template-columns: 12px minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 8px;
   color: var(--h-text-2);
   background: transparent;
-  cursor: pointer;
   text-align: left;
   font-family: var(--h-font-cn);
+}
+
+.runOpen {
+  appearance: none;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.runOutputButton {
+  appearance: none;
+  border: 1px solid var(--h-line);
+  border-radius: 0;
+  padding: 2px 8px;
+  color: var(--h-text-3);
+  background: var(--h-bg-input);
+  font-family: var(--h-font-cn);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.runOutputButton:hover {
+  color: var(--h-text);
+  background: var(--h-bg-soft);
 }
 
 .runRow:hover {

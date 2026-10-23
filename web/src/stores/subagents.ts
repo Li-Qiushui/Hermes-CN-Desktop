@@ -24,6 +24,12 @@ export interface SubagentStreamEntry {
 export interface SubagentProgress {
   id: string;
   parentId: string | null;
+  /** 内核 subagent_id（原生事件才有）。delegate_task 兜底合成行没有，因而不可中断。 */
+  subagentId?: string;
+  /** 子代理自己的会话 id（原生事件 child_session_id），有才能跳转到它的会话。 */
+  childSessionId?: string;
+  /** 同一次 delegate_task 派发的分组 id（原生事件 delegation_id）。 */
+  delegationId?: string;
   goal: string;
   model?: string;
   status: SubagentStatus;
@@ -171,6 +177,9 @@ function toProgress(
   return {
     id: prev?.id ?? idOf(payload),
     parentId: str(payload.parent_id) || prev?.parentId || null,
+    subagentId: str(payload.subagent_id) || prev?.subagentId,
+    childSessionId: str(payload.child_session_id) || prev?.childSessionId,
+    delegationId: str(payload.delegation_id) || prev?.delegationId,
     goal: str(payload.goal) || prev?.goal || "Subagent",
     model: str(payload.model) || prev?.model,
     status,
@@ -336,6 +345,52 @@ export const flattenSubagents = (nodes: readonly SubagentNode[]): SubagentNode[]
 
 export const activeSubagentCount = (items: readonly SubagentProgress[]) =>
   items.filter((item) => item.status === "queued" || item.status === "running").length;
+
+// ── 监视面板用的归类/排序（纯函数，便于单测） ──────────────────────────────
+
+export type SubagentOutcome = "running" | "completed" | "failed";
+
+/** 三分类：中断也算失败——它没跑完，混进「完成」会让人误判。 */
+export const subagentOutcome = (status: SubagentStatus): SubagentOutcome =>
+  status === "running" || status === "queued"
+    ? "running"
+    : status === "completed"
+      ? "completed"
+      : "failed";
+
+const OUTCOME_RANK: Record<SubagentOutcome, number> = { running: 0, failed: 1, completed: 2 };
+
+/** 面板顺序：运行中 → 失败 → 已完成，同组按派发时间。 */
+export function compareSubagentPanelOrder(
+  a: { status: SubagentStatus; startedAt: number },
+  b: { status: SubagentStatus; startedAt: number },
+): number {
+  const rank = OUTCOME_RANK[subagentOutcome(a.status)] - OUTCOME_RANK[subagentOutcome(b.status)];
+  return rank !== 0 ? rank : a.startedAt - b.startedAt;
+}
+
+export function sortSubagentsForPanel<T extends { status: SubagentStatus; startedAt: number }>(
+  items: readonly T[],
+): T[] {
+  return [...items].sort(compareSubagentPanelOrder);
+}
+
+export function countSubagentOutcomes(
+  items: readonly { status: SubagentStatus }[],
+): Record<SubagentOutcome, number> {
+  const out: Record<SubagentOutcome, number> = { running: 0, completed: 0, failed: 0 };
+  for (const item of items) out[subagentOutcome(item.status)] += 1;
+  return out;
+}
+
+/** 面板一行里的「最后一行输出」：跳过空串取最后一条非空。 */
+export function lastSubagentOutput(item: Pick<SubagentProgress, "stream">): string {
+  for (let index = item.stream.length - 1; index >= 0; index -= 1) {
+    const text = item.stream[index]!.text.trim();
+    if (text) return text;
+  }
+  return "";
+}
 
 // ── Jotai state + gateway routing ───────────────────────────────────────────
 

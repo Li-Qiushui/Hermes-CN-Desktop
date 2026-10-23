@@ -48,16 +48,32 @@ const h = vi.hoisted(() => {
     board: { columns: [{ name: "todo", tasks }], latest_event_id: 9 },
     workflow: [
       { key: "todo", label: "Todo", drag_target: true },
+      { key: "blocked", label: "Blocked", drag_target: true },
       { key: "done", label: "Done", drag_target: true },
     ],
+    boards: [
+      { slug: "default", name: "默认看板", total: 3, is_current: true },
+      { slug: "other", name: "另一个看板", total: 1 },
+    ],
+    profiles: [{ name: "writer" }, { name: "reviewer" }],
     deleteMock: vi.fn(),
     cancelDispatchMock: vi.fn(),
     confirmMock: vi.fn(),
+    updateMock: vi.fn(),
+    addLinkMock: vi.fn(),
+    removeLinkMock: vi.fn(),
+    reassignMock: vi.fn(),
+    reclaimMock: vi.fn(),
+    decomposeMock: vi.fn(),
+    uploadMock: vi.fn(),
+    deleteAttachmentMock: vi.fn(),
+    createBoardMock: vi.fn(),
+    archiveBoardMock: vi.fn(),
   };
 });
 
 vi.mock("@/hooks/use-kanban", () => ({
-  useKanbanBoards: () => ({ data: { boards: [], current: "default" } }),
+  useKanbanBoards: () => ({ data: { boards: h.boards, current: "default" } }),
   useKanbanBoard: () => ({
     data: h.board,
     isPending: false,
@@ -68,13 +84,38 @@ vi.mock("@/hooks/use-kanban", () => ({
   }),
   useKanbanWorkflow: () => ({ data: { columns: h.workflow }, isPending: false, isError: false, error: null }),
   useKanbanAssignees: () => ({ data: { assignees: [{ name: "writer" }] } }),
+  useKanbanProfiles: () => ({ data: { profiles: h.profiles } }),
   useKanbanTask: () => ({ data: null, isPending: false, isError: false, error: null }),
   useKanbanDiagnostics: () => ({ data: null }),
   useKanbanTaskLog: () => ({ data: null, isFetching: false }),
-  useUpdateKanbanTask: () => ({ mutateAsync: vi.fn(), isPending: false, isError: false, error: null }),
+  useUpdateKanbanTask: () => ({
+    mutateAsync: h.updateMock,
+    isPending: false,
+    isError: false,
+    error: null,
+  }),
   useCreateKanbanTask: () => ({ mutateAsync: vi.fn(), isPending: false, isError: false, error: null }),
   useAddKanbanComment: () => ({ mutateAsync: vi.fn(), isPending: false, isError: false, error: null }),
   useBulkKanbanTasks: () => ({ mutateAsync: vi.fn(), isPending: false, isError: false, error: null }),
+  useAddKanbanLink: () => ({ mutateAsync: h.addLinkMock, isPending: false, isError: false, error: null }),
+  useRemoveKanbanLink: () => ({
+    mutateAsync: h.removeLinkMock,
+    isPending: false,
+    isError: false,
+    error: null,
+  }),
+  useReassignKanbanTask: () => ({ mutateAsync: h.reassignMock, isPending: false, isError: false, error: null }),
+  useReclaimKanbanTask: () => ({ mutateAsync: h.reclaimMock, isPending: false, isError: false, error: null }),
+  useDecomposeKanbanTask: () => ({ mutateAsync: h.decomposeMock, isPending: false, isError: false, error: null }),
+  useUploadKanbanAttachment: () => ({ mutateAsync: h.uploadMock, isPending: false, isError: false, error: null }),
+  useDeleteKanbanAttachment: () => ({
+    mutateAsync: h.deleteAttachmentMock,
+    isPending: false,
+    isError: false,
+    error: null,
+  }),
+  useCreateKanbanBoard: () => ({ mutateAsync: h.createBoardMock, isPending: false, isError: false, error: null }),
+  useArchiveKanbanBoard: () => ({ mutateAsync: h.archiveBoardMock, isPending: false, isError: false, error: null }),
   useDeleteKanbanTask: () => ({
     mutateAsync: h.deleteMock,
     isPending: false,
@@ -97,6 +138,17 @@ vi.mock("@/lib/kanban-dispatch", () => ({
 
 vi.mock("@/lib/use-confirm", () => ({
   useConfirm: () => ({ confirm: h.confirmMock, prompt: vi.fn() }),
+}));
+
+vi.mock("@/hooks/use-toolsets", () => ({
+  useToolsets: () => ({
+    data: undefined,
+    isError: false,
+    isLoading: false,
+    isFetching: false,
+    refetch: vi.fn(),
+  }),
+  useToggleToolset: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
 }));
 
 import { KanbanRoute } from "./kanban";
@@ -173,5 +225,131 @@ describe("KanbanRoute 搜索与批量删除", () => {
       unmount();
     });
     expect(cancelDispatchMock).toHaveBeenCalled();
+  });
+});
+
+describe("KanbanRoute 编排与看板管理", () => {
+  const { updateMock, addLinkMock, reassignMock, decomposeMock, createBoardMock, archiveBoardMock, confirmMock } = h;
+
+  beforeEach(() => {
+    updateMock.mockReset();
+    updateMock.mockResolvedValue(undefined);
+    addLinkMock.mockReset();
+    addLinkMock.mockResolvedValue({ ok: true });
+    reassignMock.mockReset();
+    reassignMock.mockResolvedValue({ ok: true, task_id: "t_body" });
+    decomposeMock.mockReset();
+    createBoardMock.mockReset();
+    createBoardMock.mockResolvedValue({ board: { slug: "hermes-cn" }, current: "hermes-cn" });
+    archiveBoardMock.mockReset();
+    archiveBoardMock.mockResolvedValue({ ok: true });
+  });
+
+  function openDrawer(title = "重构登录") {
+    fireEvent.click(screen.getByLabelText(`${title}，状态 todo`));
+  }
+
+  it("抽屉里标记阻塞走真实 PATCH 体", async () => {
+    renderRoute();
+    openDrawer();
+    fireEvent.change(screen.getByLabelText("阻塞原因"), { target: { value: "等 CI" } });
+    fireEvent.click(screen.getByText("标记阻塞"));
+    await waitFor(() =>
+      expect(updateMock).toHaveBeenCalledWith({ id: "t_body", body: { status: "blocked", block_reason: "等 CI" } }),
+    );
+  });
+
+  it("加子任务把当前卡当父任务", async () => {
+    renderRoute();
+    openDrawer();
+    fireEvent.change(screen.getByLabelText("选择要关联的任务"), { target: { value: "t_summary" } });
+    fireEvent.click(screen.getByText("加为子任务"));
+    await waitFor(() =>
+      expect(addLinkMock).toHaveBeenCalledWith({ parentId: "t_body", childId: "t_summary", taskId: "t_body" }),
+    );
+  });
+
+  it("加父任务角色反转", async () => {
+    renderRoute();
+    openDrawer();
+    fireEvent.change(screen.getByLabelText("选择要关联的任务"), { target: { value: "t_summary" } });
+    fireEvent.click(screen.getByText("加为父任务"));
+    await waitFor(() =>
+      expect(addLinkMock).toHaveBeenCalledWith({ parentId: "t_summary", childId: "t_body", taskId: "t_body" }),
+    );
+  });
+
+  it("重派带上 profile 与回收开关", async () => {
+    renderRoute();
+    openDrawer();
+    fireEvent.change(screen.getByLabelText("选择目标 profile"), { target: { value: "reviewer" } });
+    fireEvent.click(screen.getByRole("button", { name: "重派" }));
+    await waitFor(() =>
+      expect(reassignMock).toHaveBeenCalledWith({ taskId: "t_body", profile: "reviewer", reclaimFirst: false }),
+    );
+  });
+
+  it("拆解失败时把后端原文显示在抽屉里", async () => {
+    decomposeMock.mockResolvedValue({ ok: false, task_id: "t_body", reason: "auxiliary model not configured" });
+    renderRoute();
+    openDrawer();
+    fireEvent.click(screen.getByText("拆成子任务"));
+    const result = await screen.findByLabelText("拆解");
+    await waitFor(() => expect(result.textContent).toContain("auxiliary model not configured"));
+    expect(decomposeMock).toHaveBeenCalledWith({ taskId: "t_body" });
+  });
+
+  it("拆解成功给出子任务提示", async () => {
+    decomposeMock.mockResolvedValue({ ok: true, task_id: "t_body", child_ids: ["t_1", "t_2"], fanout: true });
+    renderRoute();
+    openDrawer();
+    fireEvent.click(screen.getByText("拆成子任务"));
+    await waitFor(() => expect(screen.getByText("子任务：t_1、t_2")).toBeTruthy());
+  });
+
+  it("新建看板校验 slug 后提交并切换", async () => {
+    renderRoute();
+    fireEvent.click(screen.getByText("新建看板"));
+    const dialog = screen.getByLabelText("新建看板");
+    expect(dialog.textContent).toContain("slug");
+    fireEvent.change(screen.getByLabelText("看板 slug"), { target: { value: "Hermes CN" } });
+    fireEvent.change(screen.getByLabelText("看板名称"), { target: { value: "桌面壳" } });
+    fireEvent.click(screen.getByText("创建看板"));
+    await waitFor(() =>
+      expect(createBoardMock).toHaveBeenCalledWith({
+        body: { slug: "hermes-cn", name: "桌面壳", switch: true },
+      }),
+    );
+    await waitFor(() => expect(screen.queryByLabelText("新建看板")).toBeNull());
+  });
+
+  it("空 slug 时创建按钮禁用", () => {
+    renderRoute();
+    fireEvent.click(screen.getByText("新建看板"));
+    const submit = screen.getByText("创建看板") as HTMLButtonElement;
+    expect(submit.disabled).toBe(true);
+  });
+
+  it("归档看板先二次确认，确认后才发请求", async () => {
+    renderRoute();
+    fireEvent.click(screen.getByText("归档看板"));
+    await waitFor(() => expect(confirmMock).toHaveBeenCalledTimes(1));
+    expect(confirmMock.mock.calls[0][0]).toMatchObject({ title: "归档当前看板", danger: true });
+    await waitFor(() => expect(archiveBoardMock).toHaveBeenCalledWith({ slug: "default" }));
+  });
+
+  it("取消归档时不发请求", async () => {
+    confirmMock.mockResolvedValue(false);
+    renderRoute();
+    fireEvent.click(screen.getByText("归档看板"));
+    await waitFor(() => expect(confirmMock).toHaveBeenCalledTimes(1));
+    expect(archiveBoardMock).not.toHaveBeenCalled();
+  });
+
+  it("泳道开关把卡片按负责人分组", () => {
+    renderRoute();
+    fireEvent.click(screen.getByLabelText("按负责人分泳道"));
+    const column = screen.getByLabelText(/待办 列/);
+    expect(column.textContent).toContain("writer");
   });
 });

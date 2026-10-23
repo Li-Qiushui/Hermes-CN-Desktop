@@ -8,6 +8,12 @@ const NullableStringAsEmpty = z.string().nullable().optional().transform((value)
 // how routes serialize unset columns — hence these tolerant helpers.
 const NullishString = z.string().nullish().transform((value) => value ?? undefined);
 const NullishNumber = z.number().nullish().transform((value) => value ?? undefined);
+// 内核不同端点对同一布尔字段的编码不一致：列表返回 true/false，
+// 详情（GET /api/sessions/{id}）与搜索返回 SQLite 的 0/1。两者都必须接受，
+// 否则存档字段会让整个响应解析失败（表现为「删除失败」）。
+const Booleanish = z
+  .union([z.boolean(), z.number()])
+  .transform((value) => (typeof value === "number" ? value !== 0 : value));
 
 function stringifyMessageContent(value: unknown): string | null {
   if (typeof value === "string") return value;
@@ -163,6 +169,11 @@ export type MessagingPlatformTestResponse = z.infer<typeof MessagingPlatformTest
 
 export const SessionSummary = z.object({
   id: z.string(),
+  // 会话写操作（删除/改名/归档）的乐观锁：内核 owner 要求 DELETE 带上当前
+  // 行的 revision（+ generation），否则回 409 client_upgrade_required，
+  // 桌面上表现为「点了删除没反应」。
+  runtime_revision: z.number().optional(),
+  runtime_generation: z.number().nullable().optional(),
   // Core uses this lineage link for official desktop session branching. Keep
   // it in the parsed summary so branch drafts and persisted children retain
   // their relationship to the source conversation.
@@ -192,7 +203,18 @@ export const SessionSummary = z.object({
   // Desktop-only UI state injected by the Rust proxy when a request carries
   // ?include_archived=true. Absent on the default (active) list — the proxy
   // strips archived sessions there. See src/session_archive.rs.
-  archived: z.boolean().optional(),
+  archived: Booleanish.optional(),
+  // Kernel session flags (sessions.pinned / sessions.last_read_at watermark).
+  // Both are real server state on `list_sessions_rich` rows and writable via
+  // PATCH /api/sessions/{id}; absent only on older cores.
+  pinned: Booleanish.optional(),
+  unread: Booleanish.optional(),
+  // Serving profile stamped by the kernel on every listed row; the sidebar's
+  // "by profile" grouping reads it.
+  profile: z.string().optional(),
+  // Recency floor used by the sidebar's day buckets: `last_active` when the row
+  // carries it, else `ended_at`/`started_at`.
+  last_active: z.number().nullable().optional(),
 });
 export type SessionSummary = z.infer<typeof SessionSummary>;
 
@@ -423,6 +445,14 @@ export const SearchResult = z.object({
   session_started: NullishNumber,
   // Desktop-only; see SessionSummary.archived.
   archived: z.boolean().optional(),
+  // Enrichment the kernel stamps onto a matched (deduped) lineage tip — the
+  // search endpoint fills these from the sessions row so a hit renders as a
+  // full sidebar row, not a bare snippet.
+  title: z.string().nullable().optional(),
+  last_active: NullishNumber,
+  is_active: z.boolean().optional(),
+  message_count: z.number().optional(),
+  preview: z.string().nullable().optional(),
 });
 export type SearchResult = z.infer<typeof SearchResult>;
 

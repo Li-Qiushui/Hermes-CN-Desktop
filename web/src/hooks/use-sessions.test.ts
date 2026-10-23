@@ -1,10 +1,20 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+// @vitest-environment jsdom
+import { act, renderHook } from "@testing-library/react";
+import { createElement, type ReactNode } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MessagesResponse, SearchResult, SessionsResponse, SessionSummary } from "@hermes/protocol";
-import { fetchJSON } from "@/lib/transport";
+import { deleteJSON, fetchJSON, patchJSON } from "@/lib/transport";
 import {
+  SESSION_SEARCH_LIMIT,
   deleteSessionsInBatches,
   fetchSessionsList,
   fetchSessionMessages,
+  patchSessionFlags,
+  sessionSearchPath,
+  searchResultsToSummaries,
+  stripSearchHighlight,
+  useSessionSearch,
   withoutSearchResults,
   withoutSessions,
 } from "./use-sessions";
@@ -13,9 +23,16 @@ vi.mock("@/lib/transport", () => ({
   fetchJSON: vi.fn(),
   deleteJSON: vi.fn(),
   postJSON: vi.fn(),
+  patchJSON: vi.fn(),
+}));
+
+vi.mock("@/hooks/use-profiles", () => ({
+  useActiveProfileName: () => "default",
 }));
 
 const mockFetchJSON = fetchJSON as unknown as ReturnType<typeof vi.fn>;
+const mockDeleteJSON = deleteJSON as unknown as ReturnType<typeof vi.fn>;
+const mockPatchJSON = patchJSON as unknown as ReturnType<typeof vi.fn>;
 
 function session(id: string): SessionSummary {
   return {
@@ -294,5 +311,190 @@ describe("fetchSessionMessages 历史回退", () => {
     const result = await fetchSessionMessages("s4");
 
     expect(result.messages).toHaveLength(3);
+  });
+});
+
+describe("deleteSessionRequest 写锁参数", () => {
+  it("删除前读取 revision/generation 并拼进查询串（内核 owner 缺任一项就 409/400）", async () => {
+    mockFetchJSON.mockResolvedValue({ id: "s1", runtime_revision: 33, runtime_generation: 1 });
+    mockDeleteJSON.mockResolvedValue({ ok: true });
+
+    const result = await deleteSessionsInBatches(["s1"]);
+
+    expect(result.succeededIds).toEqual(["s1"]);
+    expect(mockFetchJSON).toHaveBeenCalledWith("/api/sessions/s1", undefined, expect.anything());
+    const [url, body] = mockDeleteJSON.mock.calls[0];
+    expect(body).toBeUndefined();
+    const query = new URLSearchParams(url.split("?")[1]);
+    expect(query.get("request_id")).toBeTruthy();
+    expect(query.get("expected_revision")).toBe("33");
+    expect(query.get("expected_generation")).toBe("1");
+  });
+
+  it("会话已不存在（404）按幂等成功处理，不再发 DELETE", async () => {
+    mockFetchJSON.mockRejectedValue(new Error("HTTP 404: not_found"));
+    mockDeleteJSON.mockClear();
+
+    const result = await deleteSessionsInBatches(["gone"]);
+
+    expect(result.succeededIds).toEqual(["gone"]);
+    expect(mockDeleteJSON).not.toHaveBeenCalled();
+  });
+
+  it("缺 generation 时只带 request_id + expected_revision", async () => {
+    mockFetchJSON.mockResolvedValue({ id: "s2", runtime_revision: 7, runtime_generation: null });
+    mockDeleteJSON.mockClear();
+    mockDeleteJSON.mockResolvedValue({ ok: true });
+
+    await deleteSessionsInBatches(["s2"]);
+
+    const [url] = mockDeleteJSON.mock.calls[0];
+    const query = new URLSearchParams(url.split("?")[1]);
+    expect(query.get("expected_revision")).toBe("7");
+    expect(query.has("expected_generation")).toBe(false);
+  });
+});
+
+describe("会话全文搜索", () => {
+  it("剥掉内核 snippet 的 >>> / <<< 高亮标记", () => {
+    expect(stripSearchHighlight("前文 >>>命中的词<<< 后文")).toBe("前文 命中的词 后文");
+    expect(stripSearchHighlight("  ...a>>>b<<<c...  ")).toBe("...abc...");
+    expect(stripSearchHighlight(null)).toBe("");
+    expect(stripSearchHighlight(undefined)).toBe("");
+  });
+
+  it("按内核真实路径拼 q 与 limit", () => {
+    expect(sessionSearchPath("部署 网关", 10)).toBe(
+      `/api/sessions/search?q=${encodeURIComponent("部署 网关")}&limit=10`,
+    );
+    expect(sessionSearchPath("abc")).toBe("/api/sessions/search?q=abc&limit=20");
+  });
+
+  it("把命中转成侧栏行，preview 用去标记后的 snippet", () => {
+    const rows = searchResultsToSummaries([
+      {
+        session_id: "s1",
+        snippet: ">>>老<<<会话里的片段",
+        title: "旧标题",
+        source: "cli",
+        session_started: 100,
+        last_active: 200,
+        message_count: 4,
+        is_active: false,
+      },
+    ]);
+
+    expect(rows[0]).toMatchObject({
+      id: "s1",
+      title: "旧标题",
+      preview: "老会话里的片段",
+      source: "cli",
+      started_at: 100,
+      last_active: 200,
+      message_count: 4,
+    });
+  });
+});
+
+describe("useSessionSearch 防抖与后端调用", () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) =>
+    createElement(QueryClientProvider, { client }, children);
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    mockFetchJSON.mockReset();
+    mockFetchJSON.mockResolvedValue({ results: [{ session_id: "old-1", snippet: ">>>命中<<<" }] });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("输入后等 250ms 才打后端，且只用最后一次输入", async () => {
+    const { rerender } = renderHook(({ q }: { q: string }) => useSessionSearch(q), {
+      wrapper,
+      initialProps: { q: "h" },
+    });
+
+    rerender({ q: "he" });
+    rerender({ q: "her" });
+    expect(mockFetchJSON).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(249);
+    });
+    expect(mockFetchJSON).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+
+    expect(mockFetchJSON).toHaveBeenCalledTimes(1);
+    expect(mockFetchJSON.mock.calls[0][0]).toBe(
+      `/api/sessions/search?q=her&limit=${SESSION_SEARCH_LIMIT}`,
+    );
+  });
+
+  it("少于两个字符不请求", async () => {
+    renderHook(() => useSessionSearch("a"), { wrapper });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+    expect(mockFetchJSON).not.toHaveBeenCalled();
+  });
+
+  it("渲染后端结果并去掉高亮标记", async () => {
+    const { result } = renderHook(() => useSessionSearch("命中"), { wrapper });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250);
+    });
+    expect(result.current.results).toHaveLength(1);
+    expect(stripSearchHighlight(result.current.results[0].snippet)).toBe("命中");
+  });
+});
+
+describe("会话标记位写回", () => {
+  beforeEach(() => {
+    mockFetchJSON.mockReset();
+    mockPatchJSON.mockReset();
+    mockFetchJSON.mockResolvedValue({ id: "s1", runtime_revision: 3, runtime_generation: 1 });
+    mockPatchJSON.mockResolvedValue({ ok: true });
+  });
+
+  it("PATCH 带 request_id / expected_revision / expected_generation 和 unread", async () => {
+    const result = await patchSessionFlags(["s1"], { unread: false });
+
+    expect(result.succeededIds).toEqual(["s1"]);
+    const [url, body] = mockPatchJSON.mock.calls[0];
+    expect(url).toBe("/api/sessions/s1");
+    expect(body).toMatchObject({
+      expected_revision: 3,
+      expected_generation: 1,
+      unread: false,
+    });
+    expect(typeof body.request_id).toBe("string");
+  });
+
+  it("revision 冲突时重读水位重试一次", async () => {
+    mockPatchJSON
+      .mockRejectedValueOnce(new Error("HTTP 409: revision_conflict"))
+      .mockResolvedValueOnce({ ok: true });
+
+    const result = await patchSessionFlags(["s1"], { unread: true });
+
+    expect(result.succeededIds).toEqual(["s1"]);
+    expect(mockPatchJSON).toHaveBeenCalledTimes(2);
+    expect(mockFetchJSON).toHaveBeenCalledTimes(2);
+  });
+
+  it("client_upgrade_required 不重试并记进失败列表", async () => {
+    mockPatchJSON.mockRejectedValue(new Error("HTTP 409: client_upgrade_required"));
+
+    const result = await patchSessionFlags(["s1"], { pinned: true });
+
+    expect(result.succeededIds).toEqual([]);
+    expect(result.failed).toEqual([{ id: "s1", error: "HTTP 409: client_upgrade_required" }]);
+    expect(mockPatchJSON).toHaveBeenCalledTimes(1);
   });
 });
