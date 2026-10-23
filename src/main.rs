@@ -438,6 +438,14 @@ fn main() {
             commands::ui_update::ui_check_update,
             commands::ui_update::ui_install_update,
             commands::ui_update::ui_rollback,
+            commands::secrets::secrets_status,
+            commands::secrets::secrets_protect,
+            commands::secrets::secrets_unprotect,
+            commands::ssh_remote::ssh_config_text,
+            commands::ssh_remote::ssh_probe,
+            commands::ssh_remote::ssh_tunnel_open,
+            commands::ssh_remote::ssh_tunnel_close,
+            commands::ssh_remote::ssh_tunnel_list,
         ])
         .on_window_event(move |window, event| match event {
             tauri::WindowEvent::CloseRequested { api, .. }

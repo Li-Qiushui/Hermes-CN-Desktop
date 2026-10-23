@@ -100,6 +100,7 @@ pub struct KernelStatus {
     pub port: Option<u16>,
     pub pid: Option<u32>,
     pub restarts: u32,
+    pub port_fallback: bool,
     pub last_error: Option<String>,
 }
 
@@ -124,6 +125,7 @@ impl KernelStatus {
             port: Some(handle.port),
             pid: handle.pid,
             restarts,
+            port_fallback: false,
             last_error: None,
         }
     }
@@ -146,8 +148,14 @@ impl KernelStatus {
             port: url_port(base_url),
             pid: None,
             restarts: 0,
+            port_fallback: false,
             last_error: Some(last_error),
         }
+    }
+
+    pub fn with_port_fallback(mut self, flag: bool) -> Self {
+        self.port_fallback = flag;
+        self
     }
 
     pub fn is_degraded(&self) -> bool {
@@ -1023,6 +1031,8 @@ impl ManagedKernel {
             );
 
             let mut relaunched = false;
+            let mut preferred_port = self.handle.port;
+            let port_before_restart = self.handle.port;
             while self.restarts < self.max_restarts {
                 let index = (self.restarts as usize).min(backoff_delays().len() - 1);
                 let delay = backoff_delays()[index];
@@ -1041,7 +1051,7 @@ impl ManagedKernel {
                 }
                 tokio::time::sleep(delay).await;
 
-                match relaunch_owned(&self.log_dir).await {
+                match relaunch_owned(&self.log_dir, preferred_port).await {
                     Ok((child, handle)) => {
                         self.child = child;
                         self.handle = handle;
@@ -1052,10 +1062,13 @@ impl ManagedKernel {
                             self.restarts,
                         );
                         status.last_error = None;
+                        status.port_fallback =
+                            port_fallback_flag(port_before_restart, self.handle.port);
                         set_kernel_status(status);
                         break;
                     }
                     Err(err) => {
+                        preferred_port = 0;
                         log::warn!("kernel: restart failed: {}", err);
                         record_kernel_error(err.to_string());
                     }
@@ -1080,8 +1093,61 @@ impl ManagedKernel {
     }
 }
 
-async fn relaunch_owned(log_dir: &Path) -> AppResult<(tokio::process::Child, KernelHandle)> {
-    let (mut child, log_path) = spawn_serve_with_log(0, log_dir)?;
+fn port_fallback_flag(previous_port: u16, launched_port: u16) -> bool {
+    previous_port != 0 && launched_port != previous_port
+}
+
+fn reuse_candidate(previous_port: u16, idle: bool) -> Option<u16> {
+    (previous_port != 0 && idle).then_some(previous_port)
+}
+
+async fn port_is_idle(port: u16) -> bool {
+    tokio::time::timeout(
+        FALLBACK_PROBE_TIMEOUT,
+        probe_kernel(DEFAULT_KERNEL_HOST, port),
+    )
+    .await
+    .map(|token| token.is_none())
+    .unwrap_or(false)
+}
+
+async fn relaunch_owned(
+    log_dir: &Path,
+    previous_port: u16,
+) -> AppResult<(tokio::process::Child, KernelHandle)> {
+    let reused = if previous_port == 0 {
+        None
+    } else {
+        let idle = port_is_idle(previous_port).await;
+        if !idle {
+            log::warn!(
+                "kernel: previous port {} still answers, relaunching on an ephemeral port",
+                previous_port
+            );
+        }
+        reuse_candidate(previous_port, idle)
+    };
+
+    if let Some(port) = reused {
+        log::info!("kernel: relaunching on previous port {}", port);
+        match spawn_owned_kernel(port, log_dir).await {
+            Ok(pair) => return Ok(pair),
+            Err(err) => log::warn!(
+                "kernel: previous port {} unusable after relaunch ({}), falling back to an ephemeral port",
+                port,
+                err
+            ),
+        }
+    }
+
+    spawn_owned_kernel(0, log_dir).await
+}
+
+async fn spawn_owned_kernel(
+    requested_port: u16,
+    log_dir: &Path,
+) -> AppResult<(tokio::process::Child, KernelHandle)> {
+    let (mut child, log_path) = spawn_serve_with_log(requested_port, log_dir)?;
     match wait_for_ready(&mut child, &log_path, READY_TIMEOUT).await {
         ReadyOutcome::Ready { port, owned } => {
             if !owned {
@@ -1290,6 +1356,14 @@ fn now_millis() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relaunch_reuses_a_known_idle_port_only() {
+        assert_eq!(reuse_candidate(60303, true), Some(60303));
+        assert_eq!(reuse_candidate(60303, false), None);
+        assert_eq!(reuse_candidate(0, true), None);
+        assert_eq!(reuse_candidate(0, false), None);
+    }
 
     const LEDGER_FIXTURE: &str = r#"
 [
@@ -1674,5 +1748,52 @@ mod tests {
             0,
         );
         assert!(!spawned.is_degraded());
+        assert!(!spawned.port_fallback);
+    }
+
+    fn spawned_handle(port: u16) -> KernelHandle {
+        KernelHandle {
+            host: "127.0.0.1".to_string(),
+            port,
+            token: "secret".to_string(),
+            pid: Some(1),
+            owned: true,
+        }
+    }
+
+    #[test]
+    fn port_fallback_flag_needs_a_previous_port_and_a_new_one() {
+        assert!(!port_fallback_flag(9119, 9119));
+        assert!(port_fallback_flag(9119, 60303));
+        assert!(!port_fallback_flag(0, 60303));
+        assert!(!port_fallback_flag(0, 0));
+    }
+
+    #[test]
+    fn status_is_unmarked_until_the_restart_falls_back() {
+        let reused = KernelStatus::from_handle(&spawned_handle(9119), Ownership::Spawned, 1);
+        assert!(!reused.port_fallback);
+        assert_eq!(reused.port, Some(9119));
+
+        let moved = KernelStatus::from_handle(&spawned_handle(60303), Ownership::Spawned, 1)
+            .with_port_fallback(port_fallback_flag(9119, 60303));
+        assert!(moved.port_fallback);
+        assert_eq!(moved.mode, "spawned");
+
+        assert!(!KernelStatus::attached("http://127.0.0.1:9119").port_fallback);
+        assert!(!KernelStatus::remote("http://192.168.31.7:9119").port_fallback);
+        assert!(!KernelStatus::degraded("http://127.0.0.1:9119", "启动失败".to_string()).port_fallback);
+    }
+
+    #[test]
+    fn port_fallback_flag_survives_the_restarting_status_rewrite() {
+        set_kernel_status(
+            KernelStatus::from_handle(&spawned_handle(60303), Ownership::Spawned, 0)
+                .with_port_fallback(true),
+        );
+        let mut status = kernel_status();
+        status.mode = "restarting".to_string();
+        set_kernel_status(status);
+        assert!(kernel_status().port_fallback);
     }
 }

@@ -15,6 +15,7 @@ pub mod process;
 pub(crate) mod profile_name;
 pub mod session_archive;
 pub mod session_log;
+pub mod secrets;
 pub mod state;
 pub mod tray;
 pub mod ui_store;
