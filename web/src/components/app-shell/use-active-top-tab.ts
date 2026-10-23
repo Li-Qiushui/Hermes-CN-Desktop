@@ -48,6 +48,7 @@ export const TOP_TABS: readonly TopTabDef[] = [
     label: "配置",
     href: "/models",
     matches: (path) =>
+      path.startsWith("/capabilities") ||
       path.startsWith("/skills") ||
       path.startsWith("/mcp") ||
       path.startsWith("/profiles") ||

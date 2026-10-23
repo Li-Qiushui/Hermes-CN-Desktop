@@ -1,62 +1,27 @@
 import { useMemo } from "react";
 import { useAtomValue } from "jotai";
-import { RotateCcw } from "lucide-react";
-import { LoadingIndicator, StatusDot } from "@hermes/shared-ui";
 import { useKernelStatus } from "@/hooks/use-kernel-status";
 import { useStatus } from "@/hooks/use-status";
-import { useModelInfo } from "@/hooks/use-config";
 import { useSessions } from "@/hooks/use-sessions";
 import { useAnalytics } from "@/hooks/use-analytics";
-import { useGatewayRestartAction } from "@/hooks/use-gateway-restart";
 import { useRuntimeInfo } from "@/hooks/use-runtime-update";
 import { chatRuntimeBySessionAtom } from "@/stores/chat";
-import { dashboardPortFromUrl, dashboardUrlFromInputs } from "@/lib/dashboard-url";
-import { openExternalUrl } from "@/lib/external-links";
-import {
-  connectionTargetLabel,
-  isKernelDegraded,
-  kernelRestartDisabledReason,
-} from "@/lib/kernel-status";
+import { isKernelDegraded } from "@/lib/kernel-status";
 import { isSessionRunning, mergeLiveRuntimeSessions } from "@/lib/session-activity";
 import { formatTokens } from "@/lib/format";
-import { formatContext, formatModelShort } from "@/lib/model-label";
-import {
-  gatewayRestartAntivirusHint,
-  gatewayRestartButtonLabel,
-  gatewayRestartTitle,
-} from "@/lib/gateway-restart";
-import { detectHostOS, runtime } from "@/lib/runtime";
 import { buildSidebarVersionRows } from "./sidebar-version-tag";
 import { KernelDegradedStat } from "./kernel-degraded-stat";
 import s from "./app-status-bar.module.css";
 
 export function AppStatusBar() {
-  const { data: status, isError: statusError } = useStatus();
-  const { data: modelInfo } = useModelInfo();
+  const { data: status } = useStatus();
   const { data: sessions } = useSessions(20);
   const { data: analytics } = useAnalytics(1);
   const { data: runtimeInfo } = useRuntimeInfo();
   const { data: kernelStatus } = useKernelStatus();
   const runtimeBySession = useAtomValue(chatRuntimeBySessionAtom);
-  const gatewayRestart = useGatewayRestartAction();
 
-  const dashboardUrl = dashboardUrlFromInputs({
-    healthUrl: status?.gateway_health_url,
-    runtimeConfig: typeof window === "undefined" ? null : window.__HERMES_RUNTIME__,
-    envOrigin: import.meta.env.VITE_HERMES_DASHBOARD_ORIGIN,
-  });
-  const port = dashboardPortFromUrl(dashboardUrl);
-  const gatewayOnline = !!status && !statusError;
-  const kernelRemote = kernelStatus ? kernelStatus.mode === "remote" : runtime.isRemote();
-  const modeLabel = connectionTargetLabel(kernelRemote);
-  const kernelRestartBlocked = kernelRestartDisabledReason(kernelStatus);
-  const restartBlocked = kernelRestartBlocked !== null;
   const kernelDegraded = isKernelDegraded(kernelStatus);
-
-  const modelLabel = formatModelShort(modelInfo?.model);
-  const contextLabel = formatContext(
-    modelInfo?.effective_context_length ?? modelInfo?.auto_context_length,
-  );
   const versionRows = buildSidebarVersionRows({ status, runtimeInfo });
 
   const runningCount = useMemo(() => {
@@ -79,77 +44,15 @@ export function AppStatusBar() {
 
   const todayTokens =
     (analytics?.daily?.[0]?.input_tokens ?? 0) + (analytics?.daily?.[0]?.output_tokens ?? 0);
-  const restartTitle = gatewayOnline || gatewayRestart.phase !== "idle"
-    ? gatewayRestartTitle(gatewayRestart.phase, gatewayRestart.message)
-    : "当前连接状态未知，仍会尝试重启网关";
 
   return (
     <footer className={s.statusbar} aria-label="运行状态">
-      <span className={s.gatewayGroup}>
-        <button
-          type="button"
-          className={`${s.stat} ${s.gatewayButton}`}
-          onClick={() => void openExternalUrl(dashboardUrl)}
-          title={`打开 ${dashboardUrl}`}
-          aria-label={`在浏览器打开 ${dashboardUrl}`}
-        >
-          <StatusDot tone={gatewayOnline ? "success" : "danger"} />
-          <span className={s.lbl}>{modeLabel}</span>
-          <span className={s.val}>{port}</span>
-        </button>
-        <button
-          type="button"
-          className={s.restartButton}
-          data-state={gatewayRestart.phase}
-          onClick={() => void gatewayRestart.restart()}
-          disabled={gatewayRestart.locked || restartBlocked}
-          title={kernelRestartBlocked ?? restartTitle}
-          aria-label={kernelRestartBlocked ?? restartTitle}
-          aria-busy={gatewayRestart.busy}
-        >
-          {gatewayRestart.busy ? <LoadingIndicator size="xs" /> : <RotateCcw size={12} aria-hidden="true" />}
-          <span className={s.restartLabel}>{gatewayRestartButtonLabel(gatewayRestart.phase)}</span>
-        </button>
-        <span className={s.srOnly} aria-live="polite">
-          {gatewayRestart.message ?? ""}
-        </span>
-        {gatewayRestart.phase === "error" && (
-          <span className={s.gatewayError} role="alert">
-            <span className={s.gatewayErrorMsg}>
-              <strong>{gatewayRestart.message ?? "网关重启失败"}</strong>
-              {(() => {
-                const hint = gatewayRestartAntivirusHint(detectHostOS());
-                return hint ? <span className={s.gatewayErrorHint}>{hint}</span> : null;
-              })()}
-            </span>
-            <button
-              type="button"
-              className={s.gatewayRetry}
-              onClick={() => void gatewayRestart.restart()}
-            >
-              <RotateCcw size={12} aria-hidden="true" />
-              <span>重试</span>
-            </button>
-          </span>
-        )}
-      </span>
-      <span className={s.sep} />
       {kernelDegraded && (
         <>
           <KernelDegradedStat status={kernelStatus} />
           <span className={s.sep} />
         </>
       )}
-      <span className={s.stat} data-prio="1">
-        <span className={s.lbl}>模型</span>
-        <span className={s.val}>{modelLabel}</span>
-      </span>
-      <span className={s.sep} />
-      <span className={s.stat} data-prio="2">
-        <span className={s.lbl}>上下文</span>
-        <span className={s.val}>{contextLabel}</span>
-      </span>
-      <span className={s.sep} />
       <span className={s.stat} data-prio="2" title={versionRows.kernel}>
         <span className={s.lbl}>内核</span>
         <span className={s.val}>{versionRows.kernelLine.version}</span>

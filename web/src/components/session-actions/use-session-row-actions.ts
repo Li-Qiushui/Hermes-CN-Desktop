@@ -2,7 +2,7 @@ import { useCallback, useState } from "react";
 import type { SessionSummary } from "@hermes/protocol";
 import { exportSessionJson } from "@/lib/session-export";
 import { renameSession, type RenameDeps } from "@/lib/session-rename";
-import { togglePinnedSession, unpinSessions } from "@/lib/session-ui-state";
+import { togglePinnedSession, isSessionPinned, unpinSessions } from "@/lib/session-ui-state";
 
 export interface UseSessionRowActionsOptions {
   /** Delete sessions and resolve with the ids that actually succeeded. */
@@ -17,6 +17,10 @@ export interface UseSessionRowActionsOptions {
   profile?: string | null;
   /** Side effect after a successful delete (e.g. clear active session / route). */
   onDeleted?: (succeededIds: string[]) => void;
+  /** Persist a read-state flip (local override + backend watermark). */
+  setUnread?: (ids: string[], unread: boolean) => void;
+  /** Persist a pin flip to the backend; falls back to local-only when absent. */
+  setPinned?: (ids: string[], pinned: boolean) => void;
 }
 
 export interface UseSessionRowActions {
@@ -27,6 +31,11 @@ export interface UseSessionRowActions {
   isDeleting: boolean;
   // pin (state itself lives in the caller via subscribeSessionUiStateChanges)
   togglePin: (sessionId: string) => void;
+  // unread
+  toggleUnread: (sessionId: string, unread?: boolean) => void;
+  // copy id
+  copySessionId: (sessionId: string) => Promise<boolean>;
+  copiedSessionId: string | null;
   // rename
   renamingSession: SessionSummary | null;
   renameValue: string;
@@ -43,9 +52,35 @@ export interface UseSessionRowActions {
   handleExport: (session: SessionSummary) => Promise<void>;
   // delete (array form works for single or many)
   deleteTargets: SessionSummary[] | null;
+  deleteError: string;
   openDeleteDialog: (targets: SessionSummary[]) => void;
   closeDeleteDialog: () => void;
   confirmDelete: () => Promise<void>;
+}
+
+export async function copyTextToClipboard(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // fall through to the legacy path
+  }
+  try {
+    const area = document.createElement("textarea");
+    area.value = text;
+    area.setAttribute("readonly", "");
+    area.style.position = "fixed";
+    area.style.opacity = "0";
+    document.body.appendChild(area);
+    area.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(area);
+    return ok;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -65,6 +100,8 @@ export function useSessionRowActions({
   archive,
   profile,
   onDeleted,
+  setUnread,
+  setPinned,
 }: UseSessionRowActionsOptions): UseSessionRowActions {
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [renamingSession, setRenamingSession] = useState<SessionSummary | null>(null);
@@ -72,10 +109,32 @@ export function useSessionRowActions({
   const [renameError, setRenameError] = useState("");
   const [renameSaving, setRenameSaving] = useState(false);
   const [deleteTargets, setDeleteTargets] = useState<SessionSummary[] | null>(null);
+  const [deleteError, setDeleteError] = useState("");
   const [exportError, setExportError] = useState("");
+  const [copiedSessionId, setCopiedSessionId] = useState<string | null>(null);
 
   const togglePin = useCallback((sessionId: string) => {
-    togglePinnedSession(sessionId);
+    if (setPinned) setPinned([sessionId], !isSessionPinned(sessionId));
+    else togglePinnedSession(sessionId);
+  }, [setPinned]);
+
+  const toggleUnread = useCallback(
+    (sessionId: string, unread: boolean = false) => {
+      setOpenMenuId(null);
+      setUnread?.([sessionId], !unread);
+    },
+    [setUnread],
+  );
+
+  const copySessionId = useCallback(async (sessionId: string) => {
+    const ok = await copyTextToClipboard(sessionId);
+    if (!ok) return false;
+    setCopiedSessionId(sessionId);
+    window.setTimeout(
+      () => setCopiedSessionId((current) => (current === sessionId ? null : current)),
+      1500,
+    );
+    return true;
   }, []);
 
   // Editing the field clears any prior error, mirroring history's onChange.
@@ -148,11 +207,15 @@ export function useSessionRowActions({
     );
     if (uniqueTargets.length === 0) return;
     setOpenMenuId(null);
+    setDeleteError("");
     setDeleteTargets(uniqueTargets);
   }, []);
 
   const closeDeleteDialog = useCallback(() => {
-    if (!isDeleting) setDeleteTargets(null);
+    if (!isDeleting) {
+      setDeleteTargets(null);
+      setDeleteError("");
+    }
   }, [isDeleting]);
 
   const confirmDelete = useCallback(async () => {
@@ -166,6 +229,18 @@ export function useSessionRowActions({
       unpinSessions(succeededIds);
       onDeleted?.(succeededIds);
     }
+    // 删除失败时以前是静默关窗，用户只看到会话还在、不知道被谁拒了。
+    // 现在把后端原文留在弹窗里，弹窗不关，失败可见。
+    const failures = "failed" in (result ?? {}) ? (result as { failed?: { error: string }[] }).failed : undefined;
+    if (failures && failures.length > 0) {
+      setDeleteError(
+        failures.length === 1
+          ? `删除失败：${failures[0].error}`
+          : `${failures.length} 个会话删除失败：${failures[0].error}`,
+      );
+      return;
+    }
+    setDeleteError("");
     setDeleteTargets(null);
   }, [deleteSessions, deleteTargets, onDeleted]);
 
@@ -174,6 +249,9 @@ export function useSessionRowActions({
     setOpenMenuId,
     isDeleting,
     togglePin,
+    toggleUnread,
+    copySessionId,
+    copiedSessionId,
     renamingSession,
     renameValue,
     renameError,
@@ -187,6 +265,7 @@ export function useSessionRowActions({
     clearExportError,
     handleExport,
     deleteTargets,
+    deleteError,
     openDeleteDialog,
     closeDeleteDialog,
     confirmDelete,

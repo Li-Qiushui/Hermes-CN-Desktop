@@ -10,7 +10,9 @@ import { AppTopBar } from "./app-top-bar";
 import { AppSidebar } from "./app-sidebar";
 import { AppStatusBar } from "./app-status-bar";
 import { ConnectionTargetNotice } from "./connection-target-notice";
+import { KernelPortFallbackNotice } from "./kernel-port-fallback-notice";
 import { ModelOnboardingDialog } from "./model-onboarding-dialog";
+import { useKernelStatus } from "@/hooks/use-kernel-status";
 import s from "./app-shell.module.css";
 
 interface AppShellProps {
@@ -19,6 +21,7 @@ interface AppShellProps {
 
 export function AppShell({ children }: AppShellProps) {
   const [sidebarVisible, setSidebarVisible] = useAtom(appSidebarVisibleAtom);
+  const { data: kernelStatus } = useKernelStatus();
   const toggleLabel = sidebarVisible ? "隐藏左侧边栏" : "显示左侧边栏";
 
   useEffect(() => startGlobalPromptPump(), []);
@@ -52,6 +55,7 @@ export function AppShell({ children }: AppShellProps) {
       </div>
       <div className={s.mainSlot}>
         <ConnectionTargetNotice />
+        <KernelPortFallbackNotice status={kernelStatus} />
         {children}
         <ModelOnboardingDialog />
       </div>

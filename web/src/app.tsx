@@ -1,9 +1,10 @@
-import { Routes, Route, Navigate, useLocation } from "react-router-dom";
+import { Routes, Route, Navigate, useLocation, useParams } from "react-router-dom";
 import { DEFAULT_THEME_CONFIG, hydrateThemeAtom, usePlatform, type ThemeConfig } from "@hermes/shared-ui";
 import { lazy, Suspense, useEffect, type ReactNode } from "react";
 import { useSetAtom } from "jotai";
 import { useBootstrapActiveProfile } from "@/hooks/use-profiles";
 import { readUiValue } from "@/lib/ui-store";
+import { settingsRouteForSlug } from "@/lib/app-routes";
 
 import { ErrorBoundary } from "@/components/error-boundary";
 import { ProfileSwitchOverlay } from "@/components/profile-switch-overlay";
@@ -12,6 +13,7 @@ import { RuntimeUpdateOverlay } from "@/components/runtime-update-overlay";
 import { ConnectionAuthBanner } from "@/components/connection-auth-banner";
 import { WanderMemoryRouteLifecycle } from "@/components/wander-memory/route-lifecycle";
 import { AppShell } from "@/components/app-shell/app-shell";
+import { RouteMemory } from "@/components/app-shell/route-memory";
 import { CommandPalette } from "@/components/command-palette";
 import { runtime } from "@/lib/runtime";
 
@@ -35,6 +37,7 @@ const HistoryRoute = lazy(() => import("@/routes/history").then((m) => ({ defaul
 const ProjectsRoute = lazy(() => import("@/routes/projects").then((m) => ({ default: m.ProjectsRoute })));
 const ProjectDetailRoute = lazy(() => import("@/routes/project-detail").then((m) => ({ default: m.ProjectDetailRoute })));
 const KanbanRoute = lazy(() => import("@/routes/kanban").then((m) => ({ default: m.KanbanRoute })));
+const CapabilitiesRoute = lazy(() => import("@/routes/capabilities").then((m) => ({ default: m.CapabilitiesRoute })));
 const SkillsRoute = lazy(() => import("@/routes/skills").then((m) => ({ default: m.SkillsRoute })));
 const ModelsRoute = lazy(() => import("@/routes/models").then((m) => ({ default: m.ModelsRoute })));
 const VoiceRoute = lazy(() => import("@/routes/voice").then((m) => ({ default: m.VoiceRoute })));
@@ -67,6 +70,11 @@ const OfflineShell = lazy(() => import("@/routes/offline-shell").then((m) => ({ 
 function NewTaskRedirect() {
   const { search } = useLocation();
   return <Navigate to={{ pathname: "/", search }} replace />;
+}
+
+function SettingsSectionRedirect() {
+  const { section } = useParams<{ section: string }>();
+  return <Navigate to={settingsRouteForSlug(section)} replace />;
 }
 
 // Wrap each route's content in a local ErrorBoundary so a single page crash
@@ -104,6 +112,7 @@ function BackendApp() {
             <Route path="/projects" element={withBoundary(<ProjectsRoute />)} />
             <Route path="/projects/:workspacePath" element={withBoundary(<ProjectDetailRoute />)} />
             <Route path="/kanban" element={withBoundary(<KanbanRoute />)} />
+            <Route path="/capabilities" element={withBoundary(<CapabilitiesRoute />)} />
             <Route path="/skills" element={withBoundary(<SkillsRoute />)} />
             <Route path="/models" element={withBoundary(<ModelsRoute />)} />
             <Route path="/voice" element={withBoundary(<VoiceRoute />)} />
@@ -141,6 +150,7 @@ function BackendApp() {
             <Route path="/coding-agents" element={withBoundary(<CodingAgentsRoute />)} />
             <Route path="/about" element={withBoundary(<AdvancedRoute />)} />
             <Route path="/advanced/*" element={withBoundary(<AdvancedRoute />)} />
+            <Route path="/settings/:section" element={<SettingsSectionRedirect />} />
             <Route path="/settings" element={<Navigate to="/common" replace />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
@@ -149,6 +159,7 @@ function BackendApp() {
       <ProfileSwitchOverlay />
       <RuntimeUpdateOverlay />
 
+      <RouteMemory />
       <ConnectionAuthBanner />
       <CommandPalette />
     </>

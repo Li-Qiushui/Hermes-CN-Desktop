@@ -1,18 +1,23 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useAtomValue, useSetAtom } from "jotai";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useLocation } from "react-router-dom";
-import { Popover, StatusDot, type StatusDotTone } from "@hermes/shared-ui";
+import { Popover } from "@hermes/shared-ui";
+import { DndContext, closestCenter } from "@dnd-kit/core";
+import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import {
   ArrowLeft,
   Check,
   ChevronDown,
   ChevronRight,
   Folder,
+  GripVertical,
   MessageSquare,
   MoreHorizontal,
   Plus,
   Search,
+  SlidersHorizontal,
 } from "lucide-react";
 import { chatRuntimeBySessionAtom } from "@/stores/chat";
 import { activeSessionIdAtom } from "@/stores/ui";
@@ -20,10 +25,13 @@ import { readUiValue, writeUiValue } from "@/lib/ui-store";
 import { useActiveProfileName } from "@/hooks/use-profiles";
 import {
   prefetchSessionMessages,
+  searchResultsToSummaries,
   useArchiveSession,
   useDeleteSessions,
   usePagedSessions,
+  useSessionSearch,
   useSessions,
+  useSetSessionFlags,
 } from "@/hooks/use-sessions";
 import { useGateway } from "@/hooks/use-gateway";
 import { useSessionBranch } from "@/hooks/use-session-branch";
@@ -35,23 +43,55 @@ import {
 import { sessionDisplayTitle } from "@/lib/session-title";
 import { getSourceMeta } from "@/lib/source-meta";
 import {
+  SESSION_STATUS_BUCKETS,
+  SESSION_STATUS_BUCKET_LABELS,
+  SIDEBAR_GROUPING_LABELS,
+  SIDEBAR_GROUPING_VALUES,
+  SIDEBAR_SORT_KEYS,
+  SIDEBAR_SORT_LABELS,
+  distinctSessionProfiles,
+  filterSessionsByStatusBuckets,
+  groupSessionsForSidebar,
+  isSessionUnread,
+  markSessionsReadLocally,
+  markSessionsUnreadLocally,
+  needsInputCountsByProfile,
   readPinnedSessionIds,
   readSessionTitleOverrides,
+  readSidebarGrouping,
+  readSidebarProfileScope,
+  readSidebarSort,
+  readSidebarStatusFilter,
+  readUnreadOverrides,
+  reconcileUnreadOverrides,
+  resolveSessionDotState,
+  sortSessionsForSidebar,
   subscribeSessionUiStateChanges,
+  toggleStatusFilterBucket,
   unpinSessions,
   writePinnedSessionIds,
+  writeSidebarGrouping,
+  writeSidebarProfileScope,
+  writeSidebarSort,
+  writeUnreadOverrides,
+  type SessionDotState,
+  type SessionStatusBucket,
+  type SidebarGrouping,
+  type SidebarProfileScope,
+  type SidebarSortKey,
+  type UnreadOverrides,
 } from "@/lib/session-ui-state";
+import { usePinnedReorder } from "./use-pinned-reorder";
+import { resolveRowDotState, useSidebarListState } from "./use-sidebar-session-state";
 import {
   RECENT_SESSION_PAGE_SIZE,
   allSessionPagesLoaded,
   deriveSidebarWorkspaces,
   filterSessionsByQuery,
-  groupSessionsByDay,
   mergeSessionPages,
   selectSessionsById,
   sessionPagesTotal,
   toggleSelectedSessionId,
-  type SessionDayGroupKey,
 } from "@/lib/sidebar-session-lists";
 import {
   SessionDeleteModal,
@@ -63,8 +103,10 @@ import {
   type UseSessionRowActions,
 } from "@/components/session-actions";
 import {
+  newSessionHrefForWorkspace,
   readPinnedWorkspaceProjectPaths,
   readSessionWorkspaceMap,
+  readWorkspacePath,
   readWorkspaceProjects,
   subscribeWorkspaceChanges,
   unpinWorkspaceProjects,
@@ -79,6 +121,7 @@ type SidebarSessionsView = "recent" | "pinned" | "workspaces";
 const SIDEBAR_VIEW_KEY = "hermes.sidebar-sessions-view";
 const SIDEBAR_GROUPS_KEY = "hermes.sidebar-session-groups";
 const FOCUSED_VIEW_LIMIT = 100;
+const PIN_WRITE_GUARD_MS = 15_000;
 
 const VIEW_OPTIONS: Array<{ value: SidebarSessionsView; label: string }> = [
   { value: "recent", label: "最近" },
@@ -91,16 +134,16 @@ function readSidebarView(): SidebarSessionsView {
   return value === "pinned" || value === "workspaces" ? value : "recent";
 }
 
-function readGroupExpanded(): Record<SessionDayGroupKey, boolean> {
+function readGroupExpanded(): Record<string, boolean> {
   const raw = readUiValue<unknown>(SIDEBAR_GROUPS_KEY, {});
   const record = raw && typeof raw === "object" && !Array.isArray(raw)
     ? (raw as Record<string, unknown>)
     : {};
-  return {
-    today: record.today !== false,
-    yesterday: record.yesterday !== false,
-    earlier: record.earlier !== false,
-  };
+  return record as Record<string, boolean>;
+}
+
+function isGroupExpanded(state: Record<string, boolean>, key: string): boolean {
+  return state[key] !== false;
 }
 
 function relTime(unixSec: number, now: Date) {
@@ -139,14 +182,39 @@ function KanbanQuickIcon() {
   );
 }
 
+const DOT_LABELS: Record<SessionDotState, string> = {
+  "needs-input": "等待回答",
+  working: "运行中",
+  stalled: "无响应",
+  background: "后台任务进行中",
+  unread: "未读",
+  draft: "草稿",
+  idle: "闲置",
+};
+
+function SessionStatusMark({ state }: { state: SessionDotState }) {
+  return (
+    <span
+      className={s.rowDot}
+      data-state={state}
+      role="status"
+      aria-label={DOT_LABELS[state]}
+      title={DOT_LABELS[state]}
+    />
+  );
+}
+
 interface SessionRowProps {
   session: SessionSummary;
-  state: "live" | "ok" | "err" | "idle";
+  state: SessionDotState;
   active: boolean;
   selected: boolean;
   time: string;
   projectName?: string;
   pinned: boolean;
+  unread?: boolean;
+  snippet?: string;
+  searchHit?: boolean;
   menuDisabled?: boolean;
   actions: UseSessionRowActions;
   onClick: () => void;
@@ -164,6 +232,9 @@ function SessionRow({
   time,
   projectName,
   pinned,
+  unread = false,
+  snippet,
+  searchHit = false,
   menuDisabled = false,
   actions,
   onClick,
@@ -173,14 +244,6 @@ function SessionRow({
   branching = false,
 }: SessionRowProps) {
   const title = sessionDisplayTitle(session);
-  const dotState = state === "idle" ? undefined : state;
-  const dotTone: StatusDotTone | null = dotState === "live"
-    ? "accent"
-    : dotState === "ok"
-      ? "neutral"
-      : dotState === "err"
-        ? "danger"
-        : null;
   const source = session.source?.trim() ? getSourceMeta(session.source).label : null;
   const model = session.model ? modelShort(session.model) : null;
   const actionMenuDisabled = menuDisabled || actions.isDeleting || branching;
@@ -190,6 +253,9 @@ function SessionRow({
       data-session-row={session.id}
       data-active={active ? "true" : undefined}
       data-selected={selected ? "true" : undefined}
+      data-unread={unread ? "true" : undefined}
+      data-search-hit={searchHit ? "true" : undefined}
+      data-dot-state={state}
       role="button"
       tabIndex={0}
       onClick={(event) => {
@@ -225,18 +291,21 @@ function SessionRow({
       </span>
       <div className={s.rowMain}>
         <div className={s.rowTop}>
-          <span className={s.ttlText}>{title}</span>
+          <span className={s.ttlText} data-unread={unread ? "true" : undefined}>{title}</span>
           {pinned ? <span className={s.rowPinnedFlag}>置顶</span> : null}
-          {dotTone ? <StatusDot tone={dotTone} size="sm" className={s.rowDot} /> : null}
+          <SessionStatusMark state={state} />
         </div>
         <div className={s.rowBottom}>
           {source ? <span className={s.sourceChip}>{source}</span> : null}
-          {model ? (
+          {snippet ? (
+            <span className={s.rowSnippet} title={snippet}>{snippet}</span>
+          ) : null}
+          {!snippet && model ? (
             <span className={s.rowModel} title={model}>
               {model}
             </span>
           ) : null}
-          {projectName ? (
+          {!snippet && projectName ? (
             <span className={s.rowProject} title={projectName}>
               {projectName}
             </span>
@@ -270,8 +339,11 @@ function SessionRow({
         </Popover.Trigger>
         <SessionRowMenu
           pinned={pinned}
+          unread={unread}
           disabled={actionMenuDisabled}
           onTogglePin={() => actions.togglePin(session.id)}
+          onToggleUnread={() => actions.toggleUnread(session.id)}
+          onCopyId={() => void actions.copySessionId(session.id)}
           onRename={() => actions.startRename(session)}
           onBranch={onBranch}
           onExport={() => void actions.handleExport(session)}
@@ -280,6 +352,186 @@ function SessionRow({
         />
       </Popover.Root>
     </div>
+  );
+}
+
+interface SortablePinnedRowProps {
+  id: string;
+  sortable: boolean;
+  children: ReactNode;
+}
+
+function SortablePinnedRow({ id, sortable, children }: SortablePinnedRowProps) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id,
+    disabled: !sortable,
+  });
+  return (
+    <div
+      ref={setNodeRef}
+      className={s.sortableRow}
+      data-sortable-row={id}
+      data-dragging={isDragging ? "true" : undefined}
+      style={{ transform: CSS.Transform.toString(transform), transition }}
+    >
+      <button
+        type="button"
+        className={s.dragHandle}
+        data-enabled={sortable ? "true" : "false"}
+        disabled={!sortable}
+        title={sortable ? "拖动调整置顶顺序" : "切回「最近更新」排序后可拖动换序"}
+        onClick={(event) => event.stopPropagation()}
+        {...attributes}
+        {...listeners}
+      >
+        <GripVertical size={12} aria-hidden="true" />
+      </button>
+      {children}
+    </div>
+  );
+}
+
+interface SidebarListToolsProps {
+  sort: SidebarSortKey;
+  grouping: SidebarGrouping;
+  statusFilter: SidebarSessionStatusBuckets;
+  unreadCount: number;
+  onSort: (key: SidebarSortKey) => void;
+  onGrouping: (grouping: SidebarGrouping) => void;
+  onToggleStatus: (bucket: SessionStatusBucket) => void;
+  onClearStatus: () => void;
+  onMarkAllRead: () => void;
+}
+
+type SidebarSessionStatusBuckets = SessionStatusBucket[];
+
+function SidebarListTools({
+  sort,
+  grouping,
+  statusFilter,
+  unreadCount,
+  onSort,
+  onGrouping,
+  onToggleStatus,
+  onClearStatus,
+  onMarkAllRead,
+}: SidebarListToolsProps) {
+  const [open, setOpen] = useState(false);
+  const activeCount = statusFilter.length;
+  return (
+    <Popover.Root open={open} onOpenChange={setOpen}>
+      <Popover.Trigger asChild>
+        <button
+          type="button"
+          className={s.toolIconButton}
+          data-active={open || activeCount > 0 ? "true" : undefined}
+          data-action="list-tools"
+          aria-label="排序、分组与筛选"
+          title="排序、分组与筛选"
+        >
+          <SlidersHorizontal size={14} aria-hidden="true" />
+          {activeCount > 0 ? <span className={s.toolIconBadge}>{activeCount}</span> : null}
+        </button>
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Content
+          className={s.toolsPanel}
+          align="end"
+          side="bottom"
+          sideOffset={6}
+          role="dialog"
+          aria-label="排序、分组与筛选"
+        >
+          <div className={s.toolsSection} data-section="sort">
+            <div className={s.toolsHeading}>排序</div>
+            <div role="radiogroup" aria-label="排序方式">
+              {SIDEBAR_SORT_KEYS.map((key) => (
+                <button
+                  key={key}
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={sort === key}
+                  className={s.toolsOption}
+                  data-active={sort === key ? "true" : undefined}
+                  data-sort-key={key}
+                  onClick={() => onSort(key)}
+                >
+                  <span className={s.toolsOptionLabel}>{SIDEBAR_SORT_LABELS[key]}</span>
+                  {sort === key ? <Check size={12} aria-hidden="true" /> : null}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className={s.toolsSection} data-section="grouping">
+            <div className={s.toolsHeading}>分组</div>
+            <div role="radiogroup" aria-label="分组方式">
+              {SIDEBAR_GROUPING_VALUES.map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={grouping === value}
+                  className={s.toolsOption}
+                  data-active={grouping === value ? "true" : undefined}
+                  data-grouping-value={value}
+                  onClick={() => onGrouping(value)}
+                >
+                  <span className={s.toolsOptionLabel}>{SIDEBAR_GROUPING_LABELS[value]}</span>
+                  {grouping === value ? <Check size={12} aria-hidden="true" /> : null}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className={s.toolsSection} data-section="status">
+            <div className={s.toolsHeading}>筛选</div>
+            <div role="group" aria-label="按状态筛选">
+              {SESSION_STATUS_BUCKETS.map((bucket) => (
+                <button
+                  key={bucket}
+                  type="button"
+                  role="menuitemcheckbox"
+                  aria-checked={statusFilter.includes(bucket)}
+                  className={s.toolsOption}
+                  data-active={statusFilter.includes(bucket) ? "true" : undefined}
+                  data-status-bucket={bucket}
+                  onClick={() => onToggleStatus(bucket)}
+                >
+                  <span className={s.filterDot} data-state={bucket} aria-hidden="true" />
+                  <span className={s.toolsOptionLabel}>{SESSION_STATUS_BUCKET_LABELS[bucket]}</span>
+                  {statusFilter.includes(bucket) ? <Check size={12} aria-hidden="true" /> : null}
+                </button>
+              ))}
+              <button
+                type="button"
+                role="menuitem"
+                className={s.toolsOption}
+                data-action="clear-status-filter"
+                disabled={activeCount === 0}
+                onClick={onClearStatus}
+              >
+                <span className={s.toolsOptionLabel}>清除筛选</span>
+              </button>
+            </div>
+          </div>
+
+          <div className={s.toolsSection} data-section="actions">
+            <button
+              type="button"
+              className={s.toolsOption}
+              data-action="mark-all-read"
+              disabled={unreadCount === 0}
+              title={unreadCount === 0 ? "没有未读会话" : `把 ${unreadCount} 个会话标为已读`}
+              onClick={onMarkAllRead}
+            >
+              <span className={s.toolsOptionLabel}>全部已读</span>
+              <span className={s.toolsOptionMeta}>{unreadCount}</span>
+            </button>
+          </div>
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
   );
 }
 
@@ -293,14 +545,19 @@ export function WorkbenchSidebar() {
 
   const [view, setView] = useState<SidebarSessionsView>(readSidebarView);
   const [query, setQuery] = useState("");
-  const [expandedGroups, setExpandedGroups] = useState<Record<SessionDayGroupKey, boolean>>(readGroupExpanded);
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>(readGroupExpanded);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set<string>());
   const [workspacePath, setWorkspacePath] = useState<string | null>(null);
   const [titleOverrides, setTitleOverrides] = useState(readSessionTitleOverrides);
   const [pinnedSessionIds, setPinnedSessionIds] = useState(readPinnedSessionIds);
+  const [unreadOverrides, setUnreadOverrides] = useState<UnreadOverrides>(readUnreadOverrides);
   const [projects, setProjects] = useState<WorkspaceProject[]>(readWorkspaceProjects);
   const [pinnedProjectPaths, setPinnedProjectPaths] = useState(readPinnedWorkspaceProjectPaths);
   const [sessionWorkspaceMap, setSessionWorkspaceMap] = useState(readSessionWorkspaceMap);
+  const [profileScope, setProfileScope] = useState<SidebarProfileScope>(readSidebarProfileScope);
+  const [lastWorkspace] = useState(() => readWorkspacePath());
+  const { sort, grouping, statusFilter, setSort, setGrouping, toggleStatus, clearStatus } =
+    useSidebarListState();
 
   const recentPages = usePagedSessions(RECENT_SESSION_PAGE_SIZE, { order: "recent" });
   const focusedEnabled = view === "workspaces" || pinnedSessionIds.size > 0;
@@ -309,6 +566,9 @@ export function WorkbenchSidebar() {
     order: "recent",
     enabled: focusedEnabled,
   });
+  const serverSearch = useSessionSearch(query);
+  const setSessionFlags = useSetSessionFlags();
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
   const archiveSession = useArchiveSession();
   const deleteSessions = useDeleteSessions();
@@ -328,6 +588,7 @@ export function WorkbenchSidebar() {
       subscribeSessionUiStateChanges(() => {
         setTitleOverrides(readSessionTitleOverrides());
         setPinnedSessionIds(readPinnedSessionIds());
+        setUnreadOverrides(readUnreadOverrides());
       }),
     [],
   );
@@ -376,6 +637,67 @@ export function WorkbenchSidebar() {
     const staleIds = Array.from(pinnedSessionIds).filter((id) => !liveIds.has(id));
     if (staleIds.length > 0) setPinnedSessionIds(unpinSessions(staleIds));
   }, [liveRecentSessions, pinnedSessionIds, recentLoadedAll, recentTotal]);
+
+  const pinWriteGuard = useRef(new Map<string, { pinned: boolean; at: number }>());
+
+  useEffect(() => {
+    if (liveRecentSessions.length === 0) return;
+    const guard = pinWriteGuard.current;
+    const nowMs2 = Date.now();
+    const usable = (id: string) => {
+      const entry = guard.get(id);
+      return !entry || nowMs2 - entry.at > PIN_WRITE_GUARD_MS;
+    };
+    const serverPinned = liveRecentSessions.flatMap((session) =>
+      session.pinned === true && usable(session.id) ? [session.id] : [],
+    );
+    const serverUnpinned = liveRecentSessions.flatMap((session) =>
+      session.pinned === false && usable(session.id) ? [session.id] : [],
+    );
+    if (serverPinned.length === 0 && serverUnpinned.length === 0) return;
+    setPinnedSessionIds((current) => {
+      const next = new Set(current);
+      let changed = false;
+      for (const id of serverPinned) {
+        if (!next.has(id)) {
+          next.add(id);
+          changed = true;
+        }
+      }
+      for (const id of serverUnpinned) {
+        if (next.delete(id)) changed = true;
+      }
+      return changed ? writePinnedSessionIds(next) : current;
+    });
+  }, [liveRecentSessions]);
+
+  const unreadOverridesRef = useRef(unreadOverrides);
+  unreadOverridesRef.current = unreadOverrides;
+
+  const setSessionUnread = useCallback(
+    (ids: string[], unread: boolean) => {
+      if (ids.length === 0) return;
+      const next = unread
+        ? markSessionsUnreadLocally(ids)
+        : markSessionsReadLocally(ids);
+      setUnreadOverrides(next);
+      setSessionFlags.mutate({ ids, unread });
+    },
+    [setSessionFlags],
+  );
+
+  useEffect(() => {
+    if (liveRecentSessions.length === 0) return;
+    const reconciled = reconcileUnreadOverrides(unreadOverridesRef.current, liveRecentSessions);
+    if (reconciled !== unreadOverridesRef.current) {
+      setUnreadOverrides(writeUnreadOverrides(reconciled));
+    }
+  }, [liveRecentSessions]);
+
+  useEffect(() => {
+    const timer = setInterval(() => setNowMs(Date.now()), 5_000);
+    return () => clearInterval(timer);
+  }, []);
 
   const [now, setNow] = useState(() => new Date());
   const [liveNow, setLiveNow] = useState(() => new Date());
@@ -430,6 +752,9 @@ export function WorkbenchSidebar() {
   }, [pinnedProjectPaths, projects]);
 
   const goSession = (sess: SessionSummary) => {
+    if (isSessionUnread(sess, unreadOverridesRef.current)) {
+      setSessionUnread([sess.id], false);
+    }
     setActiveId(sess.id);
     navigate(`/tasks/${sess.id}`);
   };
@@ -452,6 +777,24 @@ export function WorkbenchSidebar() {
     [activeSessionId, navigate, setActiveId],
   );
 
+  const setSessionPinned = useCallback(
+    (ids: string[], pinned: boolean) => {
+      if (ids.length === 0) return;
+      const nowTs = Date.now();
+      for (const id of ids) pinWriteGuard.current.set(id, { pinned, at: nowTs });
+      setPinnedSessionIds((current) => {
+        const next = new Set(current);
+        for (const id of ids) {
+          if (pinned) next.add(id);
+          else next.delete(id);
+        }
+        return writePinnedSessionIds(next);
+      });
+      setSessionFlags.mutate({ ids, pinned });
+    },
+    [setSessionFlags],
+  );
+
   const rowActions = useSessionRowActions({
     deleteSessions: (ids) => deleteSessions.mutateAsync(ids),
     isDeleting: deleteSessions.isPending,
@@ -460,6 +803,8 @@ export function WorkbenchSidebar() {
     archive: archiveSession.mutate,
     profile,
     onDeleted: onSessionsDeleted,
+    setUnread: setSessionUnread,
+    setPinned: setSessionPinned,
   });
 
   const activeSessions = useMemo(() => {
@@ -486,22 +831,83 @@ export function WorkbenchSidebar() {
     return map;
   }, [liveFocusedSessions, liveRecentSessions, timeFor]);
 
+  const dotStateOf = useCallback(
+    (sess: SessionSummary): SessionDotState =>
+      resolveRowDotState(sess, runtimeBySession[sess.id], {
+        unread: isSessionUnread(sess, unreadOverrides),
+        now: nowMs,
+      }),
+    [nowMs, runtimeBySession, unreadOverrides],
+  );
+
+  const profilePool = useMemo(() => {
+    const pool = [...pinnedSessions, ...liveFocusedSessions, ...liveRecentSessions];
+    return Array.from(new Map(pool.map((session) => [session.id, session])).values());
+  }, [liveFocusedSessions, liveRecentSessions, pinnedSessions]);
+
+  const availableProfiles = useMemo(
+    () => distinctSessionProfiles(profilePool, (session) => session.profile),
+    [profilePool],
+  );
+
+  const needsInputByProfile = useMemo(
+    () => needsInputCountsByProfile(profilePool, (session) => session.profile, dotStateOf),
+    [dotStateOf, profilePool],
+  );
+
+  const activeNeedsInput = needsInputByProfile[profile] ?? 0;
+  const profileScopeEnabled = availableProfiles.length > 1;
+
+  useEffect(() => {
+    if (profileScope !== "all") return;
+    if (availableProfiles.length > 1) return;
+    setProfileScope(writeSidebarProfileScope("active"));
+  }, [availableProfiles, profileScope]);
+
+  const effectiveGrouping: SidebarGrouping = profileScope === "all" ? "profile" : grouping;
+
+  const { sensors: pinnedSensors, handleDragEnd: handlePinnedDragEnd, reorderEnabled } =
+    usePinnedReorder({
+      enabled: view === "pinned" && sort === "updated",
+      onReorder: (next) => setPinnedSessionIds(next),
+    });
+
+  const searching = query.trim().length > 0;
+
   const visibleRecent = useMemo(() => {
     const pinnedIdSet = new Set(pinnedSessionIds);
-    return filterSessionsByQuery(
+    const scoped = filterSessionsByQuery(
       liveRecentSessions.filter((session) => !pinnedIdSet.has(session.id)),
       query,
     );
-  }, [liveRecentSessions, pinnedSessionIds, query]);
+    const filtered = filterSessionsByStatusBuckets(scoped, statusFilter, dotStateOf);
+    return sortSessionsForSidebar(filtered, sort, dotStateOf);
+  }, [dotStateOf, liveRecentSessions, pinnedSessionIds, query, sort, statusFilter]);
 
   const visiblePinned = useMemo(
-    () => filterSessionsByQuery(pinnedSessions, query),
-    [pinnedSessions, query],
+    () => sortSessionsForSidebar(
+      filterSessionsByStatusBuckets(
+        filterSessionsByQuery(pinnedSessions, query),
+        statusFilter,
+        dotStateOf,
+      ),
+      sort,
+      dotStateOf,
+    ),
+    [dotStateOf, pinnedSessions, query, sort, statusFilter],
   );
 
   const visibleWorkspaceSessions = useMemo(
-    () => filterSessionsByQuery(liveFocusedSessions, query),
-    [liveFocusedSessions, query],
+    () => sortSessionsForSidebar(
+      filterSessionsByStatusBuckets(
+        filterSessionsByQuery(liveFocusedSessions, query),
+        statusFilter,
+        dotStateOf,
+      ),
+      sort,
+      dotStateOf,
+    ),
+    [dotStateOf, liveFocusedSessions, query, sort, statusFilter],
   );
 
   const visibleWorkspaces = useMemo(() => {
@@ -513,13 +919,38 @@ export function WorkbenchSidebar() {
     );
   }, [query, workspaces]);
 
-  const dayGroups = useMemo(() => groupSessionsByDay(visibleRecent, now), [visibleRecent, now]);
+  const localSessionIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const session of liveRecentSessions) ids.add(session.id);
+    for (const session of liveFocusedSessions) ids.add(session.id);
+    for (const session of pinnedSessions) ids.add(session.id);
+    return ids;
+  }, [liveFocusedSessions, liveRecentSessions, pinnedSessions]);
 
-  const orderedVisibleSessions = useMemo(() => {
-    if (view === "pinned") return visiblePinned;
-    if (view === "workspaces" && workspacePath) return visibleWorkspaceSessions;
-    return visibleRecent;
-  }, [view, visiblePinned, visibleRecent, visibleWorkspaceSessions, workspacePath]);
+  const remoteSearchSessions = useMemo(() => {
+    if (!searching || serverSearch.results.length === 0) return [];
+    const summaries = searchResultsToSummaries(serverSearch.results);
+    return summaries.filter((session) => !localSessionIds.has(session.id));
+  }, [localSessionIds, searching, serverSearch.results]);
+
+  const activeList = view === "pinned"
+    ? visiblePinned
+    : view === "workspaces" && workspacePath
+      ? visibleWorkspaceSessions
+      : visibleRecent;
+
+  const dayGroups = useMemo(
+    () =>
+      groupSessionsForSidebar(activeList, effectiveGrouping, {
+        now,
+        stateOf: dotStateOf,
+        projectOf: (session) => projectNameBySessionId.get(session.id),
+        profileOf: (session) => session.profile,
+      }),
+    [activeList, dotStateOf, effectiveGrouping, now, projectNameBySessionId],
+  );
+
+  const orderedVisibleSessions = activeList;
 
   const selectedSessions = useMemo(() => {
     const pool = [...liveRecentSessions, ...liveFocusedSessions, ...pinnedSessions];
@@ -553,11 +984,9 @@ export function WorkbenchSidebar() {
 
   const handleBulkPin = useCallback(() => {
     if (selectedSessions.length === 0) return;
-    const next = new Set(pinnedSessionIds);
-    for (const session of selectedSessions) next.add(session.id);
-    setPinnedSessionIds(writePinnedSessionIds(next));
+    setSessionPinned(selectedSessions.map((session) => session.id), true);
     clearSelection();
-  }, [clearSelection, pinnedSessionIds, selectedSessions]);
+  }, [clearSelection, selectedSessions, setSessionPinned]);
 
   const handleBulkArchive = useCallback(() => {
     if (selectedSessions.length === 0) return;
@@ -571,12 +1000,9 @@ export function WorkbenchSidebar() {
     clearSelection();
   }, [clearSelection, rowActions, selectedSessions]);
 
-  const rowState = (sess: SessionSummary): "live" | "ok" | "err" => {
-    if (isSessionRunning(sess, runtimeBySession)) return "live";
-    return sess.end_reason === "error" || sess.end_reason === "interrupted" ? "err" : "ok";
-  };
+  const rowState = (sess: SessionSummary): SessionDotState => dotStateOf(sess);
 
-  const renderRow = (sess: SessionSummary, menuDisabled = false) => (
+  const renderRow = (sess: SessionSummary, menuDisabled = false, snippet?: string) => (
     <SessionRow
       key={sess.id}
       session={sess}
@@ -586,6 +1012,9 @@ export function WorkbenchSidebar() {
       time={sessionTimes.get(sess.id) ?? timeFor(sess)}
       projectName={projectNameBySessionId.get(sess.id)}
       pinned={pinnedSessionIds.has(sess.id)}
+      unread={isSessionUnread(sess, unreadOverrides)}
+      snippet={snippet}
+      searchHit={snippet !== undefined}
       menuDisabled={menuDisabled || isSessionRunning(sess, runtimeBySession)}
       actions={rowActions}
       onClick={() => goSession(sess)}
@@ -602,11 +1031,23 @@ export function WorkbenchSidebar() {
     : null;
 
   const noMatchHint = (
-    <div className={s.empty}>没有匹配的对话，搜索全部会话请用 ⌘K</div>
+    <div className={s.empty}>
+      {serverSearch.searchPending ? "正在搜索全部会话…" : "没有匹配的对话"}
+    </div>
   );
-  const searching = query.trim().length > 0;
   const recentPending = recentPages.isLoading && dayGroups.length === 0;
   const recentFailed = recentPages.isError && dayGroups.length === 0;
+
+  const unreadSessions = useMemo(() => {
+    const pool = [...liveRecentSessions, ...liveFocusedSessions, ...pinnedSessions];
+    const unique = Array.from(new Map(pool.map((session) => [session.id, session])).values());
+    return unique.filter((session) => isSessionUnread(session, unreadOverrides));
+  }, [liveFocusedSessions, liveRecentSessions, pinnedSessions, unreadOverrides]);
+
+  const handleMarkAllRead = useCallback(() => {
+    if (unreadSessions.length === 0) return;
+    setSessionUnread(unreadSessions.map((session) => session.id), false);
+  }, [setSessionUnread, unreadSessions]);
 
   const listLoading = (
     <div className={s.listSkeleton} data-state="loading" role="status">
@@ -633,7 +1074,13 @@ export function WorkbenchSidebar() {
 
   return (
     <aside className={s.sidebar} data-sidebar="sessions">
-      <button type="button" className={s.newTask} onClick={() => navigate("/")}>
+      <button
+        type="button"
+        className={s.newTask}
+        data-action="new-session"
+        title={lastWorkspace ? `在 ${lastWorkspace} 新建对话` : "新建对话"}
+        onClick={() => navigate(newSessionHrefForWorkspace(lastWorkspace))}
+      >
         <span className={s.newTaskLead}>
           <span className={s.entryIcon}>
             <Plus size={16} strokeWidth={2.2} />
@@ -681,15 +1128,28 @@ export function WorkbenchSidebar() {
         </button>
       </div>
 
-      <div className={s.searchWrap}>
-        <Search size={14} className={s.searchIcon} aria-hidden="true" />
-        <input
-          type="search"
-          className={s.searchInput}
-          value={query}
-          placeholder="搜索对话"
-          aria-label="搜索对话"
-          onChange={(event) => setQuery(event.target.value)}
+      <div className={s.searchRow}>
+        <div className={s.searchWrap}>
+          <Search size={14} className={s.searchIcon} aria-hidden="true" />
+          <input
+            type="search"
+            className={s.searchInput}
+            value={query}
+            placeholder="搜索对话"
+            aria-label="搜索对话"
+            onChange={(event) => setQuery(event.target.value)}
+          />
+        </div>
+        <SidebarListTools
+          sort={sort}
+          grouping={grouping}
+          statusFilter={statusFilter}
+          unreadCount={unreadSessions.length}
+          onSort={setSort}
+          onGrouping={setGrouping}
+          onToggleStatus={toggleStatus}
+          onClearStatus={clearStatus}
+          onMarkAllRead={handleMarkAllRead}
         />
       </div>
 
@@ -731,13 +1191,19 @@ export function WorkbenchSidebar() {
               listLoading
             ) : recentFailed ? (
               listError
-            ) : dayGroups.length === 0 ? (
+            ) : dayGroups.length === 0 && remoteSearchSessions.length === 0 ? (
               searching ? noMatchHint : <div className={s.empty}>还没有历史对话</div>
             ) : (
               dayGroups.map((group) => {
-                const expanded = expandedGroups[group.key];
+                const expanded = isGroupExpanded(expandedGroups, group.key);
                 return (
-                  <section className={s.section} key={group.key} data-day-group={group.key}>
+                  <section
+                    className={s.section}
+                    key={group.key}
+                    data-day-group={effectiveGrouping === "day" ? group.key : undefined}
+                    data-group-key={group.key}
+                    data-grouping={effectiveGrouping}
+                  >
                     <button
                       type="button"
                       className={s.groupHeader}
@@ -745,7 +1211,7 @@ export function WorkbenchSidebar() {
                       onClick={() => {
                         setExpandedGroups((current) => ({
                           ...current,
-                          [group.key]: !current[group.key],
+                          [group.key]: !isGroupExpanded(current, group.key),
                         }));
                       }}
                     >
@@ -754,12 +1220,32 @@ export function WorkbenchSidebar() {
                       </span>
                       <span className={s.groupLabel}>{group.label}</span>
                       <span className={s.labelCount}>{group.items.length}</span>
+                      {effectiveGrouping === "profile" && (needsInputByProfile[group.label] ?? 0) > 0 ? (
+                        <span
+                          className={s.groupNeedsInput}
+                          title={`${needsInputByProfile[group.label]} 个会话等你处理`}
+                        >
+                          {needsInputByProfile[group.label]}
+                        </span>
+                      ) : null}
                     </button>
                     {expanded ? group.items.map((sess) => renderRow(sess)) : null}
                   </section>
                 );
               })
             )}
+
+            {remoteSearchSessions.length > 0 ? (
+              <section className={s.section} data-section="server-search">
+                <div className={s.label}>
+                  <span>未加载的会话命中</span>
+                  <span className={s.labelCount}>{remoteSearchSessions.length}</span>
+                </div>
+                {remoteSearchSessions.map((sess) =>
+                  renderRow(sess, false, sess.preview ?? undefined),
+                )}
+              </section>
+            ) : null}
 
             {visibleRecent.length > 0 ? (
               <div className={s.loadMoreRow}>
@@ -789,8 +1275,23 @@ export function WorkbenchSidebar() {
           ) : visiblePinned.length === 0 ? (
             searching ? noMatchHint : <div className={s.empty}>还没有置顶对话</div>
           ) : (
-            <section className={s.section} data-section="pinned">
-              {visiblePinned.map((sess) => renderRow(sess))}
+            <section className={s.section} data-section="pinned" data-reorder={reorderEnabled ? "on" : "off"}>
+              <DndContext
+                sensors={pinnedSensors}
+                collisionDetection={closestCenter}
+                onDragEnd={handlePinnedDragEnd}
+              >
+                <SortableContext
+                  items={visiblePinned.map((sess) => sess.id)}
+                  strategy={verticalListSortingStrategy}
+                >
+                  {visiblePinned.map((sess) => (
+                    <SortablePinnedRow key={sess.id} id={sess.id} sortable={reorderEnabled}>
+                      {renderRow(sess)}
+                    </SortablePinnedRow>
+                  ))}
+                </SortableContext>
+              </DndContext>
             </section>
           )
         ) : null}
@@ -832,20 +1333,38 @@ export function WorkbenchSidebar() {
           ) : (
             <section className={s.section} data-section="workspaces">
               {visibleWorkspaces.map((workspace) => (
-                <button
-                  type="button"
+                <div
                   key={workspace.path}
                   className={s.workspaceItem}
                   data-workspace-path={workspace.path}
-                  onClick={() => setWorkspacePath(workspace.path)}
                   title={workspace.path}
                 >
-                  <span className={s.workspaceIcon}>
-                    <Folder size={15} />
-                  </span>
-                  <span className={s.workspaceName}>{workspace.name}</span>
-                  <span className={s.workspaceCount}>{workspace.sessionCount}</span>
-                </button>
+                  <button
+                    type="button"
+                    className={s.workspaceOpen}
+                    onClick={() => setWorkspacePath(workspace.path)}
+                    title={workspace.path}
+                  >
+                    <span className={s.workspaceIcon}>
+                      <Folder size={15} />
+                    </span>
+                    <span className={s.workspaceName}>{workspace.name}</span>
+                    <span className={s.workspaceCount}>{workspace.sessionCount}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className={s.workspaceNew}
+                    data-action="new-session-in-workspace"
+                    aria-label={`在 ${workspace.name} 新建对话`}
+                    title={`在 ${workspace.name} 新建对话`}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      navigate(newSessionHrefForWorkspace(workspace.path));
+                    }}
+                  >
+                    <Plus size={13} />
+                  </button>
+                </div>
               ))}
             </section>
           )
@@ -904,6 +1423,7 @@ export function WorkbenchSidebar() {
         <SessionDeleteModal
           sessions={rowActions.deleteTargets}
           deleting={rowActions.isDeleting}
+          error={rowActions.deleteError}
           onClose={rowActions.closeDeleteDialog}
           onConfirm={rowActions.confirmDelete}
         />

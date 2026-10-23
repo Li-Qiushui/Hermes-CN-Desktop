@@ -8,6 +8,7 @@ import {
   Mic,
   Puzzle,
   Sparkles,
+  SlidersHorizontal,
   SquareCode,
   TerminalSquare,
   type LucideIcon,
@@ -37,6 +38,7 @@ export const CONFIG_ITEMS: readonly CapabilityItem[] = [
   },
   { label: "技能", path: "/skills", icon: Sparkles },
   { label: "MCP", path: "/mcp", icon: Puzzle },
+  { label: "能力", path: "/capabilities", icon: SlidersHorizontal, title: "能力：工具集开关与已配置状态" },
   { label: "终端", path: "/console", icon: TerminalSquare, title: "Hermes Console：直接运行 Hermes 命令" },
   {
     label: "人格",

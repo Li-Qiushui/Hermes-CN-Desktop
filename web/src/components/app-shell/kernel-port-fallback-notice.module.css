@@ -1,0 +1,97 @@
+.notice {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--h-line);
+  border-radius: 0;
+  color: var(--h-text);
+  background: color-mix(in srgb, var(--h-warn) 8%, var(--h-bg-pane));
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.notice > svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  color: var(--h-warn);
+}
+
+.copy {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.heading {
+  color: var(--h-text);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.detail {
+  margin-top: 2px;
+  color: var(--h-text-2);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.detail code {
+  margin: 0 3px;
+  padding: 0 4px;
+  border: 1px solid var(--h-line);
+  border-radius: 0;
+  color: var(--h-text);
+  background: var(--h-bg-soft);
+  font-family: var(--h-font-mono);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.note {
+  margin-top: 2px;
+  color: var(--h-warn);
+  font-size: 12.5px;
+}
+
+.actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--h-line);
+  border-radius: 0;
+  color: var(--h-text);
+  background: var(--h-bg-pane);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1.3;
+  cursor: pointer;
+}
+
+.actions button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--h-warn) 10%, var(--h-bg-pane));
+}
+
+.actions button:disabled {
+  cursor: default;
+  opacity: .55;
+}
+
+.actions .iconButton {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  justify-content: center;
+  color: var(--h-text-3);
+}

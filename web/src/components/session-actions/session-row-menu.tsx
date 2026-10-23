@@ -1,13 +1,28 @@
 import { Popover } from "@hermes/shared-ui";
-import { Archive, ArchiveRestore, Download, Edit3, GitFork, Pin, PinOff, Trash2 } from "lucide-react";
+import {
+  Archive,
+  ArchiveRestore,
+  Copy,
+  Download,
+  Edit3,
+  GitFork,
+  MailOpen,
+  Mail,
+  Pin,
+  PinOff,
+  Trash2,
+} from "lucide-react";
 import s from "./session-actions.module.css";
 
 export interface SessionRowMenuProps {
   pinned: boolean;
+  unread?: boolean;
   disabled?: boolean;
   /** When true, the row is archived: show "取消归档" wired to onUnarchive. */
   archived?: boolean;
   onTogglePin: () => void;
+  onToggleUnread?: () => void;
+  onCopyId?: () => void;
   onRename: () => void;
   onBranch: () => void;
   onExport: () => void;
@@ -18,16 +33,20 @@ export interface SessionRowMenuProps {
 }
 
 /**
- * Dropdown body for a single session's actions (pin / rename / branch / export /
- * archive / delete). Render it inside a `Popover.Root` whose `Popover.Trigger` is the
- * "⋯" button — shared by the history list and the workbench sidebar. In the
- * history page's archived scope the archive item flips to "取消归档".
+ * Dropdown body for a single session's actions (pin / unread / copy id / rename
+ * / branch / export / archive / delete). Render it inside a `Popover.Root` whose
+ * `Popover.Trigger` is the "⋯" button — shared by the history list and the
+ * workbench sidebar. In the history page's archived scope the archive item flips
+ * to "取消归档".
  */
 export function SessionRowMenu({
   pinned,
+  unread = false,
   disabled,
   archived,
   onTogglePin,
+  onToggleUnread,
+  onCopyId,
   onRename,
   onBranch,
   onExport,
@@ -51,6 +70,21 @@ export function SessionRowMenu({
             {pinned ? "取消置顶" : "置顶"}
           </button>
         </Popover.Close>
+        {onToggleUnread ? (
+          <Popover.Close asChild>
+            <button type="button" onClick={onToggleUnread} role="menuitem" disabled={disabled}>
+              {unread ? <MailOpen size={12} /> : <Mail size={12} />}
+              {unread ? "标记已读" : "标记未读"}
+            </button>
+          </Popover.Close>
+        ) : null}
+        {onCopyId ? (
+          <Popover.Close asChild>
+            <button type="button" onClick={onCopyId} role="menuitem" disabled={disabled}>
+              <Copy size={12} /> 复制会话 ID
+            </button>
+          </Popover.Close>
+        ) : null}
         <Popover.Close asChild>
           <button type="button" onClick={onRename} role="menuitem" disabled={disabled}>
             <Edit3 size={12} /> 重命名

@@ -27,7 +27,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { FsListResponse } from "@hermes/protocol";
-import { useSessions } from "@/hooks/use-sessions";
+import { useSessions, useSessionSearch, stripSearchHighlight } from "@/hooks/use-sessions";
 import { useSkills } from "@/hooks/use-skills";
 import {
   buildCommandPaletteItems,
@@ -138,6 +138,7 @@ export function CommandPalette() {
   const inputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
   const sessionsQuery = useSessions(200, 0);
+  const serverSearch = useSessionSearch(open ? search : "", { limit: 10 });
   const skillsQuery = useSkills();
   const projects = useWorkspaceProjects();
   const { files, fetching: filesFetching } = useCommandPaletteFileCandidates(open, search, projects);
@@ -168,13 +169,32 @@ export function CommandPalette() {
   }, [open]);
 
   const items = useMemo(
-    () => buildCommandPaletteItems({
-      sessions: sessionsQuery.data?.sessions,
-      projects,
-      skills: skillsQuery.data,
-      files,
-    }),
-    [files, projects, sessionsQuery.data?.sessions, skillsQuery.data],
+    () => {
+      const base = buildCommandPaletteItems({
+        sessions: sessionsQuery.data?.sessions,
+        projects,
+        skills: skillsQuery.data,
+        files,
+      });
+      const known = new Set((sessionsQuery.data?.sessions ?? []).map((session) => session.id));
+      const hits: CommandPaletteItem[] = serverSearch.results.flatMap((result) => {
+        if (known.has(result.session_id)) return [];
+        const snippet = stripSearchHighlight(result.snippet);
+        const title = (result.title ?? "").trim();
+        return [{
+          id: `session-server-hit-${result.session_id}`,
+          group: "sessions" as const,
+          label: title || snippet || result.session_id,
+          subtitle: snippet || result.session_id,
+          keywords: [snippet, result.session_id, result.source ?? ""].filter(Boolean),
+          icon: "history" as const,
+          action: { type: "navigate" as const, to: `/tasks/${result.session_id}` },
+          priority: 0,
+        }];
+      });
+      return hits.length > 0 ? [...hits, ...base] : base;
+    },
+    [files, projects, serverSearch.results, sessionsQuery.data?.sessions, skillsQuery.data],
   );
 
   const groups = useMemo(

@@ -10,6 +10,8 @@ export interface SessionDeleteModalProps {
   deleting: boolean;
   onClose: () => void;
   onConfirm: () => void;
+  /** 删除失败的原因。有值时弹窗不关，让用户看到后端到底拒了什么。 */
+  error?: string | null;
 }
 
 /**
@@ -21,6 +23,7 @@ export function SessionDeleteModal({
   deleting,
   onClose,
   onConfirm,
+  error,
 }: SessionDeleteModalProps) {
   const count = sessions.length;
   const preview = sessions.slice(0, 5);
@@ -56,6 +59,11 @@ export function SessionDeleteModal({
               <div className={s.confirmListMore}>另有 {count - preview.length} 个会话</div>
             ) : null}
           </div>
+          {error ? (
+            <p className={s.confirmError} role="alert">
+              {error}
+            </p>
+          ) : null}
           <div className={s.confirmActions}>
             <button type="button" className={s.confirmCancel} onClick={onClose} disabled={deleting}>
               取消
