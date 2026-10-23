@@ -83,7 +83,7 @@
   justify-content: center;
   margin: 20px 0 12px;
   color: var(--h-text-3);
-  font-size: 11px;
+  font-size: 12.5px;
   font-weight: 500;
 }
 
@@ -239,7 +239,7 @@
   padding: 0;
   background: transparent;
   color: var(--h-text-3);
-  font-size: 11px;
+  font-size: 12.5px;
   cursor: pointer;
 }
 
@@ -303,13 +303,13 @@
   position: relative;
   width: 100%;
   min-width: 0;
-  padding-bottom: 24px;
+  padding-bottom: 0;
 }
 
 .assistantName {
   margin: 0 0 4px 4px;
   color: var(--h-text-2);
-  font-size: 12px;
+  font-size: 12.5px;
 }
 
 .assistantIdentity {
@@ -318,7 +318,7 @@
   gap: 8px;
   margin: 0 0 8px 0;
   color: var(--h-text-2);
-  font-size: 12px;
+  font-size: 12.5px;
   font-weight: 550;
 }
 
@@ -576,7 +576,7 @@
 
 .imageFallbackMeta {
   color: var(--h-text-2);
-  font-size: 12px;
+  font-size: 12.5px;
 }
 
 .imageFallback code {
@@ -809,87 +809,109 @@
 }
 
 .messageActions {
-  position: absolute;
-  bottom: 0;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  min-height: 26px;
+  margin-top: 6px;
   color: var(--h-text-3);
-  font-size: 10px;
+  font-size: 12.5px;
+  line-height: 1.4;
+  opacity: 0;
+  transition: opacity 0.12s ease;
 }
 
 .messageRow[data-role="user"] .messageActions {
-  right: 0;
+  justify-content: flex-end;
 }
 
 .messageRow[data-role="assistant"] .messageActions {
-  left: 0;
+  justify-content: flex-start;
 }
 
-.messageActionsControls {
+.messageRow:hover .messageActions,
+.messageRow:focus-within .messageActions,
+.messageActions:focus-within {
+  opacity: 1;
+}
+
+@media (pointer: coarse) {
+  .messageActions {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .messageActions {
+    transition: none;
+  }
+}
+
+.messageActionGroup {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  opacity: 1;
-  transform: translateY(0);
-  pointer-events: auto;
+  gap: 4px;
+  min-width: 0;
 }
 
-.messageActions button {
+.messageActions button.messageAction {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 26px;
   border: 0;
+  border-radius: 0;
   background: transparent;
   color: var(--h-text-3);
   cursor: pointer;
-  font-size: 10px;
-  padding: 0;
+  padding: 0 6px;
+  font-size: 12.5px;
+  line-height: 1.2;
 }
 
-.messageActions button:hover {
+.messageActions button.messageAction:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--h-text) 8%, transparent);
+  color: var(--h-text-2);
+}
+
+.messageActions button.messageAction:active:not(:disabled) {
+  background: color-mix(in srgb, var(--h-text) 14%, transparent);
   color: var(--h-text);
 }
 
-.messageActions button[data-copy-state="copied"] {
+.messageActions button.messageAction:focus-visible {
+  border-radius: 0;
+  outline: 1px solid var(--h-accent);
+  outline-offset: 1px;
+}
+
+.messageActions button.messageAction:disabled {
+  background: transparent;
+  color: var(--h-text-3);
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.messageActions button.messageAction[data-copy-state="copied"] {
   color: var(--h-ok);
 }
 
-.messageActions button[data-copy-state="error"] {
+.messageActions button.messageAction[data-copy-state="error"] {
   color: var(--h-err);
 }
 
-.messageActions .messageCorrectAction {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 12.5px;
-  line-height: 1;
-  color: var(--h-text-3);
-}
-
-.messageActions .messageCorrectAction:hover {
-  color: var(--h-text);
-}
-
-.messageActions .messageCorrectAction:disabled {
-  color: var(--h-text-disabled, var(--h-text-3));
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-.messageActions button[data-speech-state] {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.messageActions button[data-speech-state] svg {
-  width: 12px;
-  height: 12px;
-  stroke-width: 2;
-}
-
-.messageActions button[data-speech-state="preparing"],
-.messageActions button[data-speech-state="speaking"] {
+.messageActions button.messageAction[data-speech-state="preparing"],
+.messageActions button.messageAction[data-speech-state="speaking"] {
   color: var(--h-accent);
+}
+
+.messageActions button.messageAction.messageCorrectAction[data-correction-pending="true"] {
+  color: var(--h-text-2);
+}
+
+.messageActions button.messageAction.messageDeleteAction:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--h-err) 10%, transparent);
+  color: var(--h-err);
 }
 
 .messageSpeechError {
@@ -962,7 +984,7 @@
   box-shadow: none;
   color: var(--h-text);
   padding: 12px 12px;
-  font-size: 11px;
+  font-size: 12.5px;
   text-align: left;
 }
 
@@ -994,8 +1016,9 @@
 }
 
 .messageStatsModel {
+  color: var(--h-text-2);
   font-family: var(--h-font-mono);
-  font-size: 10.5px;
+  font-size: 12.5px;
 }
 
 .reasoning {
@@ -1010,7 +1033,7 @@
   background: transparent;
   color: var(--h-text-3);
   cursor: pointer;
-  font-size: 12px;
+  font-size: 12.5px;
   padding: 0;
 }
 
@@ -1037,7 +1060,7 @@
   color: var(--h-text-3);
   cursor: default;
   font-family: var(--h-font-cn);
-  font-size: 12px;
+  font-size: 12.5px;
   line-height: 1.4;
   padding: 0;
   text-autospace: no-autospace;
@@ -1056,7 +1079,7 @@
 
 .thinkingLabel {
   color: var(--h-text-2);
-  font-size: 12px;
+  font-size: 12.5px;
   line-height: 16px;
   white-space: nowrap;
 }
@@ -1066,7 +1089,7 @@
   align-items: baseline;
   gap: 8px;
   font-family: var(--h-font-mono);
-  font-size: 12px;
+  font-size: 12.5px;
   line-height: 16px;
   font-variant-numeric: tabular-nums;
   color: var(--h-text-3);
@@ -1087,7 +1110,7 @@
 .thinkingTimer {
   margin-left: auto;
   font-family: var(--h-font-mono);
-  font-size: 12px;
+  font-size: 12.5px;
   line-height: 16px;
   font-variant-numeric: tabular-nums;
   color: var(--h-text-3);
@@ -1107,7 +1130,7 @@
 .toolActivity {
   max-width: 100%;
   color: var(--h-text-3);
-  font-size: 12px;
+  font-size: 12.5px;
 }
 
 .toolActivitySummary {
@@ -1119,7 +1142,7 @@
   background: transparent;
   color: var(--h-text-3);
   cursor: pointer;
-  font-size: 12px;
+  font-size: 12.5px;
   line-height: 1.45;
   padding: 0;
   text-align: left;
@@ -1166,7 +1189,7 @@
   overflow: hidden;
   color: var(--h-text-3);
   font-family: var(--h-font-mono);
-  font-size: 11px;
+  font-size: 12.5px;
   line-height: inherit;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1178,7 +1201,7 @@
   overflow-wrap: anywhere;
   color: var(--h-err);
   font-family: var(--h-font-mono);
-  font-size: 11px;
+  font-size: 12.5px;
   line-height: 1.5;
 }
 
@@ -1209,7 +1232,7 @@
   color: var(--h-text-2);
   cursor: pointer;
   padding: 4px 4px;
-  font-size: 12px;
+  font-size: 12.5px;
   line-height: 1.45;
   text-align: left;
 }
@@ -1248,8 +1271,8 @@
 
 .toolName {
   min-width: 0;
-  color: var(--h-text);
-  font-weight: 500;
+  color: var(--h-text-2);
+  font-weight: 400;
   line-height: inherit;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1264,7 +1287,7 @@
   white-space: nowrap;
   color: var(--h-text-3);
   font-family: var(--h-font-mono);
-  font-size: 11px;
+  font-size: 12.5px;
   line-height: inherit;
 }
 
@@ -1272,7 +1295,7 @@
   flex: 0 0 auto;
   color: var(--h-text-3);
   font-family: var(--h-font-mono);
-  font-size: 10px;
+  font-size: 12.5px;
   line-height: inherit;
   font-variant-numeric: tabular-nums;
 }
@@ -1281,12 +1304,157 @@
   flex: 0 0 auto;
   color: var(--h-text-3);
   font-family: var(--h-font-mono);
-  font-size: 10px;
+  font-size: 12.5px;
   line-height: inherit;
   font-variant-numeric: tabular-nums;
   padding: 0 4px;
   border-radius: 0;
   background: var(--h-bg-soft);
+}
+
+.messageRow:hover .toolName,
+.messageRow:hover .assistantName,
+.messageRow:hover .thinkingLabel {
+  color: var(--h-text);
+}
+
+.messageRow:hover .toolContext,
+.messageRow:hover .toolElapsed,
+.messageRow:hover .toolBadge,
+.messageRow:hover .toolActivity,
+.messageRow:hover .toolActivitySummary,
+.messageRow:hover .toolActivityLabel,
+.messageRow:hover .toolActivityMeta,
+.messageRow:hover .messageTime,
+.messageRow:hover .messageStats,
+.messageRow:hover .thinkingMeta,
+.messageRow:hover .thinkingTimer,
+.messageRow:hover .statusMessage,
+.messageRow:hover .fileWriteStatus {
+  color: var(--h-text-2);
+}
+
+.messageRow:hover .messageStats[data-risk="warn"] {
+  color: var(--h-warn);
+}
+
+.messageRow:hover .messageStats[data-risk="err"] {
+  color: var(--h-err);
+}
+
+.fileWriteCard {
+  display: flex;
+  min-width: 0;
+  max-width: 100%;
+  flex-direction: column;
+}
+
+.fileWriteHeader {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+  max-width: 100%;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--h-text-2);
+  cursor: pointer;
+  padding: 0 4px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  text-align: left;
+}
+
+.fileWriteHeader:hover,
+.fileWriteHeader[data-open="true"] {
+  background: var(--h-bg-soft);
+}
+
+.fileWriteHeader:focus-visible {
+  border-radius: 0;
+  outline: 2px solid color-mix(in srgb, var(--h-accent), transparent 55%);
+  outline-offset: 2px;
+}
+
+.fileWriteChevron {
+  flex: 0 0 auto;
+  color: var(--h-text-3);
+  transition: transform 0.15s;
+}
+
+.fileWriteHeader[data-open="true"] .fileWriteChevron {
+  transform: rotate(90deg);
+}
+
+.fileWriteIcon {
+  flex: 0 0 auto;
+  color: var(--h-text-3);
+}
+
+.fileWriteName {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--h-text);
+  font-family: var(--h-font-mono);
+  font-size: 12.5px;
+  line-height: inherit;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fileWriteStats {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 6px;
+  font-family: var(--h-font-mono);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.fileWriteStats [data-kind="add"] {
+  color: var(--h-ok);
+}
+
+.fileWriteStats [data-kind="del"] {
+  color: var(--h-err);
+}
+
+.fileWriteStatus {
+  flex: 0 0 auto;
+  color: var(--h-text-3);
+  font-size: 12.5px;
+  line-height: inherit;
+}
+
+.fileWriteBody {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.fileWriteMore {
+  align-self: flex-start;
+  min-height: 26px;
+  margin-top: 4px;
+  border: 1px solid var(--h-line);
+  border-radius: 0;
+  background: transparent;
+  color: var(--h-text-2);
+  cursor: pointer;
+  padding: 0 8px;
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
+.fileWriteMore:hover {
+  background: color-mix(in srgb, var(--h-text) 8%, transparent);
+  color: var(--h-text);
+}
+
+.fileWriteMore:focus-visible {
+  border-radius: 0;
+  outline: 2px solid color-mix(in srgb, var(--h-accent), transparent 55%);
+  outline-offset: 2px;
 }
 
 .toolGroupBody {
@@ -1308,7 +1476,7 @@
   margin: 4px 0;
   border-radius: 0;
   padding: 8px 8px;
-  font-size: 11px;
+  font-size: 12.5px;
 }
 
 .toolBody pre[data-error="true"] {
@@ -1319,7 +1487,7 @@
 .statusMessage {
   margin: 12px 0 0 4px;
   color: var(--h-text-3);
-  font-size: 12px;
+  font-size: 12.5px;
   font-style: normal;
 }
 
@@ -1408,7 +1576,7 @@
 .jumpToBottom {
   position: absolute;
   left: 50%;
-  bottom: 22px;
+  bottom: 14px;
   z-index: 6;
   display: inline-flex;
   align-items: center;
@@ -1441,6 +1609,9 @@
 }
 
 .messageTime {
+  flex: 0 0 auto;
+  color: var(--h-text-3);
+  font-size: 12.5px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }

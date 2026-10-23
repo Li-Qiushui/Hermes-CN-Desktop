@@ -4,6 +4,7 @@ import { AlertCircle, Bot, CheckCircle2, ChevronRight, Copy, SquareTerminal, X }
 import { LoadingIndicator } from "@hermes/shared-ui";
 import { CopyButton } from "@/components/ui/copy-button";
 import { formatTokens } from "@/lib/format";
+import { STALL_WATCHDOG_THRESHOLD_MS } from "@/lib/session-activity";
 import {
   activeCliDelegationCount,
   cliDelegationsBySessionAtom,
@@ -125,67 +126,119 @@ function canInterruptNode(node: SubagentProgress): boolean {
   return canInterruptRow({ status: node.status, subagentId: node.subagentId } as DelegateRunRow);
 }
 
-/** 面板一行：状态点 + 目标（截断）+ 模型/耗时/工具数 + 最后一行输出。 */
+type TaskState = "working" | "stalled" | "done" | "failed";
+
+const TASK_STATE_TEXT: Record<TaskState, string> = {
+  working: "跑中",
+  stalled: "卡住",
+  done: "完成",
+  failed: "失败",
+};
+
+const isTerminalStatus = (status: SubagentStatus): boolean =>
+  status === "completed" || status === "failed" || status === "interrupted";
+
+function taskState(node: SubagentProgress, now: number): TaskState {
+  if (node.status === "running" || node.status === "queued") {
+    return now - node.updatedAt >= STALL_WATCHDOG_THRESHOLD_MS ? "stalled" : "working";
+  }
+  return node.status === "completed" ? "done" : "failed";
+}
+
+function childProgress(node: SubagentNode): string {
+  if (node.children.length === 0) return "";
+  const finished = node.children.filter((child) => isTerminalStatus(child.status)).length;
+  return `${finished}/${node.children.length}`;
+}
+
+/** 面板一张任务卡：状态点 + 任务名 / 状态 · 耗时 · 进度 / 模型与工具数 / 结果摘要一行。 */
 function SubagentItem({
   entry,
   now,
   onOpen,
+  onOpenInBoard,
   onInterrupt,
 }: {
   entry: FlatEntry;
   now: number;
   onOpen: (target: SubagentDialogTarget) => void;
+  onOpenInBoard?: (item: SubagentProgress) => void;
   onInterrupt?: (item: SubagentProgress) => void;
 }) {
   const { node, depth } = entry;
-  const live = node.status === "running" || node.status === "queued";
+  const state = taskState(node, now);
+  const live = state === "working" || state === "stalled";
   const seconds =
     typeof node.durationSeconds === "number"
       ? Math.max(0, node.durationSeconds)
       : Math.max(0, (now - node.startedAt) / 1000);
   const duration = fmtDuration(seconds) || "0s";
   const tools = node.toolCount ?? 0;
-  const last = lastSubagentOutput(node);
-  const meta = [
-    node.model,
-    live ? `已运行 ${duration}` : `耗时 ${duration}`,
-    `${tools} 次工具`,
-    live ? "" : `更新于 ${fmtAge(node.updatedAt, now)}`,
-  ].filter(Boolean);
+  const progress = childProgress(node);
+  const summary = node.summary?.trim() || lastSubagentOutput(node);
+  const meta = [node.model, `${tools} 次工具`, `更新于 ${fmtAge(node.updatedAt, now)}`].filter(Boolean);
 
   return (
     <div
       className={s.item}
       data-subagent-row={node.id}
       data-status={node.status}
+      data-state={state}
       data-depth={depth}
       style={depth > 0 ? { paddingLeft: 12 + depth * 12 } : undefined}
     >
       <button
         className={s.itemHead}
         type="button"
-        title="查看这个子代理的运行情况"
+        title="查看这个子任务的运行情况"
         onClick={() => onOpen(dialogTargetFromProgress(node))}
       >
         <span className={s.dot} data-tone={subagentStatusTone(node.status)} aria-hidden="true" />
         <span className={s.itemMain}>
-          <span className={s.itemGoal}>{node.goal}</span>
+          <span className={s.itemTitleRow}>
+            <span className={s.itemGoal}>{node.goal}</span>
+            {progress ? (
+              <span className={s.itemProgress} aria-label={`子任务进度 ${progress}`}>
+                {progress}
+              </span>
+            ) : null}
+            <span className={s.itemState} data-state={state}>
+              {TASK_STATE_TEXT[state]}
+            </span>
+            <span className={s.itemTimer} title={live ? "已运行" : "耗时"}>
+              {duration}
+            </span>
+          </span>
           <span className={s.itemMeta}>{meta.join(" · ")}</span>
-          <span className={s.itemLast} data-empty={last ? undefined : "true"}>
-            {last || "等待子代理输出…"}
+          <span className={s.itemLast} data-empty={summary ? undefined : "true"}>
+            {summary || "等待子代理输出…"}
           </span>
         </span>
       </button>
-      {onInterrupt && canInterruptNode(node) ? (
+      <div className={s.itemActions}>
         <button
-          className={s.itemInterrupt}
+          className={s.itemAction}
           type="button"
-          onClick={() => onInterrupt(node)}
-          title="中断这个子代理"
+          onClick={() => onOpen(dialogTargetFromProgress(node))}
         >
-          中断
+          查看详情
         </button>
-      ) : null}
+        {onOpenInBoard ? (
+          <button className={s.itemAction} type="button" onClick={() => onOpenInBoard(node)}>
+            在看板里打开
+          </button>
+        ) : null}
+        {onInterrupt && canInterruptNode(node) ? (
+          <button
+            className={s.itemInterrupt}
+            type="button"
+            onClick={() => onInterrupt(node)}
+            title="中断这个子任务"
+          >
+            中断
+          </button>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -451,6 +504,7 @@ export function SubagentPanel({
   onClearFinished,
   onOpenSession,
   onInterrupt,
+  onOpenInBoard,
 }: {
   subagents: SubagentProgress[];
   cliDelegations?: CliDelegationEntry[];
@@ -459,6 +513,7 @@ export function SubagentPanel({
   /** 「在页面中打开」：跳子会话（detail 会写来源，返回条才出得来）。 */
   onOpenSession?: (childSessionId: string) => void;
   onInterrupt?: (item: SubagentProgress) => void;
+  onOpenInBoard?: (item: SubagentProgress) => void;
 }) {
   const tree = useMemo(() => buildSubagentTree(subagents), [subagents]);
   const entries = useMemo(() => flattenForPanel(tree), [tree]);
@@ -513,24 +568,24 @@ export function SubagentPanel({
     setFilter((prev) => (prev === key ? "all" : key));
 
   return (
-    <aside className={s.panel} aria-label="子Agent 监视" style={{ width, flexBasis: width }}>
-      <PanelResizeHandle ariaLabel="调整子Agent 面板宽度" onPointerDown={onResizeStart} />
+    <aside className={s.panel} aria-label="子任务监视" style={{ width, flexBasis: width }}>
+      <PanelResizeHandle ariaLabel="调整子任务面板宽度" onPointerDown={onResizeStart} />
       <header className={s.header}>
         <span className={s.headerTitle}>
           <Bot size={16} aria-hidden />
-          子Agent 监视
+          子任务监视
         </span>
         {onClearFinished && finishedCount > 0 ? (
           <button
             className={s.clearFinished}
             type="button"
             onClick={onClearFinished}
-            title="移除已结束的子Agent 与委派记录"
+            title="移除已结束的子任务与委派记录"
           >
             清空已结束
           </button>
         ) : null}
-        <button className={s.close} type="button" onClick={onClose} aria-label="关闭子Agent 监视">
+        <button className={s.close} type="button" onClick={onClose} aria-label="关闭子任务监视">
           <X size={16} aria-hidden />
         </button>
       </header>
@@ -624,6 +679,7 @@ export function SubagentPanel({
                       entry={entry}
                       now={now}
                       onOpen={setDialog}
+                      onOpenInBoard={onOpenInBoard}
                       onInterrupt={onInterrupt}
                     />
                   ))}

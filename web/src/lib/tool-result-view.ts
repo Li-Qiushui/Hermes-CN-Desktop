@@ -568,3 +568,11 @@ export function buildToolResultView(input: ToolResultInput): ToolResultView {
   }
   return { kind: "raw", outputText, errorText };
 }
+
+export function isKnownFileWriteTool(name: string): boolean {
+  return FILE_NAMES.has(normalizeToolName(name ?? ""));
+}
+
+export function isFileChangeToolInput(input: ToolResultInput): boolean {
+  return buildToolResultView(input).kind === "file";
+}

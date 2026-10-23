@@ -2,7 +2,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { ComposerAttachment } from "./composer-types";
-import { AttachmentTray, isAttachmentBusy } from "./goose-composer-attachments";
+import { AttachmentTray } from "./attachment-preview";
+import { createPastedTextAttachment, isAttachmentBusy } from "./goose-composer-attachments";
 import { ContextIndicator } from "./goose-composer-context";
 import type { ComposerContextUsage } from "./composer-types";
 
@@ -28,6 +29,28 @@ describe("AttachmentTray", () => {
     render(<AttachmentTray attachments={[attachment]} onRemove={onRemove} />);
     fireEvent.click(screen.getByRole("button", { name: "移除 demo.txt" }));
     expect(onRemove).toHaveBeenCalledWith("att-1");
+  });
+
+  it("previews an image attachment as a zoomable thumbnail", () => {
+    const image: ComposerAttachment = {
+      ...attachment,
+      id: "att-img",
+      name: "shot.png",
+      kind: "image",
+      previewUrl: "blob:preview",
+    };
+    render(<AttachmentTray attachments={[image]} onRemove={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "查看大图：shot.png" }));
+    expect(screen.getByRole("dialog", { name: "查看大图：shot.png" })).toBeTruthy();
+  });
+
+  it("labels a large pasted text attachment with its character count", () => {
+    const pasted = createPastedTextAttachment("a".repeat(4200));
+    render(<AttachmentTray attachments={[pasted]} onRemove={vi.fn()} />);
+
+    expect(screen.getByText("粘贴内容 4200 字")).toBeTruthy();
+    expect(screen.getByRole("button", { name: `移除 ${pasted.name}` })).toBeTruthy();
   });
 
   it("disables the remove button while uploading", () => {

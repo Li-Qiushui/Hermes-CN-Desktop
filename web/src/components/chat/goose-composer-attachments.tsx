@@ -1,6 +1,5 @@
 import { fileNameFromPath, isImagePath } from "@/lib/composer-prompt";
 import type { ComposerAttachment } from "./composer-types";
-import s from "./goose-composer.module.css";
 
 export const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
 
@@ -10,10 +9,13 @@ export function shouldConvertPasteToAttachment(text: string): boolean {
   return typeof text === "string" && text.length > LARGE_PASTE_ATTACHMENT_THRESHOLD;
 }
 
-export function pasteCharLabel(text: string): string {
-  const chars = text.length;
+export function formatPasteCharCount(chars: number): string {
   if (chars >= 10_000) return `${(chars / 10_000).toFixed(1)} 万字`;
   return `${chars} 字`;
+}
+
+export function pasteCharLabel(text: string): string {
+  return formatPasteCharCount(text.length);
 }
 
 export function largePasteNotice(text: string): string {
@@ -84,6 +86,7 @@ export function createPastedTextAttachment(text: string, index = 0): ComposerAtt
     status: "ready",
     size: file.size,
     mimeType: "text/plain",
+    pasteChars: text.length,
   };
 }
 
@@ -118,75 +121,4 @@ export function revokeAttachmentPreview(attachment: ComposerAttachment) {
 
 export function isAttachmentBusy(attachment: ComposerAttachment): boolean {
   return attachment.status === "uploading" || attachment.status === "processing";
-}
-
-function formatAttachmentSize(size?: number): string {
-  if (!Number.isFinite(size)) return "";
-  const value = Number(size);
-  if (value >= 1024 * 1024) return `${(value / 1024 / 1024).toFixed(value >= 10 * 1024 * 1024 ? 0 : 1)} MB`;
-  if (value >= 1024) return `${(value / 1024).toFixed(value >= 100 * 1024 ? 0 : 1)} KB`;
-  return `${Math.max(0, Math.round(value))} B`;
-}
-
-function attachmentDetail(attachment: ComposerAttachment): string {
-  if (attachment.error) return attachment.error;
-  if (attachment.status === "uploading") return `上传中 ${attachment.progress ?? 0}%`;
-  if (attachment.status === "processing") return "处理中";
-  if (attachment.status === "done") return "已添加";
-  const size = formatAttachmentSize(attachment.size);
-  if (size) return size;
-  if (attachment.kind === "image") return "图片";
-  if (attachment.kind === "directory") return "文件夹";
-  return "文件";
-}
-
-export function AttachmentTray({
-  attachments,
-  onRemove,
-}: {
-  attachments: ComposerAttachment[];
-  onRemove: (id: string) => void;
-}) {
-  if (!attachments.length) return null;
-
-  return (
-    <div className={s.attachmentTray}>
-      {attachments.map((attachment) => (
-        <span
-          key={attachment.id}
-          className={s.attachmentChip}
-          data-kind={attachment.kind}
-          data-status={attachment.status}
-          title={attachment.error || attachment.path || attachment.name}
-        >
-          {attachment.kind === "image" && attachment.previewUrl ? (
-            <span className={s.attachmentPreview}>
-              <img src={attachment.previewUrl} alt="" />
-            </span>
-          ) : (
-            <span className={s.attachmentIcon} aria-hidden="true">
-              {attachment.kind === "directory" ? "□" : attachment.kind === "image" ? "▧" : "▤"}
-            </span>
-          )}
-          <span className={s.attachmentMeta}>
-            <span className={s.attachmentName}>{attachment.name}</span>
-            <span className={s.attachmentDetail}>{attachmentDetail(attachment)}</span>
-            {attachment.status === "uploading" ? (
-              <span className={s.attachmentProgress} aria-hidden="true">
-                <span style={{ width: `${attachment.progress ?? 0}%` }} />
-              </span>
-            ) : null}
-          </span>
-          <button
-            type="button"
-            onClick={() => onRemove(attachment.id)}
-            disabled={isAttachmentBusy(attachment)}
-            aria-label={`移除 ${attachment.name}`}
-          >
-            ×
-          </button>
-        </span>
-      ))}
-    </div>
-  );
 }

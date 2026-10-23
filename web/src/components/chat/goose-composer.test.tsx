@@ -22,25 +22,45 @@ function renderComposer(element: ReactElement): string {
 }
 
 describe("ComposerErrorMessage", () => {
-  it("shows a voice setup action for missing STT provider errors", () => {
+  it("renders the error text without extra actions", () => {
     const html = ReactDOMServer.renderToStaticMarkup(
-      <ComposerErrorMessage
-        message="语音识别尚未配置可用提供方。请到“语音”设置选择本地识别。"
-        onConfigureVoice={() => {}}
-      />,
-    );
-
-    expect(html).toContain("语音识别尚未配置可用提供方");
-    expect(html).toContain("去配置语音");
-  });
-
-  it("does not show a voice setup action for generic composer errors", () => {
-    const html = ReactDOMServer.renderToStaticMarkup(
-      <ComposerErrorMessage message="发送失败" onConfigureVoice={() => {}} />,
+      <ComposerErrorMessage message="发送失败" />,
     );
 
     expect(html).toContain("发送失败");
-    expect(html).not.toContain("去配置语音");
+    expect(html).not.toContain("<button");
+  });
+});
+
+describe("GooseComposer mention chips", () => {
+  afterEach(() => cleanup());
+
+  it("lists committed @ references above the input and removes one", () => {
+    liveComposer(<GooseComposer initial="@file:src/a.ts 看下这个文件" />);
+
+    expect(screen.getByLabelText("已引用")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "移除引用 @file:src/a.ts" }));
+    expect(messageInput().value).toBe("看下这个文件");
+  });
+
+  it("still hands the raw @ syntax to the kernel on send", async () => {
+    const onSend = vi.fn();
+    liveComposer(<GooseComposer initial="@file:src/a.ts 看下这个文件" onSend={onSend} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await waitFor(() => expect(onSend).toHaveBeenCalled());
+    expect(onSend.mock.calls[0]?.[0]?.text).toBe("@file:src/a.ts 看下这个文件");
+  });
+});
+
+describe("GooseComposer voice input removal", () => {
+  afterEach(() => cleanup());
+
+  it("renders no recording control in the toolbar", () => {
+    liveComposer(<GooseComposer />);
+
+    expect(screen.queryAllByRole("button", { name: /语音|录音|转写/ })).toHaveLength(0);
+    expect(screen.getByLabelText("输入消息")).toBeTruthy();
   });
 });
 

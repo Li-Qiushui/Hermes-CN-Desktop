@@ -25,6 +25,7 @@ export interface ComposerAttachment {
   uploadedName?: string;
   progress?: number;
   error?: string;
+  pasteChars?: number;
 }
 
 export interface ComposerModelSelection {

@@ -10,7 +10,6 @@ import {
   type KeyboardEvent,
 } from "react";
 import { useAtomValue } from "jotai";
-import { useNavigate } from "react-router-dom";
 import {
   AtSign,
   Cpu,
@@ -20,13 +19,11 @@ import {
   Folder,
   ImagePlus,
   MessageSquare,
-  Mic,
   Plus,
   Sparkles,
-  Square,
   X,
 } from "lucide-react";
-import { LoadingIndicator, LoadingState } from "@hermes/shared-ui";
+import { LoadingState } from "@hermes/shared-ui";
 import type { ModelOptionsResult } from "@hermes/protocol";
 import { fileNameFromPath } from "@/lib/composer-prompt";
 import {
@@ -58,14 +55,6 @@ import {
   type ComposerSubmitShortcut,
 } from "@/lib/composer-submit-shortcut";
 import { composerSubmitShortcutAtom } from "@/stores/ui";
-import { useMicRecorder } from "@/hooks/use-mic-recorder";
-import {
-  isVoiceSetupErrorMessage,
-  sttEnabledFromConfig,
-  transcribeAudioBlob,
-  voiceErrorMessage,
-  voiceMaxRecordingSecondsFromConfig,
-} from "@/lib/voice";
 import {
   normalizeWorkspacePath,
   readWorkspacePath,
@@ -85,7 +74,6 @@ import {
   type ComposerSubmitPayload,
 } from "./composer-types";
 import {
-  AttachmentTray,
   attachmentIdentity,
   createFileAttachment,
   createPastedTextAttachment,
@@ -97,6 +85,13 @@ import {
   shouldConvertPasteToAttachment,
   uniquePaths,
 } from "./goose-composer-attachments";
+import { AttachmentTray } from "./attachment-preview";
+import {
+  MentionChipRow,
+  parseComposerMentions,
+  removeComposerMention,
+  type ComposerMentionRef,
+} from "./composer-chips";
 import { ContextIndicator, contextRiskText } from "./goose-composer-context";
 import { SendIcon, StopIcon } from "./goose-composer-icons";
 import {
@@ -208,7 +203,6 @@ interface GooseComposerProps {
   /** Hide `/compress` affordances when the composer is not bound to an existing session. */
   showCompressCommand?: boolean;
   initialWorkspacePath?: string;
-  voiceConfig?: Record<string, unknown> | null;
 }
 
 function messageFromError(error: unknown): string {
@@ -232,29 +226,10 @@ function MentionIcon({ kind }: { kind: MentionKind }) {
   }
 }
 
-function formatVoiceElapsed(seconds: number): string {
-  const safeSeconds = Math.max(0, Math.floor(seconds));
-  const minutes = Math.floor(safeSeconds / 60);
-  const remainingSeconds = safeSeconds % 60;
-  return `${minutes}:${remainingSeconds.toString().padStart(2, "0")}`;
-}
-
-export function ComposerErrorMessage({
-  message,
-  onConfigureVoice,
-}: {
-  message: string;
-  onConfigureVoice?: () => void;
-}) {
-  const showVoiceSetup = isVoiceSetupErrorMessage(message);
+export function ComposerErrorMessage({ message }: { message: string }) {
   return (
     <div className={s.errorText}>
       <span>{message}</span>
-      {showVoiceSetup && onConfigureVoice ? (
-        <button type="button" className={s.errorAction} onClick={onConfigureVoice}>
-          去配置语音
-        </button>
-      ) : null}
     </div>
   );
 }
@@ -287,9 +262,7 @@ export function GooseComposer({
   onDraftChange,
   showCompressCommand = true,
   initialWorkspacePath = "",
-  voiceConfig = null,
 }: GooseComposerProps) {
-  const navigate = useNavigate();
   const gwSessionId = useAtomValue(gwSessionIdAtom);
   const configuredSubmitShortcut = useAtomValue(composerSubmitShortcutAtom);
   const effectiveSubmitShortcut = submitShortcut ?? configuredSubmitShortcut;
@@ -340,13 +313,9 @@ export function GooseComposer({
   const [urlDialog, setUrlDialog] = useState<{ url: string; start: number; end: number } | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const mentionReqIdRef = useRef(0);
-  const [voiceStatus, setVoiceStatus] = useState<"idle" | "recording" | "transcribing">("idle");
-  const [voiceElapsedSeconds, setVoiceElapsedSeconds] = useState(0);
-  const { handle: micRecorder, level: voiceLevel } = useMicRecorder();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);
   const valueRef = useRef(initial);
-  const voiceStatusRef = useRef(voiceStatus);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const attachmentsRef = useRef<ComposerAttachment[]>([]);
   const modelLoadPromiseRef = useRef<Promise<ModelOptionsResult> | null>(null);
@@ -355,12 +324,7 @@ export function GooseComposer({
   const composerBoxRef = useRef<HTMLDivElement>(null);
   const draggedTextRef = useRef("");
   const draggedTextTimerRef = useRef<number | null>(null);
-  const voiceStartedAtRef = useRef(0);
-  const voiceIntervalRef = useRef<number | null>(null);
-  const voiceTimeoutRef = useRef<number | null>(null);
   const hasProcessingAttachment = attachments.some(isAttachmentBusy);
-  const sttEnabled = sttEnabledFromConfig(voiceConfig);
-  const maxRecordingSeconds = voiceMaxRecordingSecondsFromConfig(voiceConfig);
   const contextRisk = contextUsageRisk(contextUsage);
   const contextWarning = contextRiskText(contextRisk, loading);
   const controlsDisabled = disabled || loading;
@@ -461,16 +425,7 @@ export function GooseComposer({
     ? `继续描述给 ${selectedSkill.displayName} 的任务…`
     : placeholder ?? `发送消息，${submitHint}…`;
 
-  const clearVoiceTimers = useCallback(() => {
-    if (voiceIntervalRef.current !== null) {
-      window.clearInterval(voiceIntervalRef.current);
-      voiceIntervalRef.current = null;
-    }
-    if (voiceTimeoutRef.current !== null) {
-      window.clearTimeout(voiceTimeoutRef.current);
-      voiceTimeoutRef.current = null;
-    }
-  }, []);
+  const mentionRefs = useMemo(() => parseComposerMentions(value), [value]);
 
   const focusTextareaAt = useCallback((cursor: number) => {
     window.requestAnimationFrame(() => {
@@ -483,28 +438,15 @@ export function GooseComposer({
     });
   }, []);
 
-  const insertTranscript = useCallback((transcript: string) => {
-    const text = transcript.trim();
-    if (!text) return;
-
-    const current = valueRef.current;
-    const textarea = textareaRef.current;
-    const rawStart = textarea?.selectionStart ?? selectionStart;
-    const rawEnd = textarea?.selectionEnd ?? selectionEnd;
-    const start = Math.max(0, Math.min(rawStart, current.length));
-    const end = Math.max(start, Math.min(rawEnd, current.length));
-    const before = current.slice(0, start);
-    const after = current.slice(end);
-    const prefix = before && !/\s$/.test(before) ? " " : "";
-    const suffix = after && !/^\s/.test(after) ? " " : "";
-    const next = `${before}${prefix}${text}${suffix}${after}`;
-    const cursor = before.length + prefix.length + text.length;
-
-    valueRef.current = next;
-    setValue(next);
-    setDismissedSlashToken("");
-    focusTextareaAt(cursor);
-  }, [focusTextareaAt, selectionEnd, selectionStart]);
+  const dropMention = useCallback((ref: ComposerMentionRef) => {
+    const next = removeComposerMention(valueRef.current, ref);
+    valueRef.current = next.text;
+    setValue(next.text);
+    setSelectionStart(next.cursor);
+    setSelectionEnd(next.cursor);
+    setDismissedMentionToken("");
+    focusTextareaAt(next.cursor);
+  }, [focusTextareaAt]);
 
   const insertDroppedText = useCallback((raw: string) => {
     const text = raw.replace(/[\r\n]+$/, "").trim();
@@ -541,75 +483,6 @@ export function GooseComposer({
   useEffect(() => {
     insertDroppedTextRef.current = insertDroppedText;
   }, [insertDroppedText]);
-
-  const stopVoiceRecording = useCallback(async () => {
-    if (voiceStatusRef.current !== "recording") return;
-    clearVoiceTimers();
-    voiceStatusRef.current = "transcribing";
-    setVoiceStatus("transcribing");
-    try {
-      const result = await micRecorder.stop();
-      if (!result) {
-        voiceStatusRef.current = "idle";
-        setVoiceStatus("idle");
-        return;
-      }
-      const response = await transcribeAudioBlob(result.audio);
-      const transcript = response.transcript.trim();
-      if (!transcript) {
-        setSubmitError("未识别到语音，请再试一次。");
-      } else {
-        setSubmitError("");
-        insertTranscript(transcript);
-      }
-    } catch (error) {
-      setSubmitError(voiceErrorMessage(error, "语音转写失败"));
-    } finally {
-      voiceStatusRef.current = "idle";
-      setVoiceStatus("idle");
-      setVoiceElapsedSeconds(0);
-    }
-  }, [clearVoiceTimers, insertTranscript, micRecorder]);
-
-  const startVoiceRecording = useCallback(async () => {
-    if (controlsDisabled || voiceStatus !== "idle") return;
-    if (!sttEnabled) {
-      setSubmitError("语音识别（STT）已在设置中关闭，请先启用 stt.enabled。");
-      return;
-    }
-
-    setSubmitError("");
-    try {
-      await micRecorder.start({
-        onError: (error) => setSubmitError(voiceErrorMessage(error, "录音失败")),
-      });
-      voiceStartedAtRef.current = Date.now();
-      setVoiceElapsedSeconds(0);
-      voiceStatusRef.current = "recording";
-      setVoiceStatus("recording");
-      voiceIntervalRef.current = window.setInterval(() => {
-        setVoiceElapsedSeconds((Date.now() - voiceStartedAtRef.current) / 1000);
-      }, 250);
-      voiceTimeoutRef.current = window.setTimeout(() => {
-        void stopVoiceRecording();
-      }, maxRecordingSeconds * 1000);
-    } catch (error) {
-      clearVoiceTimers();
-      voiceStatusRef.current = "idle";
-      setVoiceStatus("idle");
-      setSubmitError(voiceErrorMessage(error, "录音失败"));
-    }
-  }, [clearVoiceTimers, controlsDisabled, maxRecordingSeconds, micRecorder, stopVoiceRecording, sttEnabled, voiceStatus]);
-
-  const toggleVoiceRecording = useCallback(() => {
-    if (voiceStatus === "recording") {
-      void stopVoiceRecording();
-      return;
-    }
-    if (voiceStatus === "idle") {
-      void startVoiceRecording();
-    }
-  }, [startVoiceRecording, stopVoiceRecording, voiceStatus]);
 
   // Make `initial` reactive so external prefill (e.g. quick-start recipes) takes
   // effect after mount. We focus the textarea on non-empty external pushes so
@@ -650,14 +523,10 @@ export function GooseComposer({
     const textarea = textareaRef.current;
     if (!textarea) return;
     textarea.style.height = "auto";
-    textarea.style.height = `${Math.min(textarea.scrollHeight, 196)}px`;
+    const maxHeight = Number.parseFloat(window.getComputedStyle(textarea).maxHeight);
+    const clamp = Number.isFinite(maxHeight) ? maxHeight : 156;
+    textarea.style.height = `${Math.min(textarea.scrollHeight, clamp)}px`;
   }, [onDraftChange, value]);
-
-  useEffect(() => {
-    voiceStatusRef.current = voiceStatus;
-  }, [voiceStatus]);
-
-  useEffect(() => () => clearVoiceTimers(), [clearVoiceTimers]);
 
   useEffect(() => {
     attachmentsRef.current = attachments;
@@ -1483,14 +1352,6 @@ export function GooseComposer({
   }, [modelPicker?.initialOptions, modelOptions]);
 
   const modelText = modelButtonText(modelPicker, modelOptions);
-  const voiceButtonTitle = !sttEnabled
-    ? "语音识别（STT）已关闭"
-    : voiceStatus === "recording"
-      ? "停止录音并转写"
-      : voiceStatus === "transcribing"
-        ? "正在转写语音"
-        : `语音输入（最多 ${maxRecordingSeconds} 秒）`;
-  const voiceButtonDisabled = controlsDisabled || voiceStatus === "transcribing" || !sttEnabled;
 
   return (
     <div className={s.wrapper} data-compact={compact} data-variant={variant}>
@@ -1537,6 +1398,8 @@ export function GooseComposer({
 
         <AttachmentTray attachments={attachments} onRemove={removeAttachment} />
 
+        <MentionChipRow mentions={mentionRefs} onRemove={dropMention} disabled={disabled} />
+
         {selectedSkill ? (
           <div className={s.selectedSkillRow}>
             <div
@@ -1560,34 +1423,6 @@ export function GooseComposer({
               </button>
             </div>
             <span className={s.selectedSkillHint}>继续输入任务描述，Backspace 可移除</span>
-          </div>
-        ) : null}
-
-        {voiceStatus !== "idle" ? (
-          <div className={s.voiceActivity} role="status" aria-live="polite">
-            <span className={s.voiceActivityIcon} data-status={voiceStatus}>
-              {voiceStatus === "recording" ? (
-                <Mic aria-hidden="true" />
-              ) : (
-                <LoadingIndicator size="xs" />
-              )}
-            </span>
-            <span className={s.voiceActivityText}>
-              {voiceStatus === "recording" ? "正在录音" : "正在转写"}
-            </span>
-            <span className={s.voiceActivityTime}>
-              {formatVoiceElapsed(voiceElapsedSeconds)}
-            </span>
-            <span className={s.voiceBars} aria-hidden="true">
-              {[0.5, 0.78, 1, 0.78, 0.5].map((weight, index) => (
-                <span
-                  key={index}
-                  style={{
-                    height: `${Math.round((0.24 + Math.min(0.7, voiceLevel * weight)) * 100)}%`,
-                  }}
-                />
-              ))}
-            </span>
           </div>
         ) : null}
 
@@ -1783,10 +1618,7 @@ export function GooseComposer({
         ) : null}
 
         {submitError ? (
-          <ComposerErrorMessage
-            message={submitError}
-            onConfigureVoice={() => navigate("/voice")}
-          />
+          <ComposerErrorMessage message={submitError} />
         ) : null}
 
         {contextWarning ? (
@@ -1816,25 +1648,6 @@ export function GooseComposer({
               aria-label="添加剪贴板图片"
             >
               <ImagePlus className={s.toolIcon} aria-hidden="true" />
-            </button>
-            <button
-              className={s.iconButton}
-              type="button"
-              onClick={toggleVoiceRecording}
-              disabled={voiceButtonDisabled}
-              data-active={voiceStatus !== "idle"}
-              data-status={voiceStatus}
-              title={voiceButtonTitle}
-              aria-label={voiceButtonTitle}
-              aria-pressed={voiceStatus === "recording"}
-            >
-              {voiceStatus === "recording" ? (
-                <Square className={s.toolIcon} aria-hidden="true" />
-              ) : voiceStatus === "transcribing" ? (
-                <LoadingIndicator className={s.toolIcon} size="sm" />
-              ) : (
-                <Mic className={s.toolIcon} aria-hidden="true" />
-              )}
             </button>
             <button
               className={s.toolButton}

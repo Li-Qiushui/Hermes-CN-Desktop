@@ -73,7 +73,7 @@ function sub(overrides: Partial<SubagentProgress> = {}): SubagentProgress {
     taskCount: 1,
     taskIndex: 0,
     startedAt: 1_000,
-    updatedAt: 2_000,
+    updatedAt: Date.now(),
     toolCount: 3,
     filesRead: [],
     filesWritten: [],
@@ -87,7 +87,7 @@ const rowIds = (container: HTMLElement): string[] =>
     (node) => node.getAttribute("data-subagent-row") ?? "",
   );
 
-describe("子Agent 监视面板", () => {
+describe("子任务监视面板", () => {
   it("顶部汇总条按运行中/完成/失败计数", () => {
     render(
       <SubagentPanel
@@ -161,6 +161,63 @@ describe("子Agent 监视面板", () => {
 
     expect(screen.getByText("当前会话没有子代理")).toBeTruthy();
     expect(screen.getByText(/delegate_task/)).toBeTruthy();
+  });
+
+  it("每张任务卡按跑中/卡住/完成/失败给状态文案", () => {
+    render(
+      <SubagentPanel
+        subagents={[
+          sub({ id: "live", status: "running", updatedAt: Date.now() }),
+          sub({ id: "stuck", status: "running", goal: "卡住的任务", updatedAt: Date.now() - 120_000 }),
+          sub({ id: "done", status: "completed" }),
+          sub({ id: "boom", status: "failed" }),
+        ]}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("跑中")).toBeTruthy();
+    expect(screen.getByText("卡住")).toBeTruthy();
+    expect(screen.getByText("完成")).toBeTruthy();
+    expect(screen.getByText("失败")).toBeTruthy();
+  });
+
+  it("有子任务时显示 N/M 进度，没有则整个进度位隐藏", () => {
+    const { container } = render(
+      <SubagentPanel subagents={[sub({ id: "solo" })]} onClose={vi.fn()} />,
+    );
+    expect(container.textContent).not.toMatch(/\d+\/\d+/);
+
+    cleanup();
+    const tree = render(
+      <SubagentPanel
+        subagents={[
+          sub({ id: "parent", goal: "父任务" }),
+          sub({ id: "c1", parentId: "parent", status: "completed", goal: "子任务一" }),
+          sub({ id: "c2", parentId: "parent", status: "running", goal: "子任务二" }),
+        ]}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(tree.getByLabelText("子任务进度 1/2")).toBeTruthy();
+  });
+
+  it("「查看详情」按钮打开运行情况弹窗", () => {
+    render(<SubagentPanel subagents={[sub()]} onClose={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "查看详情" }));
+    expect(screen.getByRole("dialog")).toBeTruthy();
+  });
+
+  it("「在看板里打开」入口没接数据时不渲染，接了才出现", () => {
+    const { unmount } = render(<SubagentPanel subagents={[sub()]} onClose={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: "在看板里打开" })).toBeNull();
+    unmount();
+
+    const onOpenInBoard = vi.fn();
+    render(<SubagentPanel subagents={[sub()]} onClose={vi.fn()} onOpenInBoard={onOpenInBoard} />);
+    fireEvent.click(screen.getByRole("button", { name: "在看板里打开" }));
+    expect(onOpenInBoard).toHaveBeenCalledTimes(1);
   });
 
   it("中断按钮只在有 subagent_id 且仍在跑时出现", () => {

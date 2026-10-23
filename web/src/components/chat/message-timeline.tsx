@@ -1,7 +1,7 @@
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode, WheelEvent } from "react";
 import { useAtomValue } from "jotai";
-import { AlertTriangle, ArrowDown, Bot, ChevronRight, Info, Pencil, RotateCcw, Volume2, VolumeX } from "lucide-react";
+import { AlertTriangle, ArrowDown, Bot, ChevronRight, FileDiff, Info, Pencil, RotateCcw, Trash2, Volume2, VolumeX } from "lucide-react";
 import { LoadingIndicator } from "@hermes/shared-ui";
 import { assistantAvatarEffectiveAtom, assistantDisplayNameAtom, showReasoningAtom } from "@/stores/ui";
 import type { AssistantMessageStats, ChatMessage, ChatToolItem } from "./chat-types";
@@ -17,6 +17,15 @@ import { MessageText } from "./message-text";
 import { SkillInvocationMessage } from "./skill-invocation-message";
 import { CopyButton } from "@/components/ui/copy-button";
 import { ToolResultCard } from "./tool-result-card";
+import {
+  FindBar,
+  clearFindHighlights,
+  collectFindMatches,
+  highlightFindMatches,
+  type FindMatch,
+} from "./find-in-conversation";
+import { ErrorRecoveryActions, resolveErrorDisplayText } from "./error-recovery-actions";
+import { buildToolResultView, isFileChangeToolInput, isKnownFileWriteTool, type FileChangeView } from "@/lib/tool-result-view";
 import s from "./message-timeline.module.css";
 import { groupElapsedMs } from "./group-tools";
 import { cachedGroupConsecutiveTools, cachedToolActivitySummary } from "./tool-cache";
@@ -36,6 +45,7 @@ const useIsomorphicLayoutEffect = typeof window === "undefined" ? useEffect : us
 const BOTTOM_FOLLOW_THRESHOLD_PX = 120;
 const BOTTOM_REATTACH_THRESHOLD_PX = 8;
 const BOTTOM_FOLLOW_EPSILON_PX = 1;
+const VISIBLE_MARGIN_PX = 12;
 const LONG_SESSION_RENDER_THRESHOLD = 80;
 const LONG_SESSION_INITIAL_WINDOW = 60;
 const LONG_SESSION_EARLIER_BATCH = 40;
@@ -64,10 +74,14 @@ interface MessageTimelineProps {
   onEditMessage?: (message: ChatMessage) => void;
   /** 纠错闭环：重发这条回复对应的那条用户消息。不传则不渲染「重试」。 */
   onRetryMessage?: (userMessage: ChatMessage) => void;
+  onDeleteMessage?: (userMessage: ChatMessage) => void;
   /** 流式进行中 / 会话忙碌时置 true：编辑与重试都要求会话空闲。 */
   correctionLocked?: boolean;
   /** 锁住的理由，直接进按钮 title。 */
   correctionLockedReason?: string;
+  correctionPendingMessageId?: string | null;
+  emptyGuide?: ReactNode;
+  onOpenSettings?: (path: string) => void;
 }
 
 interface TurnAnchor {
@@ -663,6 +677,94 @@ function ToolChainBase({ tools }: { tools: ChatToolItem[] }) {
 
 const ToolChain = memo(ToolChainBase, toolListPropsEqual);
 
+const FILE_WRITE_PATH_KEYS = ["path", "file_path", "filePath", "target"] as const;
+const FILE_WRITE_VISIBLE_LIMIT = 5;
+
+function toolBodyText(tool: ChatToolItem): string | undefined {
+  return tool.error ?? tool.summary ?? tool.preview;
+}
+
+const fileWriteProbeCache = new WeakMap<ChatToolItem, boolean>();
+
+function isFileWriteTool(tool: ChatToolItem): boolean {
+  const cached = fileWriteProbeCache.get(tool);
+  if (cached !== undefined) return cached;
+  const result =
+    isKnownFileWriteTool(tool.name) &&
+    isFileChangeToolInput({
+      name: tool.name,
+      arguments: tool.arguments,
+      summary: toolBodyText(tool),
+      error: tool.error,
+    });
+  fileWriteProbeCache.set(tool, result);
+  return result;
+}
+
+function resolveFileWritePath(tool: ChatToolItem, view: FileChangeView): string | undefined {
+  const args = tool.arguments;
+  if (args) {
+    for (const key of FILE_WRITE_PATH_KEYS) {
+      const value = args[key];
+      if (typeof value === "string" && value.trim()) return value;
+    }
+  }
+  return view.path ?? view.files.find((file) => Boolean(file.path))?.path;
+}
+
+function fileWriteStatusLabel(status: ChatToolItem["status"]): string {
+  if (status === "running") return "运行中";
+  if (status === "error") return "失败";
+  return "完成";
+}
+
+function FileWriteCardBase({ tool }: { tool: ChatToolItem }) {
+  const [open, setOpen] = useState(true);
+  const body = toolBodyText(tool);
+  const view = useMemo<FileChangeView>(() => {
+    const built = buildToolResultView({
+      name: tool.name,
+      arguments: tool.arguments,
+      summary: body,
+      error: tool.error,
+    });
+    return built.kind === "file" ? built : { kind: "file", files: [], added: 0, removed: 0 };
+  }, [tool.name, tool.arguments, body, tool.error]);
+  const path = resolveFileWritePath(tool, view);
+
+  return (
+    <div className={s.fileWriteCard} data-file-write="true" data-status={tool.status}>
+      <button
+        type="button"
+        className={s.fileWriteHeader}
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+        data-open={open}
+      >
+        <ChevronRight className={s.fileWriteChevron} size={14} strokeWidth={2.25} aria-hidden="true" />
+        <FileDiff className={s.fileWriteIcon} size={14} strokeWidth={1.75} aria-hidden="true" />
+        <span className={s.fileWriteName} title={path ?? tool.name}>
+          {path ? truncateMiddle(path) : tool.name}
+        </span>
+        <span className={s.fileWriteStats}>
+          <span data-kind="add">+{view.added}</span>
+          <span data-kind="del">−{view.removed}</span>
+        </span>
+        <span className={s.fileWriteStatus} data-status={tool.status}>
+          {fileWriteStatusLabel(tool.status)}
+        </span>
+      </button>
+      {open ? (
+        <div className={s.fileWriteBody}>
+          <ToolResultCard tool={tool} body={body} />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+const FileWriteCard = memo(FileWriteCardBase, toolCardPropsEqual);
+
 function MessageToolList({
   tools,
   streaming,
@@ -672,11 +774,46 @@ function MessageToolList({
   streaming: boolean;
   subagentSessionIds?: readonly (string | undefined)[];
 }) {
-  const delegates = tools.filter((tool) => isDelegateToolName(tool.name));
-  const others = tools.filter((tool) => !isDelegateToolName(tool.name));
+  const [showAllFileWrites, setShowAllFileWrites] = useState(false);
+  const delegates: ChatToolItem[] = [];
+  const fileWrites: ChatToolItem[] = [];
+  const others: ChatToolItem[] = [];
+  for (const tool of tools) {
+    if (isDelegateToolName(tool.name)) delegates.push(tool);
+    else if (isFileWriteTool(tool)) fileWrites.push(tool);
+    else others.push(tool);
+  }
+  const visibleFileWrites = showAllFileWrites ? fileWrites : fileWrites.slice(0, FILE_WRITE_VISIBLE_LIMIT);
+  const foldedFileWrites = fileWrites.length - visibleFileWrites.length;
+
   return (
     <>
       {others.length > 0 ? <ToolChain tools={others} /> : null}
+      {visibleFileWrites.map((tool, index) => (
+        <FileWriteCard key={`file-write-${tool.tool_id || index}-${index}`} tool={tool} />
+      ))}
+      {fileWrites.length > FILE_WRITE_VISIBLE_LIMIT ? (
+        showAllFileWrites ? (
+          <button
+            type="button"
+            className={s.fileWriteMore}
+            onClick={() => setShowAllFileWrites(false)}
+            aria-expanded
+          >
+            收起文件变更
+          </button>
+        ) : (
+          <button
+            type="button"
+            className={s.fileWriteMore}
+            onClick={() => setShowAllFileWrites(true)}
+            aria-expanded={false}
+            data-file-write-more={foldedFileWrites}
+          >
+            还有 {foldedFileWrites} 个文件变更
+          </button>
+        )
+      ) : null}
       {delegates.map((tool) => (
         <DelegateRunCard
           key={`delegate-run-${tool.tool_id}`}
@@ -1028,8 +1165,11 @@ interface MessageBubbleProps {
   retrySource?: ChatMessage | null;
   onEditMessage?: (message: ChatMessage) => void;
   onRetryMessage?: (userMessage: ChatMessage) => void;
+  onDeleteMessage?: (userMessage: ChatMessage) => void;
   correctionLocked?: boolean;
   correctionLockedReason?: string;
+  correctionPendingMessageId?: string | null;
+  onOpenSettings?: (path: string) => void;
 }
 
 function messageBubblePropsEqual(prev: MessageBubbleProps, next: MessageBubbleProps): boolean {
@@ -1046,8 +1186,11 @@ function messageBubblePropsEqual(prev: MessageBubbleProps, next: MessageBubblePr
     prev.retrySource === next.retrySource &&
     prev.onEditMessage === next.onEditMessage &&
     prev.onRetryMessage === next.onRetryMessage &&
+    prev.onDeleteMessage === next.onDeleteMessage &&
     prev.correctionLocked === next.correctionLocked &&
-    prev.correctionLockedReason === next.correctionLockedReason
+    prev.correctionLockedReason === next.correctionLockedReason &&
+    prev.correctionPendingMessageId === next.correctionPendingMessageId &&
+    prev.onOpenSettings === next.onOpenSettings
   );
 }
 
@@ -1064,8 +1207,11 @@ function MessageBubbleBase({
   retrySource,
   onEditMessage,
   onRetryMessage,
+  onDeleteMessage,
   correctionLocked = false,
   correctionLockedReason,
+  correctionPendingMessageId = null,
+  onOpenSettings,
 }: MessageBubbleProps) {
   const showReasoning = useAtomValue(showReasoningAtom);
   const assistantDisplayName = useAtomValue(assistantDisplayNameAtom);
@@ -1086,6 +1232,7 @@ function MessageBubbleBase({
   const canEdit = isUser && !isSystem && !isToolOnly && !hasSkillInvocation && Boolean(onEditMessage);
   const canRetry =
     !isUser && !isSystem && !isToolOnly && !streaming && Boolean(onRetryMessage) && Boolean(retrySource);
+  const canDelete = isUser && !hasSkillInvocation && Boolean(onDeleteMessage);
   const editTitle = correctionLocked
     ? (correctionLockedReason ?? "正在生成回复，等这轮结束再编辑")
     : message.images?.length
@@ -1096,6 +1243,14 @@ function MessageBubbleBase({
     : retrySource?.images?.length
       ? "重试这条回复：原消息的附件不会重新发送"
       : "重试这条回复（重发对应的提问）";
+  const editResolving = Boolean(correctionPendingMessageId) && message.id === correctionPendingMessageId;
+  const deleteResolving = editResolving && Boolean(onDeleteMessage);
+  const deleteTitle = correctionLocked
+    ? (correctionLockedReason ?? "正在生成回复，等这轮结束再删除")
+    : "删除这条提问及之后的全部消息";
+  const retryResolving =
+    Boolean(correctionPendingMessageId) && retrySource?.id === correctionPendingMessageId;
+  const resolvingTitle = "正在重载会话记录，定位这条提问在内核里的位置";
 
   if (kernel) {
     return (
@@ -1181,10 +1336,20 @@ function MessageBubbleBase({
           <div className={s.systemNoticeBody}>
             {message.error ? <div className={s.systemNoticeTitle}>请求失败</div> : null}
             {message.error ? (
-              <div className={s.systemNoticeText}>{text}</div>
+              <div className={s.systemNoticeText}>{resolveErrorDisplayText(text)}</div>
             ) : (
               <SystemNoticeText text={text} />
             )}
+            {message.error ? (
+              <ErrorRecoveryActions
+                text={text}
+                retrySource={retrySource ?? null}
+                onRetry={onRetryMessage}
+                locked={correctionLocked}
+                lockedReason={correctionLockedReason}
+                onOpenSettings={onOpenSettings}
+              />
+            ) : null}
           </div>
         </div>
       </div>
@@ -1255,44 +1420,19 @@ function MessageBubbleBase({
           )}
         </div>
         <div className={s.messageActions}>
-          <span className={s.messageActionsControls}>
-            <span className={s.messageTime}>
-              <MessageTimeLabel timestamp={message.createdAt} />
-            </span>
+          <span className={s.messageTime}>
+            <MessageTimeLabel timestamp={message.createdAt} />
+          </span>
+          <span className={s.messageActionGroup}>
             {copyable ? (
-              <CopyButton text={copyable} showStatusIcon={false}>
+              <CopyButton className={s.messageAction} text={copyable} showStatusIcon={false}>
                 复制
               </CopyButton>
-            ) : null}
-            {canEdit ? (
-              <button
-                type="button"
-                className={s.messageCorrectAction}
-                onClick={() => onEditMessage?.(message)}
-                disabled={correctionLocked}
-                title={editTitle}
-              >
-                <Pencil size={12} strokeWidth={1.75} aria-hidden="true" />
-                <span>编辑</span>
-              </button>
-            ) : null}
-            {canRetry ? (
-              <button
-                type="button"
-                className={s.messageCorrectAction}
-                onClick={() => {
-                  if (retrySource) onRetryMessage?.(retrySource);
-                }}
-                disabled={correctionLocked}
-                title={retryTitle}
-              >
-                <RotateCcw size={12} strokeWidth={1.75} aria-hidden="true" />
-                <span>重试</span>
-              </button>
             ) : null}
             {readable ? (
               <button
                 type="button"
+                className={s.messageAction}
                 onClick={() => {
                   if (speechBusy) {
                     onStop();
@@ -1307,17 +1447,68 @@ function MessageBubbleBase({
                 {speechStatus === "preparing" ? (
                   <LoadingIndicator size="xs" />
                 ) : speechStatus === "speaking" ? (
-                  <VolumeX aria-hidden="true" />
+                  <VolumeX size={14} strokeWidth={1.75} aria-hidden="true" />
                 ) : (
-                  <Volume2 aria-hidden="true" />
+                  <Volume2 size={14} strokeWidth={1.75} aria-hidden="true" />
                 )}
                 <span>{speechBusy ? "停止" : "朗读"}</span>
               </button>
             ) : null}
-            {speechError ? (
-              <span className={s.messageSpeechError}>{speechError}</span>
+            {canEdit ? (
+              <button
+                type="button"
+                className={`${s.messageAction} ${s.messageCorrectAction}`}
+                onClick={() => onEditMessage?.(message)}
+                disabled={correctionLocked || editResolving}
+                title={editResolving ? resolvingTitle : editTitle}
+                data-correction-pending={editResolving ? "true" : undefined}
+              >
+                {editResolving ? (
+                  <LoadingIndicator size="xs" />
+                ) : (
+                  <Pencil size={14} strokeWidth={1.75} aria-hidden="true" />
+                )}
+                <span>{editResolving ? "定位中" : "编辑"}</span>
+              </button>
+            ) : null}
+            {canRetry ? (
+              <button
+                type="button"
+                className={`${s.messageAction} ${s.messageCorrectAction}`}
+                onClick={() => {
+                  if (retrySource) onRetryMessage?.(retrySource);
+                }}
+                disabled={correctionLocked || retryResolving}
+                title={retryResolving ? resolvingTitle : retryTitle}
+                data-correction-pending={retryResolving ? "true" : undefined}
+              >
+                {retryResolving ? (
+                  <LoadingIndicator size="xs" />
+                ) : (
+                  <RotateCcw size={14} strokeWidth={1.75} aria-hidden="true" />
+                )}
+                <span>{retryResolving ? "定位中" : "重试"}</span>
+              </button>
+            ) : null}
+            {canDelete ? (
+              <button
+                type="button"
+                className={`${s.messageAction} ${s.messageDeleteAction}`}
+                onClick={() => onDeleteMessage?.(message)}
+                disabled={correctionLocked || deleteResolving}
+                title={deleteResolving ? resolvingTitle : deleteTitle}
+                data-delete-pending={deleteResolving ? "true" : undefined}
+              >
+                {deleteResolving ? (
+                  <LoadingIndicator size="xs" />
+                ) : (
+                  <Trash2 size={14} strokeWidth={1.75} aria-hidden="true" />
+                )}
+                <span>{deleteResolving ? "定位中" : "删除"}</span>
+              </button>
             ) : null}
           </span>
+          {speechError ? <span className={s.messageSpeechError}>{speechError}</span> : null}
           {messageStats ? <MessageStatsFooter stats={messageStats} /> : null}
         </div>
       </div>
@@ -1343,8 +1534,12 @@ export function MessageTimeline({
   onLoadEarlier,
   onEditMessage,
   onRetryMessage,
+  onDeleteMessage,
   correctionLocked = false,
   correctionLockedReason,
+  correctionPendingMessageId = null,
+  emptyGuide,
+  onOpenSettings,
 }: MessageTimelineProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
@@ -2016,12 +2211,170 @@ export function MessageTimeline({
     scheduleJumpButtonUpdate();
   };
 
+  const [findOpen, setFindOpen] = useState(false);
+  const [findQuery, setFindQuery] = useState("");
+  const [findActive, setFindActive] = useState(0);
+  const [findTotal, setFindTotal] = useState(0);
+  const [findSearchingEarlier, setFindSearchingEarlier] = useState(false);
+  const [findReachedEarliest, setFindReachedEarliest] = useState(false);
+  const findMatchesRef = useRef<FindMatch[]>([]);
+  const findReturnFocusRef = useRef<HTMLElement | null>(null);
+
+  const closeFind = useCallback(() => {
+    setFindOpen(false);
+    setFindQuery("");
+    setFindActive(0);
+    setFindTotal(0);
+    setFindSearchingEarlier(false);
+    setFindReachedEarliest(false);
+    findMatchesRef.current = [];
+    clearFindHighlights();
+    const target = findReturnFocusRef.current;
+    findReturnFocusRef.current = null;
+    if (target && target.isConnected) target.focus({ preventScroll: true });
+  }, []);
+
+  const openFind = useCallback(() => {
+    const active = document.activeElement;
+    findReturnFocusRef.current =
+      active instanceof HTMLElement && active !== document.body ? active : null;
+    setFindOpen(true);
+  }, []);
+
+  const changeFindQuery = useCallback((value: string) => {
+    setFindQuery(value);
+    setFindActive(0);
+    setFindReachedEarliest(false);
+    setFindSearchingEarlier(false);
+  }, []);
+
+  const stepFind = useCallback((delta: number) => {
+    const total = findMatchesRef.current.length;
+    if (total === 0) return;
+    setFindActive((current) => (((current + delta) % total) + total) % total);
+  }, []);
+
+  const searchEarlierForFind = useCallback(() => {
+    setFindSearchingEarlier(true);
+  }, []);
+
+  const revealFindMatch = useCallback((match: FindMatch) => {
+    const container = containerRef.current;
+    const node = match.node.parentElement;
+    if (!container || !node) return;
+    const containerRect = container.getBoundingClientRect();
+    const nodeRect = node.getBoundingClientRect();
+    if (
+      nodeRect.top >= containerRect.top + VISIBLE_MARGIN_PX &&
+      nodeRect.bottom <= containerRect.bottom - VISIBLE_MARGIN_PX
+    ) {
+      return;
+    }
+    const offset =
+      nodeRect.top - containerRect.top + nodeRect.height / 2 - container.clientHeight / 2;
+    const maxTop = Math.max(0, container.scrollHeight - container.clientHeight);
+    const targetTop = Math.min(Math.max(0, container.scrollTop + offset), maxTop);
+    nearBottomRef.current =
+      container.scrollHeight - targetTop - container.clientHeight < BOTTOM_FOLLOW_THRESHOLD_PX;
+    userDetachedFromBottomRef.current = !nearBottomRef.current;
+    programmaticScrollRef.current = true;
+    programmaticTargetRef.current = targetTop;
+    if (programmaticTimerRef.current !== null) {
+      window.clearTimeout(programmaticTimerRef.current);
+    }
+    programmaticTimerRef.current = window.setTimeout(() => {
+      programmaticScrollRef.current = false;
+      programmaticTimerRef.current = null;
+    }, 700);
+    container.scrollTo({ top: targetTop, behavior: "smooth" });
+    lastScrollTopRef.current = container.scrollTop;
+    scheduleJumpButtonUpdate();
+  }, [scheduleJumpButtonUpdate]);
+
+  const handleFindShortcut = useCallback((event: KeyboardEvent) => {
+    if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return;
+    if (event.key.toLowerCase() !== "f") return;
+    if (event.defaultPrevented) return;
+    event.preventDefault();
+    openFind();
+  }, [openFind]);
+
+  useEffect(() => {
+    window.addEventListener("keydown", handleFindShortcut);
+    return () => window.removeEventListener("keydown", handleFindShortcut);
+  }, [handleFindShortcut]);
+
+  useEffect(() => {
+    if (!findOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      closeFind();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [closeFind, findOpen]);
+
+  useIsomorphicLayoutEffect(() => {
+    if (!findOpen) return;
+    const matches = collectFindMatches(messagesRef.current, findQuery);
+    findMatchesRef.current = matches;
+    setFindTotal(matches.length);
+    setFindActive((current) => (matches.length === 0 ? 0 : Math.min(current, matches.length - 1)));
+  }, [findOpen, findQuery, visibleMessages]);
+
+  useIsomorphicLayoutEffect(() => {
+    if (!findOpen) {
+      clearFindHighlights();
+      return;
+    }
+    const matches = findMatchesRef.current;
+    highlightFindMatches(matches, findActive);
+    const activeMatch = matches[findActive];
+    if (activeMatch) revealFindMatch(activeMatch);
+  }, [findActive, findOpen, findQuery, findTotal, revealFindMatch, visibleMessages]);
+
+  useEffect(() => {
+    if (!findSearchingEarlier) return;
+    if (findTotal > 0) {
+      setFindSearchingEarlier(false);
+      return;
+    }
+    if (!hasEarlier) {
+      setFindSearchingEarlier(false);
+      setFindReachedEarliest(true);
+      return;
+    }
+    if (isLoadingEarlier || !onLoadEarlier) return;
+    void onLoadEarlier();
+  }, [findSearchingEarlier, findTotal, hasEarlier, isLoadingEarlier, onLoadEarlier]);
+
+  useEffect(() => {
+    if (!findOpen || hasEarlier) return;
+    setFindReachedEarliest(true);
+  }, [findOpen, hasEarlier]);
+
   const jumpLabel = jumpButton.count > 0
     ? `回到底部 · 下面还有 ${jumpButton.count} 条`
     : "回到底部";
 
   return (
     <div className={s.timelineRoot}>
+      {findOpen ? (
+        <FindBar
+          query={findQuery}
+          activeIndex={findActive}
+          total={findTotal}
+          hasEarlier={hasEarlier}
+          searchingEarlier={findSearchingEarlier}
+          reachedEarliest={findReachedEarliest}
+          onChange={changeFindQuery}
+          onPrev={() => stepFind(-1)}
+          onNext={() => stepFind(1)}
+          onClose={closeFind}
+          onSearchEarlier={searchEarlierForFind}
+        />
+      ) : null}
       <div
         ref={containerRef}
         className={s.scroll}
@@ -2054,10 +2407,14 @@ export function MessageTimeline({
         <div ref={messagesRef} className={s.messages}>
           {loading ? <MessageSkeleton /> : null}
           {!loading && visibleMessages.length === 0 && !statusMessage ? (
-            <div className={s.empty}>
-              <div className={s.emptyTitle}>暂无对话记录</div>
-              <div className={s.emptySub}>发送一条消息开始继续这个任务。</div>
-            </div>
+            emptyGuide ? (
+              <div className={s.empty}>{emptyGuide}</div>
+            ) : (
+              <div className={s.empty}>
+                <div className={s.emptyTitle}>暂无对话记录</div>
+                <div className={s.emptySub}>发送一条消息开始继续这个任务。</div>
+              </div>
+            )
           ) : null}
 
           {hiddenMessageCount > 0 || hasEarlier || isLoadingEarlier || loadEarlierError ? (
@@ -2123,11 +2480,18 @@ export function MessageTimeline({
                   speechError={speechError?.messageId === message.id ? speechError.message : null}
                   onSpeak={handleSpeak}
                   onStop={stopSpeech}
-                  retrySource={message.role === "assistant" ? precedingUserAsk(visibleMessages, index) : null}
+                  retrySource={
+                    message.role === "assistant" || (message.role === "system" && message.error)
+                      ? precedingUserAsk(visibleMessages, index)
+                      : null
+                  }
                   onEditMessage={onEditMessage}
                   onRetryMessage={onRetryMessage}
+                  onDeleteMessage={onDeleteMessage}
                   correctionLocked={correctionLocked}
                   correctionLockedReason={correctionLockedReason}
+                  correctionPendingMessageId={correctionPendingMessageId}
+                  onOpenSettings={onOpenSettings}
                 />
               </div>
             );

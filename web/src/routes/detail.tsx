@@ -81,7 +81,8 @@ import type {
 import { MessageTimeline } from "@/components/chat/message-timeline";
 import { InlinePromptFlow } from "@/components/chat/inline-prompt-flow";
 import { StallNotice } from "@/components/chat/stall-notice";
-import { ConfirmTruncateDialog } from "@/components/chat/confirm-truncate-dialog";
+import { ConfirmTruncateDialog, type TruncateDialogMode } from "@/components/chat/confirm-truncate-dialog";
+import { EmptyChatGuide } from "@/components/chat/empty-chat-guide";
 import { SubagentPanel, useSessionCliDelegations, useSessionSubagents } from "@/components/chat/subagent-panel";
 import { SubagentOriginBar, useSubagentSessionOpener } from "@/components/chat/subagent-dialog";
 import { PreviewRail } from "@/components/chat/preview-rail/preview-rail";
@@ -96,7 +97,7 @@ import {
 } from "@/components/chat/message-adapter";
 import { stabilizeChatMessages } from "@/components/chat/message-stability";
 import type { ChatMessage } from "@/components/chat/chat-types";
-import type { HermesUIMessage } from "@hermes/protocol";
+import type { HermesUIMessage, MessagesResponse } from "@hermes/protocol";
 
 import s from "./detail.module.css";
 
@@ -116,6 +117,87 @@ export function correctionTruncateRowId(messageId: string): number | null {
   if (!matched) return null;
   const rowId = Number(matched[1]);
   return Number.isSafeInteger(rowId) && rowId > 0 ? rowId : null;
+}
+
+const CORRECTION_TEXT_WHITESPACE = /\s+/g;
+
+function normalizeCorrectionText(value: string | undefined): string {
+  return (value ?? "").replace(CORRECTION_TEXT_WHITESPACE, " ").trim();
+}
+
+function correctionMessageText(message: HermesUIMessage): string {
+  return normalizeCorrectionText(
+    message.parts
+      .map((part) => (part.type === "text" ? part.text : ""))
+      .filter((text) => text.length > 0)
+      .join(" "),
+  );
+}
+
+export interface CorrectionRowLookup {
+  text: string;
+  anchorText?: string;
+}
+
+export function locateStoredCorrectionRowId(
+  messages: readonly HermesUIMessage[],
+  lookup: CorrectionRowLookup,
+): number | null {
+  const target = normalizeCorrectionText(lookup.text);
+  if (!target) return null;
+  const matches: number[] = [];
+  messages.forEach((message, index) => {
+    if (message.role !== "user") return;
+    if (correctionMessageText(message) !== target) return;
+    if (correctionTruncateRowId(message.id) === null) return;
+    matches.push(index);
+  });
+  if (matches.length === 0) return null;
+  const anchor = normalizeCorrectionText(lookup.anchorText);
+  const rowIdAt = (index: number): number | null => correctionTruncateRowId(messages[index].id);
+  if (!anchor) return rowIdAt(matches[matches.length - 1]);
+  let anchorIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role !== "assistant") continue;
+    if (correctionMessageText(message) !== anchor) continue;
+    anchorIndex = index;
+    break;
+  }
+  if (anchorIndex < 0) return matches.length === 1 ? rowIdAt(matches[0]) : null;
+  let picked = -1;
+  for (const index of matches) {
+    if (index < anchorIndex) picked = index;
+  }
+  return picked < 0 ? null : rowIdAt(picked);
+}
+
+export interface CorrectionRowResolution {
+  rowId: number | null;
+  reloaded: boolean;
+}
+
+export async function resolveCorrectionRowId(params: {
+  messageId: string;
+  text: string;
+  anchorText?: string;
+  reload: () => Promise<MessagesResponse | undefined>;
+}): Promise<CorrectionRowResolution> {
+  const direct = correctionTruncateRowId(params.messageId);
+  if (direct !== null) return { rowId: direct, reloaded: false };
+  let response: MessagesResponse | undefined;
+  try {
+    response = await params.reload();
+  } catch {
+    response = undefined;
+  }
+  return {
+    rowId: locateStoredCorrectionRowId(messagesResponseToHermesUIMessages(response), {
+      text: params.text,
+      anchorText: params.anchorText,
+    }),
+    reloaded: true,
+  };
 }
 
 export type SubmitCorrectionOutcome = "sent" | "fallback" | "cancelled";
@@ -387,14 +469,19 @@ export function DetailRoute() {
 
   const editTargetRef = useRef<PendingEditTarget | null>(null);
   const chatMessagesRef = useRef<ChatMessage[]>([]);
-  const [truncateConfirm, setTruncateConfirm] = useState<{ removedCount: number | null } | null>(null);
+  const [correctionResolvingId, setCorrectionResolvingId] = useState<string | null>(null);
+  const correctionResolvingRef = useRef<string | null>(null);
+  const [truncateConfirm, setTruncateConfirm] = useState<{
+    removedCount: number | null;
+    mode: TruncateDialogMode;
+  } | null>(null);
   const truncateConfirmResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
 
   const confirmTruncate = useCallback(
-    (removedCount: number | null) =>
+    (removedCount: number | null, mode: TruncateDialogMode = "resend") =>
       new Promise<boolean>((resolve) => {
         truncateConfirmResolverRef.current = resolve;
-        setTruncateConfirm({ removedCount });
+        setTruncateConfirm({ removedCount, mode });
       }),
     [],
   );
@@ -426,6 +513,23 @@ export function DetailRoute() {
   useEffect(() => {
     refetchMessagesRef.current = messagesQuery.refetch;
   }, [messagesQuery.refetch]);
+
+  const reloadStoredMessages = useCallback(async (): Promise<MessagesResponse | undefined> => {
+    const result = await refetchMessagesRef.current();
+    return result.data;
+  }, []);
+
+  const assistantReplyTextFor = useCallback((userMessage: ChatMessage): string | undefined => {
+    const list = chatMessagesRef.current;
+    const index = list.findIndex((message) => message.id === userMessage.id);
+    if (index < 0) return undefined;
+    for (let cursor = index + 1; cursor < list.length; cursor += 1) {
+      const message = list[cursor];
+      if (message.role === "user") return undefined;
+      if (message.role === "assistant" && message.text?.trim()) return message.text;
+    }
+    return undefined;
+  }, []);
 
   const submitCorrection = useCallback(
     async (rowId: number | null, text: string): Promise<SubmitCorrectionOutcome> => {
@@ -476,6 +580,7 @@ export function DetailRoute() {
   const handleEditMessage = useCallback(
     (message: ChatMessage) => {
       if (!taskId || runtimeIsBusy) return;
+      if (correctionResolvingRef.current) return;
       const text = message.text ?? "";
       if (!text.trim()) {
         appendNotice({
@@ -485,15 +590,32 @@ export function DetailRoute() {
         });
         return;
       }
-      editTargetRef.current = { rowId: correctionTruncateRowId(message.id), text };
-      setComposerPrefill({ sessionId: taskId, text, nonce: Date.now() });
+      const anchorText = assistantReplyTextFor(message);
+      correctionResolvingRef.current = message.id;
+      setCorrectionResolvingId(message.id);
+      void (async () => {
+        try {
+          const { rowId } = await resolveCorrectionRowId({
+            messageId: message.id,
+            text,
+            anchorText,
+            reload: reloadStoredMessages,
+          });
+          editTargetRef.current = { rowId, text };
+          setComposerPrefill({ sessionId: taskId, text, nonce: Date.now() });
+        } finally {
+          correctionResolvingRef.current = null;
+          setCorrectionResolvingId(null);
+        }
+      })();
     },
-    [appendNotice, runtimeIsBusy, taskId],
+    [appendNotice, assistantReplyTextFor, reloadStoredMessages, runtimeIsBusy, taskId],
   );
 
   const handleRetryMessage = useCallback(
     (userMessage: ChatMessage) => {
       if (!taskId || runtimeIsBusy) return;
+      if (correctionResolvingRef.current) return;
       const text = userMessage.text ?? "";
       if (!text.trim()) {
         appendNotice({
@@ -503,36 +625,125 @@ export function DetailRoute() {
         });
         return;
       }
-      const rowId = correctionTruncateRowId(userMessage.id);
+      const anchorText = assistantReplyTextFor(userMessage);
+      correctionResolvingRef.current = userMessage.id;
+      setCorrectionResolvingId(userMessage.id);
       void (async () => {
-        const outcome = await submitCorrection(rowId, text);
-        if (outcome === "sent" || outcome === "cancelled") return;
         try {
-          const sessionId = await ensureGatewaySession();
-          if (rowId === null) {
+          const { rowId, reloaded } = await resolveCorrectionRowId({
+            messageId: userMessage.id,
+            text,
+            anchorText,
+            reload: reloadStoredMessages,
+          });
+          const outcome = await submitCorrection(rowId, text);
+          if (outcome === "sent" || outcome === "cancelled") return;
+          try {
+            const sessionId = await ensureGatewaySession();
             appendNotice({
               sessionId,
-              text: "这条提问还没拿到内核记录定位，本次作为新消息发送，后续消息不会删除。",
+              text:
+                rowId === null && reloaded
+                  ? "已重载会话记录仍未找到这条提问的内核定位，本次作为新消息发送，后续消息不会删除。"
+                  : "当前内核不支持消息回溯，本次作为新消息发送，后续消息不会删除。",
               level: "warning",
             });
-          } else {
+            await sendPrompt(sessionId, text);
+          } catch (error) {
             appendNotice({
-              sessionId,
-              text: "当前内核不支持消息回溯，本次作为新消息发送，后续消息不会删除。",
-              level: "warning",
+              sessionId: taskId,
+              text: `重试失败：${classifyGatewayError(error).message}`,
+              level: "error",
             });
           }
-          await sendPrompt(sessionId, text);
-        } catch (error) {
-          appendNotice({
-            sessionId: taskId,
-            text: `重试失败：${classifyGatewayError(error).message}`,
-            level: "error",
-          });
+        } finally {
+          correctionResolvingRef.current = null;
+          setCorrectionResolvingId(null);
         }
       })();
     },
-    [appendNotice, ensureGatewaySession, runtimeIsBusy, sendPrompt, submitCorrection, taskId],
+    [
+      appendNotice,
+      assistantReplyTextFor,
+      ensureGatewaySession,
+      reloadStoredMessages,
+      runtimeIsBusy,
+      sendPrompt,
+      submitCorrection,
+      taskId,
+    ],
+  );
+
+  const handleDeleteMessage = useCallback(
+    (userMessage: ChatMessage) => {
+      if (!taskId || runtimeIsBusy) return;
+      if (correctionResolvingRef.current) return;
+      const text = userMessage.text ?? "";
+      if (!text.trim()) {
+        appendNotice({
+          sessionId: taskId,
+          text: "这条提问只有附件、没有文字，暂不支持删除。",
+          level: "warning",
+        });
+        return;
+      }
+      const anchorText = assistantReplyTextFor(userMessage);
+      correctionResolvingRef.current = userMessage.id;
+      setCorrectionResolvingId(userMessage.id);
+      void (async () => {
+        try {
+          const { rowId } = await resolveCorrectionRowId({
+            messageId: userMessage.id,
+            text,
+            anchorText,
+            reload: reloadStoredMessages,
+          });
+          if (rowId === null) {
+            appendNotice({
+              sessionId: taskId,
+              text: "已重载仍未找到这条提问的内核定位，无法删除。",
+              level: "warning",
+            });
+            return;
+          }
+          const removedCount = countRemovedAfterRow(rowId);
+          const confirmed = await confirmTruncate(removedCount, "delete");
+          if (!confirmed) return;
+          const sessionId = await ensureGatewaySession();
+          await getGatewayClient().request("prompt.submit", {
+            session_id: sessionId,
+            text: "",
+            truncate_before_row_id: rowId,
+            confirm_truncate: true,
+          });
+          appendNotice({
+            sessionId,
+            text: "已删除这条提问及其之后的全部消息。",
+            level: "info",
+          });
+          await refetchMessagesRef.current();
+        } catch (error) {
+          appendNotice({
+            sessionId: taskId,
+            text: `删除失败：${classifyGatewayError(error).message}`,
+            level: "error",
+          });
+        } finally {
+          correctionResolvingRef.current = null;
+          setCorrectionResolvingId(null);
+        }
+      })();
+    },
+    [
+      appendNotice,
+      assistantReplyTextFor,
+      confirmTruncate,
+      countRemovedAfterRow,
+      ensureGatewaySession,
+      reloadStoredMessages,
+      runtimeIsBusy,
+      taskId,
+    ],
   );
 
   // Follow the backend's compression tip (issue #305). When a session.resume is
@@ -703,9 +914,11 @@ export function DetailRoute() {
       appendNotice({
         sessionId: taskId,
         text:
-          pendingEdit.rowId === null || payload.attachments.length > 0 || runtimeIsBusy
-            ? "本次作为新消息发送，原消息与它后面的话都不会删除。"
-            : "当前内核不支持消息回溯，本次作为新消息发送，后续消息不会删除。",
+          pendingEdit.rowId === null
+            ? "已重载会话记录仍未找到这条提问的内核定位，本次作为新消息发送，原消息与它后面的话都不会删除。"
+            : payload.attachments.length > 0 || runtimeIsBusy
+              ? "本次作为新消息发送，原消息与它后面的话都不会删除。"
+              : "当前内核不支持消息回溯，本次作为新消息发送，后续消息不会删除。",
         level: "warning",
       });
     }
@@ -729,6 +942,9 @@ export function DetailRoute() {
   // ---- Send queue (drain on settle, send-now / edit / delete) --------------
   const queuedPrompts = useQueuedPrompts(taskId);
   const [composerPrefill, setComposerPrefill] = useState<ComposerPrefillState>({ text: "", nonce: 0 });
+  const handleGuidePick = useCallback((text: string) => {
+    setComposerPrefill({ text, nonce: Date.now(), sessionId: taskId });
+  }, [taskId]);
   const drainingRef = useRef(false);
   const previousBusyRef = useRef(runtimeIsBusy);
   const userInterruptedRef = useRef(false);
@@ -907,6 +1123,8 @@ export function DetailRoute() {
   const hasActiveComposerPrefill = composerPrefill.sessionId === taskId && composerPrefill.nonce > 0;
   const composerInitial = hasActiveComposerPrefill ? composerPrefill.text : storedComposerDraft;
   const composerInitialNonce = hasActiveComposerPrefill ? composerPrefill.nonce : 0;
+  const pageRef = useRef<HTMLDivElement>(null);
+
   const pageStyle = useMemo(
     () => {
       const font = conversationFontSizeVars(conversationFontSizeMode);
@@ -923,7 +1141,12 @@ export function DetailRoute() {
   );
 
   return (
-    <div className={s.page} data-conversation-width={conversationWidthMode} style={pageStyle}>
+    <div
+      ref={pageRef}
+      className={s.page}
+      data-conversation-width={conversationWidthMode}
+      style={pageStyle}
+    >
       <TopBar
         title={title}
         sub={model ? `本会话 ${model}` : undefined}
@@ -1047,8 +1270,16 @@ export function DetailRoute() {
                 loadEarlierError={loadEarlierMessagesError}
                 onEditMessage={handleEditMessage}
                 onRetryMessage={handleRetryMessage}
+                onDeleteMessage={handleDeleteMessage}
                 correctionLocked={runtimeIsBusy}
                 correctionLockedReason="正在生成回复，等这轮结束再纠正"
+                correctionPendingMessageId={correctionResolvingId}
+                emptyGuide={
+                  chatMessages.length === 0 && !runtimeIsBusy ? (
+                    <EmptyChatGuide onPick={handleGuidePick} />
+                  ) : undefined
+                }
+                onOpenSettings={(path) => navigate(path)}
               />
             )}
           </InlinePromptFlow>
@@ -1077,7 +1308,6 @@ export function DetailRoute() {
               showMeta={false}
               loading={runtimeIsBusy}
               onStop={onStop}
-              voiceConfig={config ?? null}
               modelPicker={{
                 selected: contextSelection,
                 label: model || modelInfo?.model,
@@ -1134,6 +1364,7 @@ export function DetailRoute() {
         <ConfirmTruncateDialog
           open={truncateConfirm !== null}
           removedCount={truncateConfirm?.removedCount ?? null}
+          mode={truncateConfirm?.mode ?? "resend"}
           onCancel={() => settleTruncateConfirm(false)}
           onConfirm={() => settleTruncateConfirm(true)}
         />

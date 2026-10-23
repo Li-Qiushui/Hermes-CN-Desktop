@@ -45,8 +45,160 @@
 }
 
 .headAction {
+  display: inline-flex;
   flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
   margin-left: auto;
+}
+
+.headIconButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  min-height: 24px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--h-text-3);
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+.headIconButton:hover,
+.headIconButton[data-open="true"] {
+  background: color-mix(in srgb, var(--h-text) 8%, transparent);
+  color: var(--h-text-2);
+}
+
+.headIconButton:focus-visible {
+  border-radius: 0;
+  outline: 1px solid var(--h-accent);
+  outline-offset: 1px;
+}
+
+.blockBarActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.searchBar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--h-line-soft);
+  background: var(--h-bg-soft);
+  color: var(--h-text-2);
+  font-size: 12.5px;
+}
+
+.searchIcon {
+  flex: 0 0 auto;
+  color: var(--h-text-3);
+}
+
+.searchInput {
+  min-width: 0;
+  flex: 1 1 auto;
+  height: 24px;
+  border: 1px solid var(--h-line);
+  border-radius: 0;
+  background: var(--h-bg-pane);
+  color: var(--h-text);
+  font-family: var(--h-font-cn);
+  font-size: 12.5px;
+  padding: 0 6px;
+}
+
+.searchInput:focus-visible {
+  border-color: var(--h-accent);
+  outline: 1px solid var(--h-accent);
+  outline-offset: 0;
+}
+
+.searchCounter {
+  flex: 0 0 auto;
+  color: var(--h-text-3);
+  font-family: var(--h-font-mono);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.searchNav {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  min-height: 22px;
+  border: 1px solid var(--h-line);
+  border-radius: 0;
+  background: transparent;
+  color: var(--h-text-2);
+  cursor: pointer;
+  padding: 0 4px;
+  font-size: 12.5px;
+  line-height: 1.2;
+}
+
+.searchNav:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--h-text) 8%, transparent);
+  color: var(--h-text);
+}
+
+.searchNav:disabled {
+  color: var(--h-text-3);
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.searchNav:focus-visible {
+  border-radius: 0;
+  outline: 1px solid var(--h-accent);
+  outline-offset: 1px;
+}
+
+.foldToggle {
+  display: block;
+  width: 100%;
+  margin: 2px 0;
+  border: 0;
+  border-radius: 0;
+  background: color-mix(in srgb, var(--h-accent) 10%, transparent);
+  color: var(--h-text-2);
+  cursor: pointer;
+  padding: 2px 6px;
+  font-family: inherit;
+  font-size: 12.5px;
+  line-height: 1.5;
+  text-align: left;
+}
+
+.foldToggle:hover {
+  background: color-mix(in srgb, var(--h-accent) 18%, transparent);
+  color: var(--h-text);
+}
+
+.foldToggle:focus-visible {
+  border-radius: 0;
+  outline: 1px solid var(--h-accent);
+  outline-offset: 1px;
+}
+
+.match {
+  border-radius: 0;
+  background: color-mix(in srgb, var(--h-accent) 26%, transparent);
+  color: var(--h-text);
+}
+
+.match[data-active="true"] {
+  background: color-mix(in srgb, var(--h-accent) 55%, transparent);
+  outline: 1px solid var(--h-accent);
 }
 
 .exitBadge {

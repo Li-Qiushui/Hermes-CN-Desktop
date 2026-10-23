@@ -982,4 +982,101 @@ describe("MessageTimeline", () => {
     expect(html).toContain("附件不会被带回输入框");
   });
 
+  it("turns both correction buttons into a pending spinner while the row is being resolved", async () => {
+    stubScrollTo();
+    const messages: ChatMessage[] = [
+      { id: "live-user-1750000000000", role: "user", createdAt: 1, status: "complete", text: "再看一遍" },
+      { id: "live-assistant-1750000000000", role: "assistant", createdAt: 2, status: "complete", text: "看完" },
+    ];
+    const onEditMessage = vi.fn();
+    const onRetryMessage = vi.fn();
+
+    const { container } = render(
+      <MemoryRouter>
+        <MessageTimeline
+          messages={messages}
+          onEditMessage={onEditMessage}
+          onRetryMessage={onRetryMessage}
+          correctionPendingMessageId="live-user-1750000000000"
+        />
+      </MemoryRouter>,
+    );
+
+    const pending = Array.from(
+      container.querySelectorAll('button[data-correction-pending="true"]'),
+    ) as HTMLButtonElement[];
+    expect(pending).toHaveLength(2);
+    for (const node of pending) {
+      expect(node.textContent).toBe("定位中");
+      expect(node.disabled).toBe(true);
+      expect(node.title).toBe("正在重载会话记录，定位这条提问在内核里的位置");
+    }
+
+    await act(async () => {
+      for (const node of pending) fireEvent.click(node);
+    });
+    expect(onEditMessage).not.toHaveBeenCalled();
+    expect(onRetryMessage).not.toHaveBeenCalled();
+  });
+
+  it("renders file-write tools as their own cards outside the collapsed chain", () => {
+    const message: ChatMessage = {
+      id: "m-tools-1",
+      role: "assistant",
+      createdAt: 1,
+      status: "complete",
+      text: "",
+      tools: [
+        {
+          tool_id: "call-write",
+          name: "write_file",
+          status: "done",
+          startedAt: 1,
+          completedAt: 2,
+          arguments: { path: "src/a.ts", content: "const a = 1;\n" },
+        },
+        {
+          tool_id: "call-terminal",
+          name: "terminal",
+          status: "done",
+          startedAt: 2,
+          completedAt: 3,
+          arguments: { command: "ls" },
+          summary: "a.ts",
+        } as never,
+      ],
+    };
+
+    const html = renderTimeline(<MessageTimeline messages={[message]} />);
+
+    expect(html).toContain('data-file-write="true"');
+    expect(html).toContain("src/a.ts");
+    expect(html).toContain("+1");
+    expect(html).toContain("完成");
+  });
+
+  it("folds file-write cards beyond five behind a summary entry", () => {
+    const tools = Array.from({ length: 7 }, (_, index) => ({
+      tool_id: `call-write-${index}`,
+      name: "write_file",
+      status: "done" as const,
+      startedAt: index,
+      completedAt: index + 1,
+      arguments: { path: `src/f-${index}.ts`, content: "x\n" },
+    }));
+    const message: ChatMessage = {
+      id: "m-tools-2",
+      role: "assistant",
+      createdAt: 1,
+      status: "complete",
+      text: "",
+      tools: tools as never,
+    };
+
+    const html = renderTimeline(<MessageTimeline messages={[message]} />);
+
+    expect(html.match(/data-file-write="true"/g)).toHaveLength(5);
+    expect(html).toContain("还有 2 个文件变更");
+  });
+
 });
