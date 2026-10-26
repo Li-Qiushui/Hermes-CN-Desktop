@@ -160,6 +160,7 @@ describe("recoverAfterReconnect", () => {
         persistentId: "sess-1",
         messages: SNAPSHOT_MESSAGES,
         running: false,
+        autoContinue: false,
       },
     ]);
     expect(result).toMatchObject({ status: "snapshot", reason: "epoch_changed" });

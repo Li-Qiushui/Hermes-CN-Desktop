@@ -50,6 +50,7 @@ import {
 } from "@/lib/session-branch";
 import { sessionCreateParams } from "@/lib/session-create";
 import {
+  adoptResumedSessionAtom,
   applyGatewayEventAtom,
   chatRuntimeBySessionAtom,
   createEmptyChatRuntime,
@@ -110,6 +111,21 @@ function forEachSubscriber(
 
 const recoverActiveSessionOnce = createReconnectRecovery();
 
+// 内核在 resume 冷路径上会自动重跑被进程死亡打断的回合；payload 里的
+// `auto_continue` 是 `{attempt, interrupted_at}`，只在真的排上了续跑时才出现，
+// 没排上时整个字段被省略。这里只判断「有没有」，不去猜内容。
+export function hasAutoContinuePayload(result: unknown): boolean {
+  const raw = (result as { auto_continue?: unknown } | null)?.auto_continue;
+  return typeof raw === "object" && raw !== null;
+}
+
+// resume 里的 `turn_started_at` 是内核自报的当前回合起点（秒），换算成 ms 交给
+// 时间线：比它更早起跑的工具属于上一回合。缺失时由会话里的续跑帧兜底。
+export function resumeTurnStartedAt(result: unknown): number | undefined {
+  const raw = (result as { turn_started_at?: unknown } | null)?.turn_started_at;
+  return typeof raw === "number" && Number.isFinite(raw) ? raw * 1000 : undefined;
+}
+
 // 重连恢复只有一个入口：一次 session.resume，然后按水位判定「since 补帧」还是
 // 「用这次 resume 的 messages 快照覆盖」。旧实现里 A 补帧退化会抛 session.replay_gap
 // 再由 B 全量 resume 一次，内核重启时两条必然都走（resume 叠加 → 会话归属竞态、
@@ -118,6 +134,7 @@ const recoverActiveSessionOnce = createReconnectRecovery();
 async function recoverAfterGatewayReconnect(): Promise<void> {
   const store = getDefaultStore();
   const client = getGatewayClient();
+  const previousSessionId = store.get(gwSessionIdAtom);
   try {
     const result = await recoverActiveSessionOnce({
       getActiveSessionId: () => store.get(gwSessionIdAtom),
@@ -134,12 +151,24 @@ async function recoverAfterGatewayReconnect(): Promise<void> {
             { timeoutMs: 300_000 },
           ),
         );
+        const autoContinue = hasAutoContinuePayload(resumed);
         redeliverOpenRequests((resumed as { open_requests?: unknown }).open_requests);
+        // 断线那一轮的收尾必须在这里做：内核重启后运行时 session_id 换了，断线
+        // 标记在旧 id 名下，而 hydrate 只在补帧退化时才跑（补帧成功/跳过的正常
+        // 重连根本不会 hydrate），所以灰卡不能只挂在 hydrate 上。
+        store.set(adoptResumedSessionAtom, {
+          fromSessionId: previousSessionId ?? undefined,
+          toSessionId: resumed.session_id,
+          running: (resumed as { running?: boolean }).running === true,
+          autoContinue,
+        });
         return {
           session_id: resumed.session_id,
           resumed: resumed.resumed,
           messages: (resumed as { messages?: unknown[] }).messages,
           running: (resumed as { running?: boolean }).running,
+          autoContinue,
+          turnStartedAt: resumeTurnStartedAt(resumed),
         };
       },
       bind: (persistentId, runtimeSessionId) => client.bindSession(persistentId, runtimeSessionId),
@@ -147,11 +176,13 @@ async function recoverAfterGatewayReconnect(): Promise<void> {
         client.replaySession(persistentId, runtimeSessionId, {
           onDegraded: (reason) => onDegraded?.(reason),
         }),
-      hydrate: ({ runtimeSessionId, persistentId, messages, running }) => {
+      hydrate: ({ runtimeSessionId, persistentId, messages, running, autoContinue, turnStartedAt }) => {
         store.set(hydrateSessionTimelineAtom, {
           sessionId: runtimeSessionId,
           messages: legacySessionMessagesToHermesUIMessages(messages as SessionMessage[]),
           running,
+          autoContinue,
+          turnStartedAt,
         });
         debugBus.push({
           type: "gateway",
@@ -218,15 +249,21 @@ async function replaySubscribedSessionPass(): Promise<void> {
       const resumed = result.resumed ?? persistentId;
       rememberSessionMapping(result.session_id, resumed);
       mirrorSessionWorkspaceMapping(result.session_id, resumed);
-      return result;
+      return {
+        ...result,
+        autoContinue: hasAutoContinuePayload(result),
+        turnStartedAt: resumeTurnStartedAt(result),
+      };
     },
     bind: (persistentId, runtimeSessionId) => client.bindSession(persistentId, runtimeSessionId),
     replay: (persistentId, runtimeSessionId) => client.replaySession(persistentId, runtimeSessionId),
-    hydrate: ({ runtimeSessionId, messages, running }) => {
+    hydrate: ({ runtimeSessionId, messages, running, autoContinue, turnStartedAt }) => {
       store.set(hydrateSessionTimelineAtom, {
         sessionId: runtimeSessionId,
         messages: legacySessionMessagesToHermesUIMessages(messages as SessionMessage[]),
         running,
+        autoContinue,
+        turnStartedAt,
       });
     },
     onError: (sessionId, error) => {

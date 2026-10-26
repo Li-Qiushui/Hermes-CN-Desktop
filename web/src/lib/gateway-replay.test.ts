@@ -121,6 +121,7 @@ describe("replaySubscribedSessions", () => {
       persistentId: "p-1",
       messages: [{ role: "user", content: "snapshot" }],
       running: false,
+      autoContinue: false,
     });
   });
 });

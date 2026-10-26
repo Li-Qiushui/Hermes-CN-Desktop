@@ -35,6 +35,10 @@ export interface ResumeSnapshot {
   resumed?: string;
   messages?: unknown[];
   running?: boolean;
+  /** 内核把被进程死亡打断的回合自动重跑了一遍（resume 的 `auto_continue`）。 */
+  autoContinue?: boolean;
+  /** 内核自报的当前回合起点（ms）。 */
+  turnStartedAt?: number;
 }
 
 export interface HydrateSnapshotParams {
@@ -42,6 +46,8 @@ export interface HydrateSnapshotParams {
   persistentId: string;
   messages: unknown[];
   running: boolean;
+  autoContinue?: boolean;
+  turnStartedAt?: number;
 }
 
 export interface ReplaySubscribedSessionsDeps {
@@ -112,6 +118,8 @@ export async function replaySubscribedSessions(
           persistentId: session.sessionId,
           messages: Array.isArray(resumed.messages) ? resumed.messages : [],
           running: resumed.running === true,
+          autoContinue: resumed.autoContinue === true,
+          turnStartedAt: resumed.turnStartedAt,
         });
       };
       const outcome = await deps.replay(session.sessionId, resumed.session_id, hydrateSnapshot);
@@ -210,7 +218,14 @@ export async function recoverAfterReconnect(
   const takeSnapshot = (reason: ReconnectRecoveryResult["reason"] | null) => {
     if (snapshotReason) return;
     snapshotReason = reason ?? null;
-    deps.hydrate({ runtimeSessionId, persistentId, messages, running });
+    deps.hydrate({
+      runtimeSessionId,
+      persistentId,
+      messages,
+      running,
+      autoContinue: resumed.autoContinue === true,
+      turnStartedAt: resumed.turnStartedAt,
+    });
   };
 
   const epochChanged = () => (deps.epochGeneration?.() ?? 0) !== epochBefore;

@@ -1,0 +1,115 @@
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 6px 0 2px;
+  padding: 10px 12px;
+  border: 1px solid var(--h-err-border);
+  background: var(--h-err-soft);
+  color: var(--h-text);
+  font-family: var(--h-font-cn);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 20px;
+}
+
+.icon {
+  color: var(--h-err);
+  flex: none;
+}
+
+.title {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.code {
+  padding: 0 6px;
+  border: 1px solid var(--h-line);
+  color: var(--h-text-3);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: auto;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--h-line);
+  background: transparent;
+  color: var(--h-text-3);
+  cursor: pointer;
+}
+
+.close:hover {
+  border-color: var(--h-accent);
+  background: color-mix(in srgb, var(--h-text) 8%, transparent);
+  color: var(--h-text);
+}
+
+.close:focus-visible {
+  outline: 1px solid var(--h-accent);
+  outline-offset: 1px;
+}
+
+.detail {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--h-text-2);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--h-line);
+  background: transparent;
+  color: var(--h-text-2);
+  font-family: var(--h-font-cn);
+  font-size: 13px;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.action:hover {
+  border-color: var(--h-accent);
+  background: color-mix(in srgb, var(--h-accent) 8%, transparent);
+  color: var(--h-text);
+}
+
+.action:focus-visible {
+  outline: 1px solid var(--h-accent);
+  outline-offset: 1px;
+}
+
+.actionPrimary {
+  border-color: color-mix(in srgb, var(--h-accent) 45%, var(--h-line));
+  background: color-mix(in srgb, var(--h-accent) 12%, transparent);
+  color: var(--h-text);
+}
+
+.actionPrimary:hover {
+  border-color: var(--h-accent);
+  background: color-mix(in srgb, var(--h-accent) 18%, transparent);
+  color: var(--h-text);
+}

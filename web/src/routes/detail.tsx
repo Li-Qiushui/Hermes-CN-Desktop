@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useCallback, useRef, useState, type CSSProperties } from "react";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { Bot, Check, Copy, PanelRight } from "lucide-react";
+import { Bot, Check, Copy, PanelRight, RotateCw, WifiOff } from "lucide-react";
 import {
   activeSessionIdAtom,
   assistantDisplayNameAtom,
@@ -14,8 +14,20 @@ import {
 } from "@/stores/ui";
 import { pickTipRedirect } from "@/lib/session-tip-redirect";
 import {
+  activateRevisionAtom,
   appendNoticeAtom,
+  beginRevisionRetryAtom,
+  dismissStreamErrorCardAtom,
+  dropWithdrawnTurnMessages,
+  finalizeRevisionRetryAtom,
+  gwConnectionAtom,
+  latestRevisionFamily,
   recoverCompletedTurnFromStoredMessagesAtom,
+  resolveStopOutcome,
+  revisionHiddenMessageIds,
+  settleRecoveredStreamErrorAtom,
+  stopTurnAtom,
+  type StopOutcome,
 } from "@/stores/chat";
 import { useSession, useSessionMessages, useSessions } from "@/hooks/use-sessions";
 import { useSkills } from "@/hooks/use-skills";
@@ -53,10 +65,9 @@ import {
 } from "@/lib/session-ui-state";
 import { isRemoteConnection, readFileDataUrl, readImageBytesFromPath, uploadAttachmentFile } from "@/lib/transport";
 import { resumeFailureMessage, resumeWithRetry } from "@/lib/resume-retry";
-import { getGatewayClient } from "@/lib/gateway-client";
-import { classifyGatewayError } from "@/lib/gateway-result";
+import { getGatewayClient, type ConnectionState } from "@/lib/gateway-client";
+import { GatewayRpcError, classifyGatewayError } from "@/lib/gateway-result";
 import { isMethodKnownUnsupported } from "@/lib/gateway-capabilities";
-import { voiceAutoTtsFromConfig } from "@/lib/voice";
 import {
   rememberSessionWorkspace,
   rememberWorkspaceProject,
@@ -68,6 +79,7 @@ import { GooseComposer } from "@/components/chat/goose-composer";
 import { QueuePanel } from "@/components/composer/queue-panel";
 import {
   enqueueQueuedPrompt,
+  markQueuedPromptFailed,
   removeQueuedPrompt,
   shouldAutoDrainOnSettle,
   useQueuedPrompts,
@@ -83,6 +95,8 @@ import { InlinePromptFlow } from "@/components/chat/inline-prompt-flow";
 import { StallNotice } from "@/components/chat/stall-notice";
 import { ConfirmTruncateDialog, type TruncateDialogMode } from "@/components/chat/confirm-truncate-dialog";
 import { EmptyChatGuide } from "@/components/chat/empty-chat-guide";
+import { MessageRevisionPager } from "@/components/chat/message-revision-pager";
+import { StreamErrorCardView } from "@/components/chat/stream-error-card";
 import { SubagentPanel, useSessionCliDelegations, useSessionSubagents } from "@/components/chat/subagent-panel";
 import { SubagentOriginBar, useSubagentSessionOpener } from "@/components/chat/subagent-dialog";
 import { PreviewRail } from "@/components/chat/preview-rail/preview-rail";
@@ -110,6 +124,106 @@ interface ComposerPrefillState {
 interface PendingEditTarget {
   rowId: number | null;
   text: string;
+}
+
+export const GATEWAY_OFFLINE_NOTICE_DELAY_MS = 2000;
+
+export type GatewayOfflineTone = "reconnecting" | "offline" | "failed";
+
+export interface GatewayOfflineNotice {
+  tone: GatewayOfflineTone;
+  title: string;
+  detail: string;
+}
+
+/**
+ * 连接掉线后的常驻提示。`idle` 不算掉线：它是「还没连过 / 主动关掉」，冷启动时
+ * 拿它当断线会误报，所以只有 open 和 idle 之外的状态才计入。
+ */
+export function gatewayOfflineNotice(
+  state: ConnectionState,
+  offlineForMs: number,
+): GatewayOfflineNotice | null {
+  if (state === "open" || state === "idle") return null;
+  if (offlineForMs < GATEWAY_OFFLINE_NOTICE_DELAY_MS) return null;
+  if (state === "connecting") {
+    return {
+      tone: "reconnecting",
+      title: "正在重连网关…",
+      detail: "这一轮的输出会在连接恢复后继续",
+    };
+  }
+  if (state === "error") {
+    return {
+      tone: "failed",
+      title: "重连失败",
+      detail: "网关没有响应，点「立即重试」手动重连",
+    };
+  }
+  return {
+    tone: "offline",
+    title: "连接已断开",
+    detail: "正在自动重连，断开期间的发送会失败",
+  };
+}
+
+function useGatewayOfflineNotice(state: ConnectionState): GatewayOfflineNotice | null {
+  const offlineSinceRef = useRef<number | null>(null);
+  const [offlineForMs, setOfflineForMs] = useState(0);
+
+  useEffect(() => {
+    if (state === "open" || state === "idle") {
+      offlineSinceRef.current = null;
+      setOfflineForMs(0);
+      return;
+    }
+    const startedAt = offlineSinceRef.current ?? Date.now();
+    offlineSinceRef.current = startedAt;
+    const remaining = Math.max(
+      0,
+      GATEWAY_OFFLINE_NOTICE_DELAY_MS - (Date.now() - startedAt),
+    );
+    const timer = window.setTimeout(
+      () => setOfflineForMs(Date.now() - startedAt),
+      remaining,
+    );
+    return () => window.clearTimeout(timer);
+  }, [state]);
+
+  return gatewayOfflineNotice(state, offlineForMs);
+}
+
+export function GatewayOfflineBanner({
+  notice,
+  onRetry,
+}: {
+  notice: GatewayOfflineNotice;
+  onRetry: () => void;
+}) {
+  return (
+    <div
+      className={s.connectionBanner}
+      data-state={notice.tone}
+      data-action="gateway-offline-banner"
+      role="status"
+    >
+      <WifiOff className={s.connectionBannerIcon} size={14} aria-hidden="true" />
+      <div className={s.connectionBannerBody}>
+        <span className={s.connectionBannerTitle}>{notice.title}</span>
+        <span className={s.connectionBannerDetail}>{notice.detail}</span>
+      </div>
+      <button
+        type="button"
+        className={s.connectionBannerRetry}
+        data-action="retry-gateway"
+        title="立即重连网关"
+        onClick={onRetry}
+      >
+        <RotateCw size={12} aria-hidden="true" />
+        <span>立即重试</span>
+      </button>
+    </div>
+  );
 }
 
 export function correctionTruncateRowId(messageId: string): number | null {
@@ -202,6 +316,43 @@ export async function resolveCorrectionRowId(params: {
 
 export type SubmitCorrectionOutcome = "sent" | "fallback" | "cancelled";
 
+/** `session.steer` 的回执：status 只会是 queued / rejected / redirected。 */
+export interface SessionSteerResult {
+  status?: string;
+}
+
+export interface SteerRequestClient {
+  request<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T>;
+}
+
+/**
+ * 运行中纠偏。真实 RPC 是 `session.steer`，参数只有 `session_id` + `text`
+ * （见内核 tui_gateway/methods_session_interrupt.py:171 的
+ * `_correction_method("session.steer", "steer", "queued", ...)`；多通道网关
+ * gateway/session_busy_controls.py:13 那份同名方法还要 execution_generation，
+ * 桌面端连的是 tui_gateway，不走那条）。
+ */
+export async function steerRunningSession(
+  client: SteerRequestClient,
+  sessionId: string,
+  text: string,
+): Promise<SessionSteerResult> {
+  const result = await client.request<SessionSteerResult | null | undefined>("session.steer", {
+    session_id: sessionId,
+    text,
+  });
+  return result ?? {};
+}
+
+/**
+ * Esc / 「中止响应」到底该不该落地：回合还在跑时两种结局都算；回合已经自己收尾了
+ * 就只接受 restore（这一轮什么也没产出，用户的意思是把提问收回去）。
+ */
+export function stopShouldApply(input: { runtimeIsBusy: boolean; outcome: StopOutcome }): boolean {
+  if (input.runtimeIsBusy) return true;
+  return input.outcome.kind === "restore";
+}
+
 export function DetailRoute() {
   // URL drives the *initial* selection (deep links, browser back/forward),
   // but `activeSessionIdAtom` is the runtime source of truth. This lets
@@ -255,6 +406,17 @@ export function DetailRoute() {
   const sessionIdCopyTimer = useRef<number | null>(null);
   const recoverCompletedTurnFromStoredMessages = useSetAtom(recoverCompletedTurnFromStoredMessagesAtom);
   const appendNotice = useSetAtom(appendNoticeAtom);
+  const stopTurn = useSetAtom(stopTurnAtom);
+  const beginRevisionRetry = useSetAtom(beginRevisionRetryAtom);
+  const finalizeRevisionRetry = useSetAtom(finalizeRevisionRetryAtom);
+  const activateRevision = useSetAtom(activateRevisionAtom);
+  const dismissStreamErrorCard = useSetAtom(dismissStreamErrorCardAtom);
+  const settleRecoveredStreamError = useSetAtom(settleRecoveredStreamErrorAtom);
+  const connectionState = useAtomValue(gwConnectionAtom);
+  const offlineNotice = useGatewayOfflineNotice(connectionState);
+  const retryGatewayConnection = useCallback(() => {
+    getGatewayClient().forceReconnect("manual-retry");
+  }, []);
 
   const {
     restSessionId,
@@ -450,14 +612,17 @@ export function DetailRoute() {
       // switches). See #53 for the broader rework.
       setResumeFailure(null);
       try {
-        return await resumeWithRetry(() => resumeSession(restSessionId));
+        const resumedId = await resumeWithRetry(() => resumeSession(restSessionId));
+        // resume 成功 = 那条断流「请求失败」已经不成立了，降级成「已自动恢复」。
+        settleRecoveredStreamError(resumedId);
+        return resumedId;
       } catch (error) {
         setResumeFailure({ message: resumeFailureMessage(error), sessionId: restSessionId });
         throw error;
       }
     }
     return activeMappedGatewaySessionId ?? taskId;
-  }, [activeMappedGatewaySessionId, restSessionId, resumeSession, taskId]);
+  }, [activeMappedGatewaySessionId, restSessionId, resumeSession, settleRecoveredStreamError, taskId]);
 
   const retryResume = useCallback(async () => {
     try {
@@ -612,6 +777,8 @@ export function DetailRoute() {
     [appendNotice, assistantReplyTextFor, reloadStoredMessages, runtimeIsBusy, taskId],
   );
 
+  // 重新生成：以该回答前面那条用户提问「原样重发」，不截断、不删旧回答。
+  // 旧回答会被登记成同一提问的一个旧版本，行上的 ‹ N/M › 可以切回去看。
   const handleRetryMessage = useCallback(
     (userMessage: ChatMessage) => {
       if (!taskId || runtimeIsBusy) return;
@@ -620,42 +787,40 @@ export function DetailRoute() {
       if (!text.trim()) {
         appendNotice({
           sessionId: taskId,
-          text: "这条提问只有附件、没有文字，暂不支持重试。",
+          text: "这条提问只有附件、没有文字，暂不支持重新生成。",
           level: "warning",
         });
         return;
       }
-      const anchorText = assistantReplyTextFor(userMessage);
+      const storeSessionId = runtimeSessionId ?? taskId;
+      const list = chatMessagesRef.current;
+      const userIndex = list.findIndex((message) => message.id === userMessage.id);
+      let previousAssistantId: string | undefined;
+      if (userIndex >= 0) {
+        for (let cursor = userIndex + 1; cursor < list.length; cursor += 1) {
+          const candidate = list[cursor];
+          if (candidate.role === "user") break;
+          if (candidate.role === "assistant") previousAssistantId = candidate.id;
+        }
+      }
+      beginRevisionRetry({
+        sessionId: storeSessionId,
+        userMessageId: userMessage.id,
+        previousAssistantId,
+      });
       correctionResolvingRef.current = userMessage.id;
       setCorrectionResolvingId(userMessage.id);
       void (async () => {
         try {
-          const { rowId, reloaded } = await resolveCorrectionRowId({
-            messageId: userMessage.id,
-            text,
-            anchorText,
-            reload: reloadStoredMessages,
+          const sessionId = await ensureGatewaySession();
+          await sendPrompt(sessionId, text);
+          finalizeRevisionRetry({ sessionId: storeSessionId, userMessageId: userMessage.id });
+        } catch (error) {
+          appendNotice({
+            sessionId: taskId,
+            text: `重新生成失败：${classifyGatewayError(error).message}`,
+            level: "error",
           });
-          const outcome = await submitCorrection(rowId, text);
-          if (outcome === "sent" || outcome === "cancelled") return;
-          try {
-            const sessionId = await ensureGatewaySession();
-            appendNotice({
-              sessionId,
-              text:
-                rowId === null && reloaded
-                  ? "已重载会话记录仍未找到这条提问的内核定位，本次作为新消息发送，后续消息不会删除。"
-                  : "当前内核不支持消息回溯，本次作为新消息发送，后续消息不会删除。",
-              level: "warning",
-            });
-            await sendPrompt(sessionId, text);
-          } catch (error) {
-            appendNotice({
-              sessionId: taskId,
-              text: `重试失败：${classifyGatewayError(error).message}`,
-              level: "error",
-            });
-          }
         } finally {
           correctionResolvingRef.current = null;
           setCorrectionResolvingId(null);
@@ -664,12 +829,12 @@ export function DetailRoute() {
     },
     [
       appendNotice,
-      assistantReplyTextFor,
+      beginRevisionRetry,
       ensureGatewaySession,
-      reloadStoredMessages,
+      finalizeRevisionRetry,
       runtimeIsBusy,
+      runtimeSessionId,
       sendPrompt,
-      submitCorrection,
       taskId,
     ],
   );
@@ -768,6 +933,13 @@ export function DetailRoute() {
     [messagesData, turnStats],
   );
 
+  // Stop 撤回只删得掉本地实时行，库里那条提问（和内核随后补的英文占位回答）还在。
+  // 撤回记账在这里生效：被撤回那一轮连同它后面内核补的空回答一起从时间线里消失。
+  const visibleStoredMessages = useMemo(
+    () => dropWithdrawnTurnMessages(storedMessages, runtime.withdrawnTurns),
+    [storedMessages, runtime.withdrawnTurns],
+  );
+
   useEffect(() => {
     const sessionId = runtimeSessionId ?? taskId;
     if (!sessionId || !runtimeIsBusy || storedMessages.length === 0) return;
@@ -787,8 +959,12 @@ export function DetailRoute() {
   const canonicalMessagesRef = useRef<HermesUIMessage[] | undefined>(undefined);
   const chatMessages = useMemo(() => {
     const canonical = mergeHermesUIMessages(
-      storedMessages,
+      visibleStoredMessages,
       isLiveSession ? runtime.messages : [],
+      {
+        turnActive: runtime.streamStatus === "streaming" || runtime.streamStatus === "connecting",
+        turnStartedAt: runtime.turnStartedAt,
+      },
     );
     // 流式 delta 里绝大多数帧合并结果逐条同引用（只有正在变的那条是新对象），
     // 这种帧直接复用上次的 ChatMessage 数组。
@@ -812,8 +988,26 @@ export function DetailRoute() {
   }, [
     isLiveSession,
     runtime.messages,
-    storedMessages,
+    runtime.streamStatus,
+    runtime.turnStartedAt,
+    visibleStoredMessages,
   ]);
+
+  // 「重新生成」的旧版本 + 回放的用户行只在数据里留着，渲染时让位给当前版本。
+  const revisionHiddenIds = useMemo(
+    () => revisionHiddenMessageIds(runtime),
+    [runtime.revisionFamilies, runtime.replayUserMessageIds],
+  );
+  const visibleChatMessages = useMemo(
+    () => (revisionHiddenIds.size === 0
+      ? chatMessages
+      : chatMessages.filter((message) => !revisionHiddenIds.has(message.id))),
+    [chatMessages, revisionHiddenIds],
+  );
+  const revisionFamily = useMemo(() => latestRevisionFamily(runtime), [runtime.revisionFamilies]);
+  const revisionIndex = revisionFamily
+    ? revisionFamily.assistantIds.indexOf(revisionFamily.activeAssistantId)
+    : -1;
 
   useEffect(() => {
     chatMessagesRef.current = chatMessages;
@@ -939,6 +1133,20 @@ export function DetailRoute() {
     taskId,
   ]);
 
+  // 运行中纠偏入口：composer 的「立即引导」/ Ctrl+Enter 走这里。内核不认
+  // `session.steer`（4010 / unknown method）就抛出去，composer 退化为排队，
+  // 输入的内容不会丢。
+  const onSteer = useCallback(async (text: string) => {
+    if (isMethodKnownUnsupported("session.steer")) {
+      throw new GatewayRpcError("agent does not support steer", {
+        method: "session.steer",
+        code: 4010,
+      });
+    }
+    const gatewaySessionId = await ensureGatewaySession();
+    return steerRunningSession(getGatewayClient(), gatewaySessionId, text);
+  }, [ensureGatewaySession]);
+
   // ---- Send queue (drain on settle, send-now / edit / delete) --------------
   const queuedPrompts = useQueuedPrompts(taskId);
   const [composerPrefill, setComposerPrefill] = useState<ComposerPrefillState>({ text: "", nonce: 0 });
@@ -960,6 +1168,9 @@ export function DetailRoute() {
       });
       removeQueuedPrompt(taskId, entry.id);
     } catch (error) {
+      // 只写日志等于静默失败：条目还在队列里，但界面上没有任何痕迹。
+      // 把原因写回 store，队列面板会就地显示错误行 + 重试按钮。
+      markQueuedPromptFailed(taskId, entry.id, error instanceof Error ? error.message : String(error));
       console.error("Failed to drain queued prompt:", error);
     } finally {
       drainingRef.current = false;
@@ -1057,12 +1268,30 @@ export function DetailRoute() {
 
   const onStop = useCallback(async () => {
     const sessionId = runtimeSessionId ?? taskId;
-    if (!sessionId || !runtimeIsBusy) return;
+    if (!sessionId) return;
+    // 两种结局先算清楚：只有「本轮还没出过任何可见内容」时才会是 restore。
+    // 内核可能已经把这条空回合跑完（回一句英文「请求未被执行」），此时 runtimeIsBusy
+    // 已经是 false —— 但用户按 Esc 的意图照样是「这条不算，还我草稿」；settle 结局
+    // （已经有内容了）必须真的还在跑才收尾，不然 Esc 会误伤已经答完的那一轮。
+    const outcome = resolveStopOutcome(runtime);
+    if (!stopShouldApply({ runtimeIsBusy, outcome })) return;
     // A deliberate Stop suppresses exactly one auto-drain so the queue doesn't
     // immediately re-fire the turn the user just halted.
     userInterruptedRef.current = true;
-    await interruptSession(sessionId);
-  }, [interruptSession, runtimeIsBusy, runtimeSessionId, taskId]);
+    // 本地当帧就按「两种结局」收尾：一条内容都没出就把提问撤回、内容回填输入框；
+    // 已经出了东西就定格成中断态。不再等迟到的 message.complete 才算收尾。
+    stopTurn({ sessionId, outcome });
+    if (outcome.kind === "restore" && outcome.draftText.trim()) {
+      setComposerPrefill({ sessionId: taskId, text: outcome.draftText, nonce: Date.now() });
+    }
+    // 回合已经自己收尾了就没有可中断的东西；还在跑才真的去掐内核。
+    if (!runtimeIsBusy) return;
+    try {
+      await interruptSession(sessionId);
+    } catch {
+      // 内核没应答也不让界面挂住：本地已经收尾完了。
+    }
+  }, [interruptSession, runtime, runtimeIsBusy, runtimeSessionId, stopTurn, taskId]);
 
   const title = sessionData || sessionSummary
     ? sessionDisplayTitle({
@@ -1119,7 +1348,6 @@ export function DetailRoute() {
     selectedContextMax,
     estimatedUsed: estimatedContextUsed,
   });
-  const autoTts = voiceAutoTtsFromConfig(config);
   const hasActiveComposerPrefill = composerPrefill.sessionId === taskId && composerPrefill.nonce > 0;
   const composerInitial = hasActiveComposerPrefill ? composerPrefill.text : storedComposerDraft;
   const composerInitialNonce = hasActiveComposerPrefill ? composerPrefill.nonce : 0;
@@ -1204,6 +1432,9 @@ export function DetailRoute() {
       <div className={s.workArea}>
         <div className={s.chatColumn}>
           <SubagentOriginBar currentSessionId={taskId} />
+          {offlineNotice ? (
+            <GatewayOfflineBanner notice={offlineNotice} onRetry={retryGatewayConnection} />
+          ) : null}
           {resumeFailure ? (
             <div
               role="alert"
@@ -1248,22 +1479,50 @@ export function DetailRoute() {
               </button>
             </div>
           ) : null}
-          {/* key={taskId}：切会话强制重挂载时间线。layout effect 在首帧绘制前就
-              把滚动定位到底部，避免新会话内容先以上一个会话的滚动位置绘制、再
-              在 650ms 的滚动校正窗口里反复跳动（用户感知为"闪烁两下"）。 */}
-          <InlinePromptFlow messages={chatMessages} sessionIds={[runtimeSessionId, taskId]}>
+          {/* key={taskId}：切会话强制重挂载时间线。layout effect 在首帧绘制前先
+              恢复该会话记下的阅读位（没有记录才贴底），所以不会先以上一个会话的
+              滚动位置画一帧再跳。旧版那个 650ms 强制锚底窗口已经删掉了 —— 它会
+              在用户刚上滑时把人拽回底部。 */}
+          <InlinePromptFlow messages={visibleChatMessages} sessionIds={[runtimeSessionId, taskId]}>
             {(trailingPrompts) => (
               <MessageTimeline
                 key={taskId}
-                messages={chatMessages}
+                sessionId={taskId}
+                messages={visibleChatMessages}
                 loading={isLoading && runtime.messages.length === 0}
                 statusMessage={timelineStatus}
                 turnStartedAt={runtimeIsBusy ? runtime.turnStartedAt : undefined}
                 sessionUsage={runtimeIsBusy ? sessionUsage : undefined}
                 progressModel={runtimeIsBusy ? model || undefined : undefined}
-                autoTts={autoTts}
                 subagentSessionIds={subagentSessionIds}
-                trailing={trailingPrompts}
+                trailing={
+                  <>
+                    {trailingPrompts}
+                    {runtime.streamErrorCard ? (
+                      <StreamErrorCardView
+                        card={runtime.streamErrorCard}
+                        onDismiss={() => dismissStreamErrorCard(runtimeSessionId ?? taskId ?? "")}
+                        onOpenSettings={(path) => navigate(path)}
+                      />
+                    ) : null}
+                    {revisionFamily && revisionIndex >= 0 ? (
+                      <MessageRevisionPager
+                        index={revisionIndex}
+                        count={revisionFamily.assistantIds.length}
+                        disabled={runtimeIsBusy}
+                        onSelect={(next) => {
+                          const assistantMessageId = revisionFamily.assistantIds[next];
+                          if (!assistantMessageId) return;
+                          activateRevision({
+                            sessionId: runtimeSessionId ?? taskId ?? "",
+                            userMessageId: revisionFamily.userMessageId,
+                            assistantMessageId,
+                          });
+                        }}
+                      />
+                    ) : null}
+                  </>
+                }
                 hasEarlier={hasEarlierMessages}
                 isLoadingEarlier={isLoadingEarlierMessages}
                 onLoadEarlier={loadEarlierMessages}
@@ -1275,7 +1534,7 @@ export function DetailRoute() {
                 correctionLockedReason="正在生成回复，等这轮结束再纠正"
                 correctionPendingMessageId={correctionResolvingId}
                 emptyGuide={
-                  chatMessages.length === 0 && !runtimeIsBusy ? (
+                  visibleChatMessages.length === 0 && !runtimeIsBusy ? (
                     <EmptyChatGuide onPick={handleGuidePick} />
                   ) : undefined
                 }
@@ -1297,17 +1556,22 @@ export function DetailRoute() {
             />
             <GooseComposer
               key={`${taskId}:${composerDraftKey ?? "draft"}`}
+              draftKey={taskId}
               flushBottom
               initialWorkspacePath={sessionWorkspace}
               initial={composerInitial}
               initialNonce={composerInitialNonce}
               onDraftChange={onComposerDraftChange}
               onSend={onSend}
+              onSteer={onSteer}
               queuedCount={queuedPrompts.length}
               loadingPlaceholder={composerLoadingPlaceholder}
               showMeta={false}
               loading={runtimeIsBusy}
               onStop={onStop}
+              sendBlockedReason={
+                offlineNotice ? "网关未连接，等重连成功再发" : undefined
+              }
               modelPicker={{
                 selected: contextSelection,
                 label: model || modelInfo?.model,

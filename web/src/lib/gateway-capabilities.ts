@@ -84,6 +84,7 @@ export interface GatewayFeatureSpec {
  */
 export const GATEWAY_FEATURES = {
   "session.detail": { label: "会话详情", methods: ["session.resume"] },
+  "composer.steer": { label: "运行中引导", methods: ["session.steer"], degradable: true },
   "mcp.reload": { label: "MCP 即时重载", methods: ["reload.mcp"] },
   "prompt.clarify": { label: "澄清提问作答", methods: ["clarify.respond"] },
   "models.catalog": {

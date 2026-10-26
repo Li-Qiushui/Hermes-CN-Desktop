@@ -1,38 +1,47 @@
-import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { ReactNode, WheelEvent } from "react";
+import { createContext, Fragment, lazy, memo, Suspense, useCallback, useContext, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { useAtomValue } from "jotai";
-import { AlertTriangle, ArrowDown, Bot, ChevronRight, FileDiff, Info, Pencil, RotateCcw, Trash2, Volume2, VolumeX } from "lucide-react";
+import { AlertTriangle, ArrowDown, Bot, ChevronRight, FileDiff, Info, Pencil, RotateCcw, Trash2 } from "lucide-react";
 import { LoadingIndicator } from "@hermes/shared-ui";
-import { assistantAvatarEffectiveAtom, assistantDisplayNameAtom, showReasoningAtom } from "@/stores/ui";
+import { showReasoningAtom } from "@/stores/ui";
 import type { AssistantMessageStats, ChatMessage, ChatToolItem } from "./chat-types";
-import { AssistantProfileCard } from "./assistant-profile-card";
 import { CliDelegationCard, entryFromChatTool } from "./cli-delegation-card";
 import { DelegateRunCard } from "./delegate-run-card";
 import { isDelegateToolName } from "./delegate-run-model";
 import { useInlinePromptAnchor } from "./inline-prompt-flow";
 import { cliDelegationsByToolIdAtom } from "@/stores/cli-delegations";
+import { MediaBlock } from "./media-block";
 import { MessageImage } from "./message-image";
 import { MessageSkeleton } from "./message-skeleton";
 import { MessageText } from "./message-text";
 import { SkillInvocationMessage } from "./skill-invocation-message";
 import { CopyButton } from "@/components/ui/copy-button";
 import { ToolResultCard } from "./tool-result-card";
+import { hasCopyableTools, messageRoundMarkdown, toolsMarkdown } from "./message-copy";
 import {
+  EMPTY_FIND_RESULT,
   FindBar,
+  applyFindHighlight,
+  buildFindIndex,
   clearFindHighlights,
-  collectFindMatches,
-  highlightFindMatches,
-  type FindMatch,
+  searchFindIndex,
 } from "./find-in-conversation";
 import { ErrorRecoveryActions, resolveErrorDisplayText } from "./error-recovery-actions";
 import { buildToolResultView, isFileChangeToolInput, isKnownFileWriteTool, type FileChangeView } from "@/lib/tool-result-view";
 import s from "./message-timeline.module.css";
-import { groupElapsedMs } from "./group-tools";
+import { groupElapsedMs, groupStatus } from "./group-tools";
+import {
+  disclosureKey,
+  readDisclosureChoice,
+  rememberDisclosureChoice,
+} from "./activity-disclosure";
 import { cachedGroupConsecutiveTools, cachedToolActivitySummary } from "./tool-cache";
+import { resolveActivityAutoOpen, toolDisplayName } from "./tool-activity";
 import { truncateMiddle } from "@/lib/truncate-middle";
-import { sanitizeTextForSpeech, speakText, voiceErrorMessage } from "@/lib/voice";
 import { isSkillInvocationText } from "@/lib/skill-invocation";
 import { isKernelInjectedNotice, kernelNotice } from "@/lib/kernel-notice";
+import { readUiValue } from "@/lib/ui-store";
+import { STEER_NOTE, stripSteerWrapper } from "@/lib/steer-message";
 import {
   formatDurationMs,
   formatElapsedTimer,
@@ -42,22 +51,43 @@ import {
 import type { SessionUsageResult } from "@hermes/protocol";
 
 const useIsomorphicLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
-const BOTTOM_FOLLOW_THRESHOLD_PX = 120;
-const BOTTOM_REATTACH_THRESHOLD_PX = 8;
+/** 距底小于此值算「近底」：向下滚动进入这条带就重新贴底。 */
+export const TRANSCRIPT_REPIN_THRESHOLD_PX = 48;
+/** 非手势滚动的次像素容差；手势位移容差为 0（滚 1px 也算）。 */
+export const TRANSCRIPT_SCROLL_ROUNDING_TOLERANCE_PX = 1;
+/** 手势窗口：滚动事件落在这个窗口内才算用户操作，窗口外一律按程序/布局噪声处理。 */
+export const TRANSCRIPT_SCROLL_GESTURE_WINDOW_MS = 200;
+/** 切回会话后阅读位对齐窗口：期间内容高度变化反复重对齐。 */
+export const TRANSCRIPT_READING_ALIGNMENT_WINDOW_MS = 1500;
 const BOTTOM_FOLLOW_EPSILON_PX = 1;
 const VISIBLE_MARGIN_PX = 12;
 const LONG_SESSION_RENDER_THRESHOLD = 80;
 const LONG_SESSION_INITIAL_WINDOW = 60;
 const LONG_SESSION_EARLIER_BATCH = 40;
+const EARLIER_AUTO_LOAD_TOP_PX = 240;
+
+interface ToolRevealTarget {
+  toolId: string;
+  key: string;
+}
+
+const ToolRevealContext = createContext<ToolRevealTarget | null>(null);
+
+export function toolRevealApplies(target: ToolRevealTarget | null, toolId: string | undefined): boolean {
+  return Boolean(target && toolId && target.toolId === toolId);
+}
+
+export type { ToolRevealTarget };
 
 interface MessageTimelineProps {
   messages: ChatMessage[];
+  /** 会话 id：阅读位书签按会话记忆。不传则退回到「首条可见消息 id」。 */
+  sessionId?: string;
   loading?: boolean;
   statusMessage?: string;
   turnStartedAt?: number;
   sessionUsage?: SessionUsageResult | null;
   progressModel?: string;
-  autoTts?: boolean;
   /** 解析 subagent store 的候选会话 id——对话流内 delegate 运行卡要用。 */
   subagentSessionIds?: readonly (string | undefined)[];
   /** 对话流末尾的插槽（审批堆叠卡），排在消息之后、状态提示之后。 */
@@ -95,36 +125,6 @@ interface RenderWindowState {
   start: number;
 }
 
-type SpeechPlaybackStatus = "idle" | "preparing" | "speaking";
-
-interface SpeechPlaybackState {
-  messageId: string | null;
-  status: SpeechPlaybackStatus;
-}
-
-interface SpeechPlaybackError {
-  message: string;
-  messageId: string;
-}
-
-export function resolveBottomFollowState(
-  bottomDistance: number,
-  userDetachedFromBottom: boolean,
-): { nearBottom: boolean; userDetachedFromBottom: boolean } {
-  const distance = Math.max(0, bottomDistance);
-  if (userDetachedFromBottom) {
-    const reattached = distance <= BOTTOM_REATTACH_THRESHOLD_PX;
-    return {
-      nearBottom: reattached,
-      userDetachedFromBottom: !reattached,
-    };
-  }
-  return {
-    nearBottom: distance < BOTTOM_FOLLOW_THRESHOLD_PX,
-    userDetachedFromBottom: false,
-  };
-}
-
 function distanceFromBottom(
   scrollTop: number,
   scrollHeight: number,
@@ -133,15 +133,121 @@ function distanceFromBottom(
   return Math.max(0, scrollHeight - scrollTop - clientHeight);
 }
 
-export function shouldAnchorToBottom(
-  userDetachedFromBottom: boolean,
-  nearBottom: boolean,
-  autoAnchor: boolean,
-  bottomDistance: number,
-): boolean {
-  if (userDetachedFromBottom) return false;
-  if (!nearBottom && !autoAnchor) return false;
+export interface TranscriptScrollSample {
+  scrollTop: number;
+  lastScrollTop: number;
+  scrollHeight: number;
+  clientHeight: number;
+  wasPinned: boolean;
+  /** 这次滚动是否发生在手势窗口（TRANSCRIPT_SCROLL_GESTURE_WINDOW_MS）内。 */
+  gesturing: boolean;
+}
+
+export interface TranscriptScrollDecision {
+  pinned: boolean;
+  releasedFollow: boolean;
+  repinned: boolean;
+}
+
+/**
+ * 贴底跟随只有「真实手势」能解除：窗口外的滚动一律按程序/布局噪声处理，
+ * 跟随状态原样保持（pinned 的继续贴底，未 pinned 的保持未 pinned）。
+ */
+export function reduceTranscriptScroll(sample: TranscriptScrollSample): TranscriptScrollDecision {
+  if (!sample.gesturing) {
+    return { pinned: sample.wasPinned, releasedFollow: false, repinned: false };
+  }
+  const distance = distanceFromBottom(sample.scrollTop, sample.scrollHeight, sample.clientHeight);
+  const movedUp = sample.scrollTop < sample.lastScrollTop;
+  const movedDown = sample.scrollTop > sample.lastScrollTop;
+  if (movedUp && distance > 0) {
+    return { pinned: false, releasedFollow: true, repinned: false };
+  }
+  const pinned = sample.wasPinned || (movedDown && distance < TRANSCRIPT_REPIN_THRESHOLD_PX);
+  return { pinned, releasedFollow: false, repinned: pinned && !sample.wasPinned };
+}
+
+export function shouldAnchorToBottom(pinned: boolean, bottomDistance: number): boolean {
+  if (!pinned) return false;
   return bottomDistance > BOTTOM_FOLLOW_EPSILON_PX;
+}
+
+const SCROLL_GESTURE_KEYS = new Set([
+  "ArrowUp",
+  "ArrowDown",
+  "PageUp",
+  "PageDown",
+  "Home",
+  "End",
+  " ",
+  "Spacebar",
+]);
+
+export function isScrollGestureKeystroke(key: string): boolean {
+  return SCROLL_GESTURE_KEYS.has(key);
+}
+
+const INTERACTIVE_GESTURE_TAGS = new Set(["BUTTON", "A", "INPUT", "TEXTAREA", "SELECT", "LABEL"]);
+
+export function isInteractiveGestureTarget(
+  target: { tagName?: string; isContentEditable?: boolean; closest?: (selector: string) => unknown } | null,
+): boolean {
+  if (!target) return false;
+  if (target.isContentEditable === true) return true;
+  const tag = target.tagName?.toUpperCase();
+  if (tag && INTERACTIVE_GESTURE_TAGS.has(tag)) return true;
+  if (typeof target.closest === "function") {
+    return target.closest("button, a, input, textarea, select, [contenteditable='true']") !== null;
+  }
+  return false;
+}
+
+export interface TranscriptReadingBookmark {
+  /** 贴底时不记锚点行，回到该会话直接贴底。 */
+  pinned: boolean;
+  /** 视口顶部所在消息行（不是绝对 scrollTop，重排后仍能落回同一行）。 */
+  messageId?: string;
+  /** 行顶到视口顶的像素偏移。 */
+  offset: number;
+  scrollTop: number;
+}
+
+const readingBookmarks = new Map<string, TranscriptReadingBookmark>();
+
+export function rememberTranscriptReadingBookmark(
+  key: string | undefined,
+  bookmark: TranscriptReadingBookmark,
+): void {
+  if (!key) return;
+  readingBookmarks.set(key, bookmark);
+}
+
+export function readTranscriptReadingBookmark(
+  key: string | undefined,
+): TranscriptReadingBookmark | undefined {
+  if (!key) return undefined;
+  return readingBookmarks.get(key);
+}
+
+export function clearTranscriptReadingBookmarks(): void {
+  readingBookmarks.clear();
+}
+
+export function transcriptRevealOwnership(
+  bookmark: TranscriptReadingBookmark | undefined,
+): "reading-position" | "pinned" {
+  return bookmark && bookmark.pinned === false ? "reading-position" : "pinned";
+}
+
+const SHOW_REASONING_STORAGE_KEY = "hermes.show-reasoning";
+
+/** 用户没动过「显示推理过程」开关时按默认开处理：有思考就显示（PI 的默认行为）。 */
+export function resolveShowReasoning(setting: boolean, explicitlyStored: boolean): boolean {
+  return explicitlyStored ? setting : true;
+}
+
+function hasStoredShowReasoningPreference(): boolean {
+  return readUiValue<unknown>(SHOW_REASONING_STORAGE_KEY, undefined) !== undefined;
 }
 
 export function findLastAnchorIndexAtOrAbove(
@@ -163,31 +269,12 @@ export function findLastAnchorIndexAtOrAbove(
   return found;
 }
 
-export function shouldShowJumpToBottom(
-  userDetachedFromBottom: boolean,
-  bottomDistance: number,
-): boolean {
-  if (userDetachedFromBottom) return true;
-  return bottomDistance > BOTTOM_FOLLOW_THRESHOLD_PX;
+export function shouldShowJumpToBottom(pinned: boolean): boolean {
+  return !pinned;
 }
 
-export function countRowsBelowViewport(
-  count: number,
-  isBelow: (index: number) => boolean,
-): number {
-  let low = 0;
-  let high = count - 1;
-  let firstBelow = count;
-  while (low <= high) {
-    const middle = (low + high) >> 1;
-    if (isBelow(middle)) {
-      firstBelow = middle;
-      high = middle - 1;
-    } else {
-      low = middle + 1;
-    }
-  }
-  return count - firstBelow;
+export function countUnreadSinceBaseline(visibleCount: number, baseline: number): number {
+  return Math.max(0, visibleCount - baseline);
 }
 
 // 只有"用户主动上滑"才应脱离贴底跟随。程序触发的轮次跳转平滑滚动同样会让 scrollTop
@@ -198,7 +285,7 @@ export function shouldDetachOnScroll(
   programmaticScroll: boolean,
 ): boolean {
   if (programmaticScroll) return false;
-  return scrollTop < lastScrollTop - 1;
+  return scrollTop < lastScrollTop - TRANSCRIPT_SCROLL_ROUNDING_TOLERANCE_PX;
 }
 
 export function shouldForceBottomOnMessageChange(
@@ -358,21 +445,49 @@ function ProgressBlock({ turnStartedAt, sessionUsage, progressModel, progressTex
   );
 }
 
-function ReasoningBlock({ text, streaming }: { text: string; streaming?: boolean }) {
-  const [open, setOpen] = useState(false);
+const ReasoningMarkdown = lazy(() =>
+  import("./markdown-renderer").then((module) => ({ default: module.MarkdownText })),
+);
+
+function ReasoningBody({ text }: { text: string }) {
+  const deferred = useDeferredValue(text);
+  return (
+    <div className={s.reasoningBody}>
+      <Suspense fallback={null}>
+        <ReasoningMarkdown text={deferred} streaming={false} />
+      </Suspense>
+    </div>
+  );
+}
+
+function ReasoningBlock({
+  text,
+  streaming,
+  choiceKey,
+}: {
+  text: string;
+  streaming?: boolean;
+  choiceKey?: string;
+}) {
+  const [choice, setChoice] = useState<boolean | undefined>(() => readDisclosureChoice(choiceKey));
+  const open = choice ?? true;
 
   return (
     <div className={s.reasoning}>
       <button
         type="button"
         className={s.disclosure}
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => {
+          const next = !open;
+          rememberDisclosureChoice(choiceKey, next);
+          setChoice(next);
+        }}
         data-open={open}
       >
-        <span className={s.chevron}>›</span>
+        <ChevronRight className={s.chevron} size={14} strokeWidth={2} aria-hidden="true" />
         <span>{streaming ? "正在思考" : "推理过程"}</span>
       </button>
-      {open ? <pre className={s.reasoningBody}>{text}</pre> : null}
+      {open ? <ReasoningBody text={text} /> : null}
     </div>
   );
 }
@@ -399,10 +514,10 @@ function MoaReferenceBlock({
         onClick={() => setOpen((value) => !value)}
         data-open={open}
       >
-        <span className={s.chevron}>›</span>
+        <ChevronRight className={s.chevron} size={14} strokeWidth={2} aria-hidden="true" />
         <span>{`参考模型 ${label}${position}`}</span>
       </button>
-      {open ? <pre className={s.reasoningBody}>{text}</pre> : null}
+      {open ? <ReasoningBody text={text} /> : null}
     </div>
   );
 }
@@ -473,6 +588,13 @@ function toolListPropsEqual(prev: { tools: ChatToolItem[] }, next: { tools: Chat
   return sameToolList(prev.tools, next.tools);
 }
 
+function findMessageRow(root: HTMLElement | null, messageId: string): HTMLElement | null {
+  if (!root) return null;
+  return Array.from(root.querySelectorAll<HTMLElement>("[data-message-id]")).find(
+    (row) => row.dataset.messageId === messageId,
+  ) ?? null;
+}
+
 function initialRenderWindowStart(total: number): number {
   return total > LONG_SESSION_RENDER_THRESHOLD ? total - LONG_SESSION_INITIAL_WINDOW : 0;
 }
@@ -500,14 +622,15 @@ function resolveWindowStart(
 }
 
 function ToolCardBase({ tool }: { tool: ChatToolItem }) {
-  const [open, setOpen] = useState(tool.status === "error");
+  const reveal = useContext(ToolRevealContext);
+  const choiceKey = disclosureKey("tool", tool.tool_id);
+  const [choice, setChoice] = useState<boolean | undefined>(() => readDisclosureChoice(choiceKey));
+  const dismissedRevealRef = useRef<string | null>(null);
+  const forced = toolRevealApplies(reveal, tool.tool_id) && dismissedRevealRef.current !== reveal?.key;
+  const shown = (choice ?? false) || forced;
   const [elapsed, setElapsed] = useState(() =>
     tool.status === "running" ? Math.max(0, Date.now() - tool.startedAt) : 0,
   );
-
-  useEffect(() => {
-    if (tool.status === "error") setOpen(true);
-  }, [tool.status]);
 
   useEffect(() => {
     if (tool.status !== "running") return;
@@ -530,16 +653,22 @@ function ToolCardBase({ tool }: { tool: ChatToolItem }) {
   const hasBody = Boolean(body || tool.arguments || hasImages);
 
   return (
-    <div className={s.toolCard} data-status={tool.status}>
+    <div className={s.toolCard} data-status={tool.status} data-tool-id={tool.tool_id}>
       <button
         type="button"
         className={s.toolHeader}
-        onClick={() => setOpen((value) => !value)}
-        disabled={!hasBody}
-        data-open={open}
+        onClick={() => {
+          if (forced && shown) dismissedRevealRef.current = reveal?.key ?? null;
+          const next = !shown;
+          rememberDisclosureChoice(choiceKey, next);
+          setChoice(next);
+        }}
+        aria-expanded={hasBody ? shown : undefined}
+        data-open={shown}
+        data-expandable={hasBody ? "true" : "false"}
       >
         <span className={s.toolStatusDot} data-status={tool.status} />
-        <span className={s.toolName}>{tool.name}</span>
+        <span className={s.toolName}>{toolDisplayName(tool.name)}</span>
         {tool.context ? (
           <span className={s.toolContext} title={tool.context}>
             {truncateMiddle(tool.context)}
@@ -547,7 +676,10 @@ function ToolCardBase({ tool }: { tool: ChatToolItem }) {
         ) : null}
         {elapsedLabel ? <span className={s.toolElapsed}>{elapsedLabel}</span> : null}
       </button>
-      {open && hasBody ? (
+      {tool.status === "error" && !shown && tool.error ? (
+        <div className={s.toolActivityError}>{tool.error}</div>
+      ) : null}
+      {shown && hasBody ? (
         <div className={s.toolBody}>
           {hasImages ? (
             <div className={s.toolImages}>
@@ -569,29 +701,50 @@ function ToolCardBase({ tool }: { tool: ChatToolItem }) {
 const ToolCard = memo(ToolCardBase, toolCardPropsEqual);
 
 function ToolGroupCardBase({ tools }: { tools: ChatToolItem[] }) {
-  const [open, setOpen] = useState(false);
+  const reveal = useContext(ToolRevealContext);
   const head = tools[0];
+  const status = groupStatus(tools);
+  const choiceKey = disclosureKey("group", head?.tool_id);
+  const [choice, setChoice] = useState<boolean | undefined>(() => readDisclosureChoice(choiceKey));
+  const forced = tools.some((tool) => toolRevealApplies(reveal, tool.tool_id));
+  const shown = (choice ?? false) || forced;
   const elapsedLabel = formatToolElapsed(groupElapsedMs(tools));
 
   return (
-    <div className={s.toolCard} data-status="done">
-      <button
-        type="button"
-        className={s.toolHeader}
-        onClick={() => setOpen((value) => !value)}
-        data-open={open}
-      >
-        <span className={s.toolStatusDot} data-status="done" />
-        <span className={s.toolName}>{head.name}</span>
-        {head.context ? (
-          <span className={s.toolContext} title={head.context}>
-            {truncateMiddle(head.context)}
-          </span>
-        ) : null}
-        <span className={s.toolBadge}>×{tools.length}</span>
-        {elapsedLabel ? <span className={s.toolElapsed}>{elapsedLabel}</span> : null}
-      </button>
-      {open ? (
+    <div className={s.toolCard} data-status={status}>
+      <div className={s.toolHeadRow}>
+        <button
+          type="button"
+          className={s.toolHeader}
+          onClick={() => {
+            const next = !shown;
+            rememberDisclosureChoice(choiceKey, next);
+            setChoice(next);
+          }}
+          aria-expanded={shown}
+          data-open={shown}
+        >
+          <ChevronRight className={s.toolChevron} size={14} strokeWidth={2} aria-hidden="true" />
+          <span className={s.toolStatusDot} data-status={status} />
+          <span className={s.toolName}>{toolDisplayName(head.name)}</span>
+          {head.context ? (
+            <span className={s.toolContext} title={head.context}>
+              {truncateMiddle(head.context)}
+            </span>
+          ) : null}
+          <span className={s.toolBadge}>×{tools.length}</span>
+          {elapsedLabel ? <span className={s.toolElapsed}>{elapsedLabel}</span> : null}
+        </button>
+        <CopyButton
+          className={s.toolCopy}
+          text={() => toolsMarkdown(tools)}
+          copiedLabel="已复制"
+          showStatusIcon={false}
+        >
+          复制组
+        </CopyButton>
+      </div>
+      {shown ? (
         <div className={s.toolGroupBody}>
           {tools.map((tool, index) => (
             <ToolCard key={`${tool.tool_id}-${index}`} tool={tool} />
@@ -605,14 +758,14 @@ function ToolGroupCardBase({ tools }: { tools: ChatToolItem[] }) {
 const ToolGroupCard = memo(ToolGroupCardBase, toolListPropsEqual);
 
 function ToolActivityBase({ tools }: { tools: ChatToolItem[] }) {
-  const hasError = tools.some((tool) => tool.status === "error");
+  const reveal = useContext(ToolRevealContext);
   const hasRunning = tools.some((tool) => tool.status === "running");
-  const [open, setOpen] = useState(hasError);
+  const forced = tools.some((tool) => toolRevealApplies(reveal, tool.tool_id));
+  const choiceKey = disclosureKey("activity", tools[0]?.tool_id);
+  const [choice, setChoice] = useState<boolean | undefined>(() => readDisclosureChoice(choiceKey));
   const [now, setNow] = useState(() => Date.now());
-
-  useEffect(() => {
-    if (hasError) setOpen(true);
-  }, [hasError]);
+  const automatic = resolveActivityAutoOpen({ live: hasRunning, itemCount: tools.length });
+  const shown = (choice ?? automatic) || forced;
 
   useEffect(() => {
     if (!hasRunning) return;
@@ -627,13 +780,17 @@ function ToolActivityBase({ tools }: { tools: ChatToolItem[] }) {
   const elapsedLabel = formatToolElapsed(summary.elapsedMs);
 
   return (
-    <div className={s.toolActivity} data-status={summary.status}>
+    <div className={s.toolActivity} data-status={summary.status} data-interrupted={summary.interrupted ? "true" : undefined}>
       <button
         type="button"
         className={s.toolActivitySummary}
-        onClick={() => setOpen((value) => !value)}
-        aria-expanded={open}
-        data-open={open}
+        onClick={() => {
+          const next = !shown;
+          rememberDisclosureChoice(choiceKey, next);
+          setChoice(next);
+        }}
+        aria-expanded={shown}
+        data-open={shown}
       >
         <ChevronRight
           className={s.toolActivityChevron}
@@ -642,14 +799,23 @@ function ToolActivityBase({ tools }: { tools: ChatToolItem[] }) {
           aria-hidden="true"
         />
         <span className={s.toolStatusDot} data-status={summary.status} />
-        <span className={s.toolActivityLabel}>{summary.label}</span>
+        <span
+          className={s.toolActivityLabel}
+          data-interrupted={summary.interrupted ? "true" : undefined}
+        >
+          {summary.label}
+        </span>
         {summary.meta ? <span className={s.toolActivityMeta}>{summary.meta}</span> : null}
-        {elapsedLabel ? <span className={s.toolElapsed}>{elapsedLabel}</span> : null}
+        {elapsedLabel ? (
+          <span className={s.toolElapsed}>
+            {summary.interrupted ? `· ${elapsedLabel}` : elapsedLabel}
+          </span>
+        ) : null}
       </button>
-      {summary.error && !open ? (
+      {summary.error && !shown ? (
         <div className={s.toolActivityError}>{summary.error}</div>
       ) : null}
-      {open ? (
+      {shown ? (
         <div className={s.toolActivityDetails}>
           {cachedGroupConsecutiveTools(tools).map((entry, index) =>
             entry.kind === "group" ? (
@@ -848,7 +1014,8 @@ function messageBlocksPropsEqual(prev: MessageBlocksProps, next: MessageBlocksPr
 }
 
 function MessageBlocksBase({ message, streaming, turnStartedAt, sessionUsage, progressModel, subagentSessionIds }: MessageBlocksProps) {
-  const showReasoning = useAtomValue(showReasoningAtom);
+  const showReasoningSetting = useAtomValue(showReasoningAtom);
+  const showReasoning = resolveShowReasoning(showReasoningSetting, hasStoredShowReasoningPreference());
   const cliDelegations = useAtomValue(cliDelegationsByToolIdAtom);
   const inlineAnchor = useInlinePromptAnchor();
   const blocks = message.blocks ?? [];
@@ -923,6 +1090,15 @@ function MessageBlocksBase({ message, streaming, turnStartedAt, sessionUsage, pr
       return;
     }
 
+    if (block.type === "media") {
+      items.push(
+        <div key={`media-${index}`} className={s.mediaBlock}>
+          <MediaBlock items={block.items} />
+        </div>,
+      );
+      return;
+    }
+
     if (block.type === "moa_reference") {
       // MoA 参考模型输出块——不受 showReasoning 门控：它是委员会成员的
       // 实际回答（MoA 的核心卖点），不是模型的内心独白；默认折叠不扰。
@@ -939,12 +1115,14 @@ function MessageBlocksBase({ message, streaming, turnStartedAt, sessionUsage, pr
     }
 
     if (!showReasoning) return;
+    if (!block.text.trim()) return;
 
     items.push(
       <ReasoningBlock
         key={`reasoning-${index}`}
         text={block.text}
         streaming={streaming && index === blocks.length - 1}
+        choiceKey={disclosureKey("thinking", message.id, index)}
       />,
     );
   });
@@ -978,19 +1156,7 @@ export function copyableMessageText(message: ChatMessage): string | undefined {
       .trim();
     if (text) return text;
   }
-  return message.text?.trim() || undefined;
-}
-
-function getReadableText(message: ChatMessage): string | undefined {
-  if (message.blocks?.length) {
-    const text = message.blocks
-      .filter((block) => block.type === "text")
-      .map((block) => block.text)
-      .join("\n\n")
-      .trim();
-    return text || undefined;
-  }
-  return message.text?.trim() || undefined;
+  return stripSteerWrapper(message.text).text.trim() || undefined;
 }
 
 const FINISH_REASON_LABEL: Record<string, string> = {
@@ -1147,7 +1313,8 @@ function precedingUserAsk(messages: readonly ChatMessage[], index: number): Chat
     const candidate = messages[cursor];
     if (!candidate || candidate.role !== "user") continue;
     if (isSkillInvocationText(candidate.text) || isKernelInjectedNotice(candidate.text)) continue;
-    return candidate;
+    const steer = stripSteerWrapper(candidate.text);
+    return steer.steer ? { ...candidate, text: steer.text } : candidate;
   }
   return null;
 }
@@ -1158,10 +1325,6 @@ interface MessageBubbleProps {
   sessionUsage?: SessionUsageResult | null;
   progressModel?: string;
   subagentSessionIds?: readonly (string | undefined)[];
-  speechStatus: SpeechPlaybackStatus;
-  speechError: string | null;
-  onSpeak: (messageId: string, text: string) => void;
-  onStop: () => void;
   retrySource?: ChatMessage | null;
   onEditMessage?: (message: ChatMessage) => void;
   onRetryMessage?: (userMessage: ChatMessage) => void;
@@ -1179,10 +1342,6 @@ function messageBubblePropsEqual(prev: MessageBubbleProps, next: MessageBubblePr
     prev.sessionUsage === next.sessionUsage &&
     prev.progressModel === next.progressModel &&
     prev.subagentSessionIds === next.subagentSessionIds &&
-    prev.speechStatus === next.speechStatus &&
-    prev.speechError === next.speechError &&
-    prev.onSpeak === next.onSpeak &&
-    prev.onStop === next.onStop &&
     prev.retrySource === next.retrySource &&
     prev.onEditMessage === next.onEditMessage &&
     prev.onRetryMessage === next.onRetryMessage &&
@@ -1200,10 +1359,6 @@ function MessageBubbleBase({
   sessionUsage,
   progressModel,
   subagentSessionIds,
-  speechStatus,
-  speechError,
-  onSpeak,
-  onStop,
   retrySource,
   onEditMessage,
   onRetryMessage,
@@ -1213,21 +1368,19 @@ function MessageBubbleBase({
   correctionPendingMessageId = null,
   onOpenSettings,
 }: MessageBubbleProps) {
-  const showReasoning = useAtomValue(showReasoningAtom);
-  const assistantDisplayName = useAtomValue(assistantDisplayNameAtom);
-  const assistantAvatarDataUrl = useAtomValue(assistantAvatarEffectiveAtom);
+  const showReasoningSetting = useAtomValue(showReasoningAtom);
+  const showReasoning = resolveShowReasoning(showReasoningSetting, hasStoredShowReasoningPreference());
   const isUser = message.role === "user";
   const isToolOnly = message.role === "tool";
   const isSystem = message.role === "system";
   const streaming = message.status === "streaming";
   const copyable = copyableMessageText(message);
-  const readable = !isUser && !isSystem && !isToolOnly && !streaming && message.status !== "error"
-    ? getReadableText(message)
-    : undefined;
-  const speechBusy = speechStatus === "preparing" || speechStatus === "speaking";
+  const roundCopyable = hasCopyableTools(message);
   const hasBlocks = !isUser && Boolean(message.blocks?.length);
   const hasSkillInvocation = isSkillInvocationText(message.text);
   const kernel = kernelNotice(message.text);
+  const steer = isUser ? stripSteerWrapper(message.text) : null;
+  const displayMessage = steer?.steer ? { ...message, text: steer.text } : message;
   const messageStats = message.stats ?? sessionUsageFallbackStats(message, sessionUsage);
   const canEdit = isUser && !isSystem && !isToolOnly && !hasSkillInvocation && Boolean(onEditMessage);
   const canRetry =
@@ -1305,8 +1458,6 @@ function MessageBubbleBase({
     const tools = message.tools ?? [];
     return (
       <div className={s.messageRow} data-role="assistant">
-        {/* 与带头像的行保持左缘对齐的占位列。 */}
-        <div className={s.avatarCol} aria-hidden />
         <div className={s.messageContent}>
           <MessageToolList
             tools={tools}
@@ -1357,31 +1508,8 @@ function MessageBubbleBase({
   }
 
   return (
-    <div className={s.messageRow} data-role={isUser ? "user" : "assistant"}>
-      {/* IM 式布局：Hermes 头像独立于气泡左侧一列（点击弹资料卡）；用户侧
-          不显示头像与昵称，气泡右贴。 */}
-      {!isUser ? (
-        <div className={s.avatarCol}>
-          <AssistantProfileCard
-            model={progressModel || sessionUsage?.model}
-            trigger={
-              <button type="button" className={s.avatarButton} title={`查看 ${assistantDisplayName} 资料`}>
-                <img
-                  className={s.rowAvatar}
-                  src={assistantAvatarDataUrl}
-                  alt={`${assistantDisplayName} 头像`}
-                />
-              </button>
-            }
-          />
-        </div>
-      ) : null}
+    <div className={s.messageRow} data-role={isUser ? "user" : "assistant"} data-steer={steer?.steer ? "true" : undefined}>
       <div className={s.messageContent}>
-        {!isUser ? (
-          <div className={s.assistantName}>
-            <span>{assistantDisplayName}</span>
-          </div>
-        ) : null}
         <div className={s.bubble} data-role={isUser ? "user" : "assistant"}>
           {hasBlocks ? (
             <MessageBlocks
@@ -1394,7 +1522,17 @@ function MessageBubbleBase({
             />
           ) : (
             <>
-              {message.text ? <MessageText text={message.text} streaming={streaming} /> : null}
+              {steer?.steer ? (
+                <div className={s.steerNote} data-steer-note="true">
+                  {STEER_NOTE}
+                </div>
+              ) : null}
+              {displayMessage.text ? <MessageText text={displayMessage.text} streaming={streaming} /> : null}
+              {message.media?.length ? (
+                <div className={s.mediaBlock}>
+                  <MediaBlock items={message.media} />
+                </div>
+              ) : null}
               {message.images?.length ? (
                 <div className={s.messageImages}>
                   {message.images.map((image, index) => (
@@ -1405,8 +1543,12 @@ function MessageBubbleBase({
                   ))}
                 </div>
               ) : null}
-              {showReasoning && message.reasoning ? (
-                <ReasoningBlock text={message.reasoning} streaming={streaming && !message.text} />
+              {showReasoning && message.reasoning?.trim() ? (
+                <ReasoningBlock
+                  text={message.reasoning}
+                  streaming={streaming && !message.text}
+                  choiceKey={disclosureKey("thinking", message.id)}
+                />
               ) : null}
               {message.tools?.length ? (
                 <MessageToolList
@@ -1429,36 +1571,21 @@ function MessageBubbleBase({
                 复制
               </CopyButton>
             ) : null}
-            {readable ? (
-              <button
-                type="button"
+            {roundCopyable ? (
+              <CopyButton
                 className={s.messageAction}
-                onClick={() => {
-                  if (speechBusy) {
-                    onStop();
-                  } else {
-                    onSpeak(message.id, readable);
-                  }
-                }}
-                data-speech-state={speechStatus}
-                aria-pressed={speechBusy}
-                title={speechBusy ? "停止朗读" : "朗读回复"}
+                text={() => messageRoundMarkdown(displayMessage)}
+                showStatusIcon={false}
+                title="复制这一轮的全部内容（含工具摘要）"
               >
-                {speechStatus === "preparing" ? (
-                  <LoadingIndicator size="xs" />
-                ) : speechStatus === "speaking" ? (
-                  <VolumeX size={14} strokeWidth={1.75} aria-hidden="true" />
-                ) : (
-                  <Volume2 size={14} strokeWidth={1.75} aria-hidden="true" />
-                )}
-                <span>{speechBusy ? "停止" : "朗读"}</span>
-              </button>
+                复制整轮
+              </CopyButton>
             ) : null}
             {canEdit ? (
               <button
                 type="button"
                 className={`${s.messageAction} ${s.messageCorrectAction}`}
-                onClick={() => onEditMessage?.(message)}
+                onClick={() => onEditMessage?.(displayMessage)}
                 disabled={correctionLocked || editResolving}
                 title={editResolving ? resolvingTitle : editTitle}
                 data-correction-pending={editResolving ? "true" : undefined}
@@ -1508,7 +1635,6 @@ function MessageBubbleBase({
               </button>
             ) : null}
           </span>
-          {speechError ? <span className={s.messageSpeechError}>{speechError}</span> : null}
           {messageStats ? <MessageStatsFooter stats={messageStats} /> : null}
         </div>
       </div>
@@ -1525,7 +1651,6 @@ export function MessageTimeline({
   turnStartedAt,
   sessionUsage,
   progressModel,
-  autoTts = false,
   subagentSessionIds,
   trailing,
   hasEarlier = false,
@@ -1540,15 +1665,19 @@ export function MessageTimeline({
   correctionPendingMessageId = null,
   emptyGuide,
   onOpenSettings,
+  sessionId,
 }: MessageTimelineProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
   const turnAnchorRefs = useRef<Map<string, HTMLDivElement>>(new Map());
-  const nearBottomRef = useRef(true);
-  const userDetachedFromBottomRef = useRef(false);
-  const autoAnchorRef = useRef(false);
-  const autoAnchorTimerRef = useRef<number | null>(null);
+  const pinnedRef = useRef(true);
+  const lastGestureAtRef = useRef(0);
   const lastScrollTopRef = useRef(0);
+  const alignTargetRef = useRef<{ messageId: string; offset: number } | null>(null);
+  const alignUntilRef = useRef(0);
+  const restorePendingRef = useRef(true);
+  const visibleCountRef = useRef(0);
+  const unreadBaselineRef = useRef(0);
   const turnUpdateFrameRef = useRef(0);
   const lastTurnUpdateScrollTopRef = useRef(-1);
   // 程序触发的轮次跳转（平滑滚动）守卫：跳转动画期间 onScroll 会被误判为用户上滑而
@@ -1561,21 +1690,11 @@ export function MessageTimeline({
   const jumpInFlightRef = useRef(false);
   const firstMessageIdRef = useRef<string | undefined>(undefined);
   const lastUserMessageIdRef = useRef<string | undefined>(undefined);
-  const speechAudioRef = useRef<HTMLAudioElement | null>(null);
-  const speechStopRef = useRef<(() => void) | null>(null);
-  const speechSequenceRef = useRef(0);
-  const autoTtsSeenRef = useRef<Set<string>>(new Set());
-  const autoTtsSessionKeyRef = useRef<string | undefined>(undefined);
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
-  const [jumpButton, setJumpButton] = useState<{ visible: boolean; count: number }>({
+  const [jumpButton, setJumpButton] = useState<{ visible: boolean; unread: number }>({
     visible: false,
-    count: 0,
+    unread: 0,
   });
-  const [speechState, setSpeechState] = useState<SpeechPlaybackState>({
-    messageId: null,
-    status: "idle",
-  });
-  const [speechError, setSpeechError] = useState<SpeechPlaybackError | null>(null);
   const visibleMessages = useMemo(
     () =>
       messages.filter(
@@ -1583,6 +1702,7 @@ export function MessageTimeline({
           message.text ||
           message.reasoning ||
           message.images?.length ||
+          message.media?.length ||
           message.tools?.length ||
           message.blocks?.length,
       ),
@@ -1617,118 +1737,7 @@ export function MessageTimeline({
     renderWindow.sessionKey === sessionKey ? renderWindow.start : resolveWindowStart(renderWindow, visibleMessages, initialWindowStart);
   const windowedMessages = windowStart > 0 ? visibleMessages.slice(windowStart) : visibleMessages;
   const hiddenMessageCount = windowStart;
-
-  const stopSpeech = useCallback(() => {
-    speechSequenceRef.current += 1;
-    speechStopRef.current?.();
-    speechStopRef.current = null;
-    if (speechAudioRef.current) {
-      speechAudioRef.current.pause();
-      speechAudioRef.current.src = "";
-      speechAudioRef.current.load();
-      speechAudioRef.current = null;
-    }
-    setSpeechState({ messageId: null, status: "idle" });
-  }, []);
-
-  const playSpeech = useCallback(async (messageId: string, text: string) => {
-    const speakableText = sanitizeTextForSpeech(text);
-    if (!speakableText) {
-      setSpeechError({ messageId, message: "没有可朗读的文本。" });
-      return;
-    }
-
-    stopSpeech();
-    const ownSequence = speechSequenceRef.current;
-    setSpeechError(null);
-    setSpeechState({ messageId, status: "preparing" });
-
-    try {
-      const response = await speakText(speakableText);
-      if (speechSequenceRef.current !== ownSequence) return;
-
-      const audio = new Audio(response.data_url);
-      speechAudioRef.current = audio;
-      setSpeechState({ messageId, status: "speaking" });
-
-      await new Promise<void>((resolve, reject) => {
-        const cleanup = () => {
-          audio.removeEventListener("ended", onEnded);
-          audio.removeEventListener("error", onError);
-          if (speechStopRef.current === onStop) speechStopRef.current = null;
-        };
-        const onEnded = () => {
-          cleanup();
-          resolve();
-        };
-        const onError = () => {
-          cleanup();
-          reject(new Error("音频播放失败"));
-        };
-        const onStop = () => {
-          cleanup();
-          resolve();
-        };
-        speechStopRef.current = onStop;
-        audio.addEventListener("ended", onEnded, { once: true });
-        audio.addEventListener("error", onError, { once: true });
-        void audio.play().catch(reject);
-      });
-
-      if (speechSequenceRef.current !== ownSequence) return;
-      speechAudioRef.current = null;
-      setSpeechState({ messageId: null, status: "idle" });
-    } catch (error) {
-      if (speechSequenceRef.current !== ownSequence) return;
-      speechAudioRef.current = null;
-      speechStopRef.current = null;
-      setSpeechState({ messageId: null, status: "idle" });
-      setSpeechError({ messageId, message: voiceErrorMessage(error, "朗读失败") });
-    }
-  }, [stopSpeech]);
-
-  useEffect(() => () => {
-    speechSequenceRef.current += 1;
-    speechStopRef.current?.();
-    speechStopRef.current = null;
-    if (speechAudioRef.current) {
-      speechAudioRef.current.pause();
-      speechAudioRef.current.src = "";
-      speechAudioRef.current.load();
-      speechAudioRef.current = null;
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!autoTts) return;
-
-    const completed: ChatMessage[] = [];
-    for (const message of messages) {
-      if (message.role !== "assistant" || message.status !== "complete") continue;
-      if (!getReadableText(message)) continue;
-      completed.push(message);
-    }
-    const sessionKey = messages[0]?.id;
-    if (autoTtsSessionKeyRef.current !== sessionKey) {
-      autoTtsSessionKeyRef.current = sessionKey;
-      autoTtsSeenRef.current = new Set(completed.map((message) => message.id));
-      return;
-    }
-
-    let fresh: ChatMessage | undefined;
-    for (const message of completed) {
-      if (!autoTtsSeenRef.current.has(message.id)) fresh = message;
-      autoTtsSeenRef.current.add(message.id);
-    }
-    if (!fresh) return;
-
-    const text = getReadableText(fresh);
-    if (text) void playSpeech(fresh.id, text);
-  }, [autoTts, messages, playSpeech]);
-
-  const handleSpeak = useCallback((messageId: string, text: string) => {
-    void playSpeech(messageId, text);
-  }, [playSpeech]);
+  const bookmarkKey = sessionId ?? visibleMessages[0]?.id;
 
   const revealEarlierRef = useRef<{ node: HTMLElement; top: number } | null>(null);
 
@@ -1755,6 +1764,7 @@ export function MessageTimeline({
   }, [firstRenderedRow, sessionKey, windowStart]);
 
   const [earlierRequested, setEarlierRequested] = useState(false);
+  const autoEarlierKeyRef = useRef("");
 
   const loadEarlierMessages = useCallback(() => {
     if (!onLoadEarlier || isLoadingEarlier || !hasEarlier) return;
@@ -1763,6 +1773,28 @@ export function MessageTimeline({
     setEarlierRequested(true);
     void onLoadEarlier();
   }, [firstRenderedRow, hasEarlier, isLoadingEarlier, onLoadEarlier]);
+
+  const requestEarlier = useCallback(
+    (source: "auto" | "button") => {
+      if (hiddenMessageCount > 0) {
+        if (source === "auto") {
+          const key = `local:${hiddenMessageCount}:${visibleMessages.length}`;
+          if (autoEarlierKeyRef.current === key) return;
+          autoEarlierKeyRef.current = key;
+        }
+        revealEarlierMessages();
+        return;
+      }
+      if (!hasEarlier) return;
+      if (source === "auto") {
+        const key = `page:${visibleMessages.length}`;
+        if (autoEarlierKeyRef.current === key) return;
+        autoEarlierKeyRef.current = key;
+      }
+      loadEarlierMessages();
+    },
+    [hasEarlier, hiddenMessageCount, loadEarlierMessages, revealEarlierMessages, visibleMessages.length],
+  );
 
   useIsomorphicLayoutEffect(() => {
     const pending = revealEarlierRef.current;
@@ -1773,7 +1805,7 @@ export function MessageTimeline({
     if (shift === 0) return;
     container.scrollTop += shift;
     lastScrollTopRef.current = container.scrollTop;
-  }, [windowStart]);
+  }, [windowStart, visibleMessages.length]);
 
   const setTurnAnchorNode = useCallback((id: string, node: HTMLDivElement | null) => {
     if (node) {
@@ -1826,19 +1858,15 @@ export function MessageTimeline({
     const node = turnAnchorRefs.current.get(id);
     if (!container || !node) return;
 
-    if (autoAnchorTimerRef.current !== null) {
-      window.clearTimeout(autoAnchorTimerRef.current);
-      autoAnchorTimerRef.current = null;
-    }
-    autoAnchorRef.current = false;
+    alignTargetRef.current = null;
+    alignUntilRef.current = 0;
 
     const containerRect = container.getBoundingClientRect();
     const nodeRect = node.getBoundingClientRect();
     const top = container.scrollTop + nodeRect.top - containerRect.top - 12;
     const maxTop = Math.max(0, container.scrollHeight - container.clientHeight);
     const targetTop = Math.min(Math.max(0, top), maxTop);
-    nearBottomRef.current = container.scrollHeight - targetTop - container.clientHeight < BOTTOM_FOLLOW_THRESHOLD_PX;
-    userDetachedFromBottomRef.current = !nearBottomRef.current;
+    pinnedRef.current = container.scrollHeight - targetTop - container.clientHeight < TRANSCRIPT_REPIN_THRESHOLD_PX;
     // 标记这是一次程序跳转：handleScroll 在到达目标前不得把它当成用户上滑。
     // 兜底定时器防止动画因目标 clamp / 内容重排始终差几像素而无法清除标记。
     programmaticScrollRef.current = true;
@@ -1864,12 +1892,11 @@ export function MessageTimeline({
         window.clearTimeout(programmaticTimerRef.current);
         programmaticTimerRef.current = null;
       }
-      nearBottomRef.current = true;
-      userDetachedFromBottomRef.current = false;
     }
-    if (userDetachedFromBottomRef.current) return;
-    userDetachedFromBottomRef.current = false;
-    nearBottomRef.current = true;
+    if (!pinnedRef.current && !force) return;
+    pinnedRef.current = true;
+    alignTargetRef.current = null;
+    alignUntilRef.current = 0;
     const targetTop = Math.max(0, container.scrollHeight - container.clientHeight);
     container.scrollTo({
       top: targetTop,
@@ -1880,15 +1907,7 @@ export function MessageTimeline({
     }
   }, []);
 
-  const clearAutoAnchor = useCallback(() => {
-    if (autoAnchorTimerRef.current !== null) {
-      window.clearTimeout(autoAnchorTimerRef.current);
-      autoAnchorTimerRef.current = null;
-    }
-    autoAnchorRef.current = false;
-  }, []);
-
-  const detachFromBottomAutoFollow = useCallback(() => {
+  const detachFromBottomFollow = useCallback(() => {
     const container = containerRef.current;
     // 用户的显式手势（滚轮/拖动）应能中断进行中的轮次跳转并夺回滚动控制。
     programmaticScrollRef.current = false;
@@ -1896,67 +1915,43 @@ export function MessageTimeline({
       window.clearTimeout(programmaticTimerRef.current);
       programmaticTimerRef.current = null;
     }
-    clearAutoAnchor();
     jumpInFlightRef.current = false;
-    userDetachedFromBottomRef.current = true;
-    nearBottomRef.current = false;
+    pinnedRef.current = false;
+    alignTargetRef.current = null;
+    alignUntilRef.current = 0;
+    unreadBaselineRef.current = visibleCountRef.current;
     if (container) {
       // Cancel any in-flight smooth/initial auto scroll so an explicit user
       // upward gesture cannot be pulled back to the bottom by a later layout
-      // settle, ResizeObserver tick, or timeout from the initial history render.
+      // settle, ResizeObserver tick, or timer from the initial history render.
       container.scrollTo({ top: container.scrollTop, behavior: "auto" });
       lastScrollTopRef.current = container.scrollTop;
     }
-  }, [clearAutoAnchor]);
+  }, []);
 
-  const measureMessagesBelowViewport = useCallback((): number => {
+  const publishJumpButton = useCallback(() => {
     const container = containerRef.current;
-    const messagesElement = messagesRef.current;
-    if (!container || !messagesElement) return 0;
-
-    const rows = messagesElement.children;
-    if (rows.length === 0) return 0;
-
-    const viewportBottom = container.getBoundingClientRect().top + container.clientHeight;
-    const belowCount = countRowsBelowViewport(
-      rows.length,
-      (index) => rows[index].getBoundingClientRect().top >= viewportBottom,
-    );
-    const firstBelow = rows.length - belowCount;
-    let count = 0;
-    for (let index = firstBelow; index < rows.length; index += 1) {
-      if (rows[index].hasAttribute("data-message-index")) count += 1;
+    if (!container) return;
+    if (jumpInFlightRef.current) {
+      setJumpButton((previous) => (previous.visible ? { visible: false, unread: 0 } : previous));
+      return;
     }
-    return count;
+    const visible = shouldShowJumpToBottom(pinnedRef.current);
+    const unread = visible ? countUnreadSinceBaseline(visibleCountRef.current, unreadBaselineRef.current) : 0;
+    setJumpButton((previous) =>
+      previous.visible === visible && previous.unread === unread
+        ? previous
+        : { visible, unread },
+    );
   }, []);
 
   const scheduleJumpButtonUpdate = useCallback(() => {
     if (jumpFrameRef.current !== 0) return;
     jumpFrameRef.current = window.requestAnimationFrame(() => {
       jumpFrameRef.current = 0;
-      const container = containerRef.current;
-      if (!container) return;
-      const bottomDistance = distanceFromBottom(
-        container.scrollTop,
-        container.scrollHeight,
-        container.clientHeight,
-      );
-      if (jumpInFlightRef.current) {
-        setJumpButton((previous) => (previous.visible ? { visible: false, count: 0 } : previous));
-        return;
-      }
-      const visible = shouldShowJumpToBottom(
-        userDetachedFromBottomRef.current,
-        bottomDistance,
-      );
-      const count = visible ? measureMessagesBelowViewport() : 0;
-      setJumpButton((previous) =>
-        previous.visible === visible && previous.count === count
-          ? previous
-          : { visible, count },
-      );
+      publishJumpButton();
     });
-  }, [measureMessagesBelowViewport]);
+  }, [publishJumpButton]);
 
   const jumpToBottom = useCallback(() => {
     const container = containerRef.current;
@@ -1976,9 +1971,78 @@ export function MessageTimeline({
       jumpInFlightRef.current = false;
     }, 700);
     lastScrollTopRef.current = container.scrollTop;
+    unreadBaselineRef.current = visibleCountRef.current;
     scheduleActiveTurnUpdate();
-    setJumpButton({ visible: false, count: 0 });
+    setJumpButton({ visible: false, unread: 0 });
   }, [scheduleActiveTurnUpdate, scrollToBottom]);
+
+  const applyReadingPosition = useCallback((): boolean => {
+    const container = containerRef.current;
+    const target = alignTargetRef.current;
+    if (!container || !target) return false;
+    const row = findMessageRow(messagesRef.current, target.messageId);
+    if (!row) return false;
+    const delta = row.getBoundingClientRect().top - container.getBoundingClientRect().top - target.offset;
+    if (Math.abs(delta) > 0.5) container.scrollTop += delta;
+    lastScrollTopRef.current = container.scrollTop;
+    return true;
+  }, []);
+
+  const restoreReadingPosition = useCallback((): boolean => {
+    const bookmark = readTranscriptReadingBookmark(bookmarkKey);
+    if (transcriptRevealOwnership(bookmark) !== "reading-position" || !bookmark) return false;
+    const container = containerRef.current;
+    pinnedRef.current = false;
+    alignTargetRef.current = bookmark.messageId
+      ? { messageId: bookmark.messageId, offset: bookmark.offset }
+      : null;
+    alignUntilRef.current = performance.now() + TRANSCRIPT_READING_ALIGNMENT_WINDOW_MS;
+    if (applyReadingPosition()) {
+      scheduleJumpButtonUpdate();
+      return true;
+    }
+    // 行还没挂上：退回绝对 scrollTop，连它都不可用时交给贴底。
+    alignTargetRef.current = null;
+    alignUntilRef.current = 0;
+    if (!container || !Number.isFinite(bookmark.scrollTop) || bookmark.scrollTop <= 0) return false;
+    container.scrollTop = bookmark.scrollTop;
+    lastScrollTopRef.current = container.scrollTop;
+    scheduleJumpButtonUpdate();
+    return true;
+  }, [applyReadingPosition, bookmarkKey, scheduleJumpButtonUpdate]);
+
+  const captureReadingBookmark = useCallback(() => {
+    const container = containerRef.current;
+    const root = messagesRef.current;
+    if (!container || !root || container.scrollHeight === 0) return;
+    if (pinnedRef.current) {
+      rememberTranscriptReadingBookmark(bookmarkKey, {
+        pinned: true,
+        offset: 0,
+        scrollTop: container.scrollTop,
+      });
+      return;
+    }
+    const containerTop = container.getBoundingClientRect().top;
+    for (const row of Array.from(root.querySelectorAll<HTMLElement>("[data-message-id]"))) {
+      const rect = row.getBoundingClientRect();
+      if (rect.bottom <= containerTop + 0.5) continue;
+      const messageId = row.dataset.messageId;
+      if (!messageId) continue;
+      rememberTranscriptReadingBookmark(bookmarkKey, {
+        pinned: false,
+        messageId,
+        offset: rect.top - containerTop,
+        scrollTop: container.scrollTop,
+      });
+      return;
+    }
+    rememberTranscriptReadingBookmark(bookmarkKey, {
+      pinned: false,
+      offset: 0,
+      scrollTop: container.scrollTop,
+    });
+  }, [bookmarkKey]);
 
   useIsomorphicLayoutEffect(() => {
     scheduleJumpButtonUpdate();
@@ -1998,7 +2062,7 @@ export function MessageTimeline({
     }
 
     const hasActive = activeTurnId != null && turnAnchors.some((turn) => turn.id === activeTurnId);
-    if (hasActive && !nearBottomRef.current) return;
+    if (hasActive && !pinnedRef.current) return;
 
     const lastId = turnAnchors[turnAnchors.length - 1]?.id ?? null;
     setActiveTurnId((previous) => previous === lastId ? previous : lastId);
@@ -2029,27 +2093,30 @@ export function MessageTimeline({
     );
 
     messageCountRef.current = visibleMessages.length;
+    visibleCountRef.current = visibleMessages.length;
     firstMessageIdRef.current = nextFirstMessageId;
     lastUserMessageIdRef.current = nextLastUserMessageId;
 
     if (prependedEarlier) return;
 
     if (visibleMessages.length === 0) {
-      nearBottomRef.current = true;
-      userDetachedFromBottomRef.current = false;
+      pinnedRef.current = true;
+      restorePendingRef.current = true;
       lastScrollTopRef.current = 0;
       return;
     }
 
-    if (sessionChanged) {
-      nearBottomRef.current = true;
-      userDetachedFromBottomRef.current = false;
-      lastScrollTopRef.current = 0;
+    if (sessionChanged) restorePendingRef.current = true;
+
+    if (restorePendingRef.current) {
+      restorePendingRef.current = false;
+      if (restoreReadingPosition()) return;
+      pinnedRef.current = true;
     }
 
     const container = containerRef.current;
-    if (!container || (!forceBottom && !nearBottomRef.current)) return;
-    const initialHistoryRender = previousMessageCount === 0 || sessionChanged;
+    if (!container || (!forceBottom && !pinnedRef.current)) return;
+    const firstCommit = previousMessageCount === 0;
     // Bottom-follow must move synchronously. A smooth scroll targets the current
     // scrollHeight, but streaming can grow the message again before the animation
     // arrives; the intermediate scroll event then looks far from the bottom and
@@ -2057,29 +2124,18 @@ export function MessageTimeline({
     scrollToBottom("auto", forceBottom);
 
     // 长会话里 Markdown、表格、代码块等内容会在本次提交后继续改变实际高度。
-    // 初次进入历史会话时不要依赖一次平滑滚动，否则 WebKit/Tauri 里可能先滚到
-    // 一个尚未稳定的中间位置，用户看到空白，手动滚动后才触发重绘。
-    if (initialHistoryRender) {
-      clearAutoAnchor();
-      autoAnchorRef.current = true;
+    // 首次提交后再补两帧贴底（每一帧都先看 pinned：用户在这两帧里上滚了就尊重他），
+    // 不再用固定毫秒窗口兜底，避免把用户的上滑顶回去。
+    if (firstCommit) {
       window.requestAnimationFrame(() => {
+        if (!pinnedRef.current) return;
         scrollToBottom("auto");
-        window.requestAnimationFrame(() => scrollToBottom("auto"));
+        window.requestAnimationFrame(() => {
+          if (pinnedRef.current) scrollToBottom("auto");
+        });
       });
-      autoAnchorTimerRef.current = window.setTimeout(() => {
-        if (userDetachedFromBottomRef.current) {
-          autoAnchorRef.current = false;
-          autoAnchorTimerRef.current = null;
-          return;
-        }
-        scrollToBottom("auto");
-        nearBottomRef.current = true;
-        userDetachedFromBottomRef.current = false;
-        autoAnchorRef.current = false;
-        autoAnchorTimerRef.current = null;
-      }, 650);
     }
-  }, [clearAutoAnchor, scrollToBottom, statusMessage, turnAnchors, visibleMessages]);
+  }, [restoreReadingPosition, scrollToBottom, statusMessage, turnAnchors, visibleMessages]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -2091,16 +2147,17 @@ export function MessageTimeline({
     let lastViewportHeight = -1;
     const anchorToBottom = () => {
       frame = 0;
+      // 阅读位对齐窗口内：内容还在长（图片/代码块迟到），反复把锚点行顶回去，
+      // 而不是贴底——否则切回会话时用户正读的那一行会被新内容挤走。
+      if (alignTargetRef.current && performance.now() < alignUntilRef.current && applyReadingPosition()) {
+        scheduleJumpButtonUpdate();
+        return;
+      }
       scheduleJumpButtonUpdate();
       const scrollHeight = container.scrollHeight;
       const clientHeight = container.clientHeight;
       const bottomDistance = distanceFromBottom(container.scrollTop, scrollHeight, clientHeight);
-      if (!shouldAnchorToBottom(
-        userDetachedFromBottomRef.current,
-        nearBottomRef.current,
-        autoAnchorRef.current,
-        bottomDistance,
-      )) return;
+      if (!shouldAnchorToBottom(pinnedRef.current, bottomDistance)) return;
       // 一次读（scrollHeight/clientHeight 已在上方读好）→ 一次写，写完后不再回读
       // scrollTop，避免每帧读-写-读交替触发强制布局。
       const targetTop = Math.max(0, scrollHeight - clientHeight);
@@ -2134,13 +2191,10 @@ export function MessageTimeline({
       window.cancelAnimationFrame(frame);
       observer.disconnect();
     };
-  }, [scheduleJumpButtonUpdate]);
+  }, [applyReadingPosition, scheduleJumpButtonUpdate]);
 
   useEffect(() => {
     return () => {
-      if (autoAnchorTimerRef.current !== null) {
-        window.clearTimeout(autoAnchorTimerRef.current);
-      }
       if (programmaticTimerRef.current !== null) {
         window.clearTimeout(programmaticTimerRef.current);
       }
@@ -2155,11 +2209,43 @@ export function MessageTimeline({
     };
   }, []);
 
-  const handleWheel = (event: WheelEvent<HTMLDivElement>) => {
-    if (event.deltaY < 0) {
-      detachFromBottomAutoFollow();
-    }
-  };
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    // 只认「真能滚这个容器」的输入：滚轮有纵向位移、指针落在滚动面上而不是
+    // 按钮/输入框、键盘是滚动键且焦点不在可编辑元素里。命中即刷新手势时间戳。
+    const markGesture = () => {
+      lastGestureAtRef.current = performance.now();
+      if (alignTargetRef.current) {
+        alignTargetRef.current = null;
+        alignUntilRef.current = 0;
+      }
+    };
+    const onWheel = (event: globalThis.WheelEvent) => {
+      if (event.deltaY !== 0) markGesture();
+    };
+    const onPointerDown = (event: globalThis.PointerEvent) => {
+      if (!isInteractiveGestureTarget(event.target as HTMLElement | null)) markGesture();
+    };
+    const onTouchStart = () => markGesture();
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (!isScrollGestureKeystroke(event.key)) return;
+      if (isInteractiveGestureTarget(event.target as HTMLElement | null)) return;
+      markGesture();
+    };
+    container.addEventListener("wheel", onWheel, { passive: true });
+    container.addEventListener("pointerdown", onPointerDown, { passive: true });
+    container.addEventListener("touchstart", onTouchStart, { passive: true });
+    container.addEventListener("touchmove", onTouchStart, { passive: true });
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      container.removeEventListener("wheel", onWheel);
+      container.removeEventListener("pointerdown", onPointerDown);
+      container.removeEventListener("touchstart", onTouchStart);
+      container.removeEventListener("touchmove", onTouchStart);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, []);
 
   const handleScroll = () => {
     const container = containerRef.current;
@@ -2183,51 +2269,66 @@ export function MessageTimeline({
       return;
     }
 
-    const bottomDistance = distanceFromBottom(
+    const now = performance.now();
+    const gesturing = now - lastGestureAtRef.current <= TRANSCRIPT_SCROLL_GESTURE_WINDOW_MS;
+    const decision = reduceTranscriptScroll({
       scrollTop,
-      container.scrollHeight,
-      container.clientHeight,
-    );
-    const scrollingUp = shouldDetachOnScroll(
-      scrollTop,
-      lastScrollTopRef.current,
-      programmaticScrollRef.current,
-    );
+      lastScrollTop: lastScrollTopRef.current,
+      scrollHeight: container.scrollHeight,
+      clientHeight: container.clientHeight,
+      wasPinned: pinnedRef.current,
+      gesturing,
+    });
 
-    if (scrollingUp) {
-      detachFromBottomAutoFollow();
-    } else if (autoAnchorRef.current && !userDetachedFromBottomRef.current) {
-      nearBottomRef.current = true;
+    if (decision.releasedFollow) {
+      detachFromBottomFollow();
     } else {
-      const next = resolveBottomFollowState(
-        bottomDistance,
-        userDetachedFromBottomRef.current,
-      );
-      nearBottomRef.current = next.nearBottom;
-      userDetachedFromBottomRef.current = next.userDetachedFromBottom;
+      pinnedRef.current = decision.pinned;
     }
     lastScrollTopRef.current = scrollTop;
+    captureReadingBookmark();
     scheduleActiveTurnUpdate();
     scheduleJumpButtonUpdate();
+    if (
+      scrollTop <= EARLIER_AUTO_LOAD_TOP_PX &&
+      !pinnedRef.current &&
+      !jumpInFlightRef.current
+    ) {
+      requestEarlier("auto");
+    }
   };
 
   const [findOpen, setFindOpen] = useState(false);
   const [findQuery, setFindQuery] = useState("");
   const [findActive, setFindActive] = useState(0);
-  const [findTotal, setFindTotal] = useState(0);
   const [findSearchingEarlier, setFindSearchingEarlier] = useState(false);
   const [findReachedEarliest, setFindReachedEarliest] = useState(false);
-  const findMatchesRef = useRef<FindMatch[]>([]);
   const findReturnFocusRef = useRef<HTMLElement | null>(null);
+  const findIndex = useMemo(
+    () => (findOpen ? buildFindIndex(visibleMessages) : null),
+    [findOpen, visibleMessages],
+  );
+  const findResult = useMemo(
+    () => (findIndex ? searchFindIndex(findIndex, findQuery) : EMPTY_FIND_RESULT),
+    [findIndex, findQuery],
+  );
+  const findHits = findResult.hits;
+  const findTotal = findHits.length;
+  const activeHit = findActive >= 0 && findActive < findTotal ? findHits[findActive] : undefined;
+  const findRevealKey = activeHit
+    ? `${activeHit.messageId}:${activeHit.toolId ?? ""}:${activeHit.field}:${activeHit.ordinal}`
+    : "";
+  const toolReveal = useMemo<ToolRevealTarget | null>(
+    () => (activeHit?.toolId ? { toolId: activeHit.toolId, key: findRevealKey } : null),
+    [activeHit, findRevealKey],
+  );
 
   const closeFind = useCallback(() => {
     setFindOpen(false);
     setFindQuery("");
     setFindActive(0);
-    setFindTotal(0);
     setFindSearchingEarlier(false);
     setFindReachedEarliest(false);
-    findMatchesRef.current = [];
     clearFindHighlights();
     const target = findReturnFocusRef.current;
     findReturnFocusRef.current = null;
@@ -2248,48 +2349,63 @@ export function MessageTimeline({
     setFindSearchingEarlier(false);
   }, []);
 
-  const stepFind = useCallback((delta: number) => {
-    const total = findMatchesRef.current.length;
-    if (total === 0) return;
-    setFindActive((current) => (((current + delta) % total) + total) % total);
-  }, []);
+  const stepFind = useCallback(
+    (delta: number) => {
+      if (findTotal === 0) return;
+      setFindActive((current) => (((current + delta) % findTotal) + findTotal) % findTotal);
+    },
+    [findTotal],
+  );
 
   const searchEarlierForFind = useCallback(() => {
     setFindSearchingEarlier(true);
   }, []);
 
-  const revealFindMatch = useCallback((match: FindMatch) => {
-    const container = containerRef.current;
-    const node = match.node.parentElement;
-    if (!container || !node) return;
-    const containerRect = container.getBoundingClientRect();
-    const nodeRect = node.getBoundingClientRect();
-    if (
-      nodeRect.top >= containerRect.top + VISIBLE_MARGIN_PX &&
-      nodeRect.bottom <= containerRect.bottom - VISIBLE_MARGIN_PX
-    ) {
-      return;
-    }
-    const offset =
-      nodeRect.top - containerRect.top + nodeRect.height / 2 - container.clientHeight / 2;
-    const maxTop = Math.max(0, container.scrollHeight - container.clientHeight);
-    const targetTop = Math.min(Math.max(0, container.scrollTop + offset), maxTop);
-    nearBottomRef.current =
-      container.scrollHeight - targetTop - container.clientHeight < BOTTOM_FOLLOW_THRESHOLD_PX;
-    userDetachedFromBottomRef.current = !nearBottomRef.current;
-    programmaticScrollRef.current = true;
-    programmaticTargetRef.current = targetTop;
-    if (programmaticTimerRef.current !== null) {
-      window.clearTimeout(programmaticTimerRef.current);
-    }
-    programmaticTimerRef.current = window.setTimeout(() => {
-      programmaticScrollRef.current = false;
-      programmaticTimerRef.current = null;
-    }, 700);
-    container.scrollTo({ top: targetTop, behavior: "smooth" });
-    lastScrollTopRef.current = container.scrollTop;
-    scheduleJumpButtonUpdate();
-  }, [scheduleJumpButtonUpdate]);
+  const revealFindNode = useCallback(
+    (node: HTMLElement) => {
+      const container = containerRef.current;
+      if (!container) return;
+      const containerRect = container.getBoundingClientRect();
+      const nodeRect = node.getBoundingClientRect();
+      if (
+        nodeRect.top >= containerRect.top + VISIBLE_MARGIN_PX &&
+        nodeRect.bottom <= containerRect.bottom - VISIBLE_MARGIN_PX
+      ) {
+        return;
+      }
+      const offset =
+        nodeRect.top - containerRect.top + nodeRect.height / 2 - container.clientHeight / 2;
+      const maxTop = Math.max(0, container.scrollHeight - container.clientHeight);
+      const targetTop = Math.min(Math.max(0, container.scrollTop + offset), maxTop);
+      pinnedRef.current =
+        container.scrollHeight - targetTop - container.clientHeight < TRANSCRIPT_REPIN_THRESHOLD_PX;
+      programmaticScrollRef.current = true;
+      programmaticTargetRef.current = targetTop;
+      if (programmaticTimerRef.current !== null) {
+        window.clearTimeout(programmaticTimerRef.current);
+      }
+      programmaticTimerRef.current = window.setTimeout(() => {
+        programmaticScrollRef.current = false;
+        programmaticTimerRef.current = null;
+      }, 700);
+      container.scrollTo({ top: targetTop, behavior: "smooth" });
+      lastScrollTopRef.current = container.scrollTop;
+      scheduleJumpButtonUpdate();
+    },
+    [scheduleJumpButtonUpdate],
+  );
+
+  const revealMessageNode = useCallback(
+    (messageId: string) => {
+      const root = messagesRef.current;
+      if (!root) return;
+      const node = Array.from(root.querySelectorAll<HTMLElement>("[data-message-id]")).find(
+        (element) => element.getAttribute("data-message-id") === messageId,
+      );
+      if (node) revealFindNode(node);
+    },
+    [revealFindNode],
+  );
 
   const handleFindShortcut = useCallback((event: KeyboardEvent) => {
     if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return;
@@ -2316,23 +2432,72 @@ export function MessageTimeline({
   }, [closeFind, findOpen]);
 
   useIsomorphicLayoutEffect(() => {
-    if (!findOpen) return;
-    const matches = collectFindMatches(messagesRef.current, findQuery);
-    findMatchesRef.current = matches;
-    setFindTotal(matches.length);
-    setFindActive((current) => (matches.length === 0 ? 0 : Math.min(current, matches.length - 1)));
-  }, [findOpen, findQuery, visibleMessages]);
+    if (findActive < findTotal) return;
+    setFindActive(findTotal === 0 ? 0 : findTotal - 1);
+  }, [findActive, findTotal]);
 
   useIsomorphicLayoutEffect(() => {
-    if (!findOpen) {
+    if (!findOpen || !activeHit) return;
+    if (activeHit.messageIndex >= windowStart) return;
+    setRenderWindow({
+      sessionKey,
+      start: Math.max(0, activeHit.messageIndex - LONG_SESSION_EARLIER_BATCH),
+    });
+  }, [activeHit, findOpen, sessionKey, windowStart]);
+
+  useIsomorphicLayoutEffect(() => {
+    if (!findOpen || !activeHit) {
       clearFindHighlights();
       return;
     }
-    const matches = findMatchesRef.current;
-    highlightFindMatches(matches, findActive);
-    const activeMatch = matches[findActive];
-    if (activeMatch) revealFindMatch(activeMatch);
-  }, [findActive, findOpen, findQuery, findTotal, revealFindMatch, visibleMessages]);
+    if (activeHit.messageIndex < windowStart) return;
+    const root = messagesRef.current;
+    if (!root) return;
+    let ordinal = 0;
+    for (let index = 0; index < findActive; index += 1) {
+      const hit = findHits[index];
+      if (hit.messageId !== activeHit.messageId) continue;
+      if (activeHit.toolId && hit.toolId !== activeHit.toolId) continue;
+      ordinal += 1;
+    }
+    const target = { messageId: activeHit.messageId, toolId: activeHit.toolId, ordinal };
+    const apply = (reveal: boolean) => {
+      const match = applyFindHighlight(root, findQuery, target);
+      if (!reveal) return;
+      if (match?.node.parentElement) {
+        revealFindNode(match.node.parentElement);
+        return;
+      }
+      revealMessageNode(activeHit.messageId);
+    };
+    apply(true);
+    // 工具卡展开、代码高亮、markdown 重渲染都会换掉文本节点，上一次算出来的
+    // Range 随之失效（界面上就是“命中但没高亮”）。跟着 DOM 变化再落一次。
+    let timer: number | null = null;
+    const reschedule = () => {
+      if (timer !== null) return;
+      timer = window.setTimeout(() => {
+        timer = null;
+        apply(false);
+      }, 0);
+    };
+    const Observer = (globalThis as { MutationObserver?: typeof MutationObserver }).MutationObserver;
+    const observer = Observer ? new Observer(reschedule) : null;
+    observer?.observe(root, { childList: true, characterData: true, subtree: true });
+    return () => {
+      observer?.disconnect();
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [
+    activeHit,
+    findActive,
+    findHits,
+    findOpen,
+    findQuery,
+    revealFindNode,
+    revealMessageNode,
+    windowStart,
+  ]);
 
   useEffect(() => {
     if (!findSearchingEarlier) return;
@@ -2354,165 +2519,163 @@ export function MessageTimeline({
     setFindReachedEarliest(true);
   }, [findOpen, hasEarlier]);
 
-  const jumpLabel = jumpButton.count > 0
-    ? `回到底部 · 下面还有 ${jumpButton.count} 条`
-    : "回到底部";
+  const jumpLabel = jumpButton.unread > 0
+    ? `跳到最新 · ${jumpButton.unread} 条新消息`
+    : "跳到最新";
 
   return (
-    <div className={s.timelineRoot}>
-      {findOpen ? (
-        <FindBar
-          query={findQuery}
-          activeIndex={findActive}
-          total={findTotal}
-          hasEarlier={hasEarlier}
-          searchingEarlier={findSearchingEarlier}
-          reachedEarliest={findReachedEarliest}
-          onChange={changeFindQuery}
-          onPrev={() => stepFind(-1)}
-          onNext={() => stepFind(1)}
-          onClose={closeFind}
-          onSearchEarlier={searchEarlierForFind}
-        />
-      ) : null}
-      <div
-        ref={containerRef}
-        className={s.scroll}
-        onWheel={handleWheel}
-        onScroll={handleScroll}
-        role="log"
-        aria-live="polite"
-      >
-        {showTurnRail ? (
-          <div className={s.turnRailWrap}>
-            <nav className={s.turnRail} aria-label="对话轮次定位">
-              {turnAnchors.map((turn) => {
-                const active = turn.id === activeTurnId;
-                return (
-                  <button
-                    key={turn.id}
-                    type="button"
-                    className={s.turnDot}
-                    data-active={active ? "true" : undefined}
-                    aria-current={active ? "step" : undefined}
-                    aria-label={`定位到第 ${turn.index + 1} 轮对话`}
-                    title={turn.title}
-                    onClick={() => scrollToTurn(turn.id)}
-                  />
-                );
-              })}
-            </nav>
-          </div>
+    <ToolRevealContext.Provider value={toolReveal}>
+      <div className={s.timelineRoot}>
+        {findOpen ? (
+          <FindBar
+            query={findQuery}
+            activeIndex={findTotal === 0 ? 0 : findActive}
+            total={findTotal}
+            truncated={findResult.truncated}
+            hasEarlier={hasEarlier}
+            searchingEarlier={findSearchingEarlier}
+            reachedEarliest={findReachedEarliest}
+            onChange={changeFindQuery}
+            onPrev={() => stepFind(-1)}
+            onNext={() => stepFind(1)}
+            onClose={closeFind}
+            onSearchEarlier={searchEarlierForFind}
+          />
         ) : null}
-        <div ref={messagesRef} className={s.messages}>
-          {loading ? <MessageSkeleton /> : null}
-          {!loading && visibleMessages.length === 0 && !statusMessage ? (
-            emptyGuide ? (
-              <div className={s.empty}>{emptyGuide}</div>
-            ) : (
-              <div className={s.empty}>
-                <div className={s.emptyTitle}>暂无对话记录</div>
-                <div className={s.emptySub}>发送一条消息开始继续这个任务。</div>
-              </div>
-            )
-          ) : null}
-
-          {hiddenMessageCount > 0 || hasEarlier || isLoadingEarlier || loadEarlierError ? (
-            <div className={s.earlierBar}>
-              {loadEarlierError ? (
-                <div className={s.earlierError} role="alert">
-                  <span className={s.earlierErrorText}>加载更早的消息失败：{loadEarlierError.message}</span>
-                  <button
-                    type="button"
-                    className={s.earlierAction}
-                    onClick={loadEarlierMessages}
-                    disabled={isLoadingEarlier}
-                  >
-                    重试
-                  </button>
-                </div>
-              ) : null}
-              {hiddenMessageCount > 0 ? (
-                <button type="button" className={s.systemNoticeToggle} onClick={revealEarlierMessages}>
-                  显示更早的 {Math.min(LONG_SESSION_EARLIER_BATCH, hiddenMessageCount)} 条消息
-                  {onLoadEarlier ? "（已加载）" : ""}
-                </button>
-              ) : null}
-              {hasEarlier ? (
-                <button
-                  type="button"
-                  className={s.systemNoticeToggle}
-                  onClick={loadEarlierMessages}
-                  disabled={isLoadingEarlier}
-                >
-                  {isLoadingEarlier ? "加载中…" : "加载更早的消息"}
-                </button>
-              ) : earlierRequested ? (
-                <span className={s.earlierEnd}>已到最早</span>
-              ) : null}
+        <div
+          ref={containerRef}
+          className={s.scroll}
+          onScroll={handleScroll}
+          role="log"
+          aria-live="polite"
+        >
+          {showTurnRail ? (
+            <div className={s.turnRailWrap}>
+              <nav className={s.turnRail} aria-label="对话轮次定位">
+                {turnAnchors.map((turn) => {
+                  const active = turn.id === activeTurnId;
+                  return (
+                    <button
+                      key={turn.id}
+                      type="button"
+                      className={s.turnDot}
+                      data-active={active ? "true" : undefined}
+                      aria-current={active ? "step" : undefined}
+                      aria-label={`定位到第 ${turn.index + 1} 轮对话`}
+                      title={turn.title}
+                      onClick={() => scrollToTurn(turn.id)}
+                    />
+                  );
+                })}
+              </nav>
             </div>
           ) : null}
+          <div ref={messagesRef} className={s.messages}>
+            {loading ? <MessageSkeleton /> : null}
+            {!loading && visibleMessages.length === 0 && !statusMessage ? (
+              emptyGuide ? (
+                <div className={s.empty}>{emptyGuide}</div>
+              ) : (
+                <div className={s.empty}>
+                  <div className={s.emptyTitle}>暂无对话记录</div>
+                  <div className={s.emptySub}>发送一条消息开始继续这个任务。</div>
+                </div>
+              )
+            ) : null}
 
-          {windowedMessages.map((message, offset) => {
-            const index = windowStart + offset;
-            const previous = visibleMessages[index - 1];
-            const showDate = !previous || formatDay(previous.createdAt) !== formatDay(message.createdAt);
-            const isLast = index === visibleMessages.length - 1;
-            const isUserTurn =
-              message.role === "user" &&
-              !isSkillInvocationText(message.text) &&
-              !isKernelInjectedNotice(message.text);
-            return (
-              <div
-                key={message.id}
-                ref={isUserTurn ? (node) => setTurnAnchorNode(message.id, node) : undefined}
-                data-turn-anchor={isUserTurn ? "true" : undefined}
-                data-message-index={index}
-              >
-                {showDate ? <div className={s.dateSeparator}>{formatDay(message.createdAt)}</div> : null}
-                <MessageBubble
-                  message={message}
-                  turnStartedAt={isLast ? turnStartedAt : undefined}
-                  sessionUsage={isLast ? sessionUsage : undefined}
-                  progressModel={isLast ? progressModel : undefined}
-                  subagentSessionIds={subagentSessionIds}
-                  speechStatus={speechState.messageId === message.id ? speechState.status : "idle"}
-                  speechError={speechError?.messageId === message.id ? speechError.message : null}
-                  onSpeak={handleSpeak}
-                  onStop={stopSpeech}
-                  retrySource={
-                    message.role === "assistant" || (message.role === "system" && message.error)
-                      ? precedingUserAsk(visibleMessages, index)
-                      : null
-                  }
-                  onEditMessage={onEditMessage}
-                  onRetryMessage={onRetryMessage}
-                  onDeleteMessage={onDeleteMessage}
-                  correctionLocked={correctionLocked}
-                  correctionLockedReason={correctionLockedReason}
-                  correctionPendingMessageId={correctionPendingMessageId}
-                  onOpenSettings={onOpenSettings}
-                />
+            {hiddenMessageCount > 0 || hasEarlier || isLoadingEarlier || earlierRequested || loadEarlierError ? (
+              <div className={s.earlierBar}>
+                {loadEarlierError ? (
+                  <div className={s.earlierError} role="alert">
+                    <span className={s.earlierErrorText}>加载更早的消息失败：{loadEarlierError.message}</span>
+                    <button
+                      type="button"
+                      className={s.earlierAction}
+                      onClick={loadEarlierMessages}
+                      disabled={isLoadingEarlier}
+                    >
+                      重试
+                    </button>
+                  </div>
+                ) : null}
+                {hiddenMessageCount > 0 || hasEarlier || isLoadingEarlier ? (
+                  <button
+                    type="button"
+                    className={s.systemNoticeToggle}
+                    data-earlier-mode={hiddenMessageCount > 0 ? "local" : "server"}
+                    onClick={() => requestEarlier("button")}
+                    disabled={hiddenMessageCount === 0 && isLoadingEarlier}
+                  >
+                    {hiddenMessageCount > 0
+                      ? `显示更早的 ${Math.min(LONG_SESSION_EARLIER_BATCH, hiddenMessageCount)} 条消息`
+                      : isLoadingEarlier
+                        ? "加载中…"
+                        : "加载更早的消息"}
+                  </button>
+                ) : earlierRequested ? (
+                  <span className={s.earlierEnd}>已到最早</span>
+                ) : null}
               </div>
-            );
-          })}
+            ) : null}
 
-          {statusMessage ? <div className={s.statusMessage}>{statusMessage}</div> : null}
-          {trailing ? <div className={s.trailingSlot}>{trailing}</div> : null}
+            {windowedMessages.map((message, offset) => {
+              const index = windowStart + offset;
+              const previous = visibleMessages[index - 1];
+              const showDate = !previous || formatDay(previous.createdAt) !== formatDay(message.createdAt);
+              const isLast = index === visibleMessages.length - 1;
+              const isUserTurn =
+                message.role === "user" &&
+                !isSkillInvocationText(message.text) &&
+                !isKernelInjectedNotice(message.text);
+              return (
+                <div
+                  key={message.id}
+                  ref={isUserTurn ? (node) => setTurnAnchorNode(message.id, node) : undefined}
+                  data-turn-anchor={isUserTurn ? "true" : undefined}
+                  data-message-id={message.id}
+                  data-message-index={index}
+                >
+                  {showDate ? <div className={s.dateSeparator}>{formatDay(message.createdAt)}</div> : null}
+                  <MessageBubble
+                    message={message}
+                    turnStartedAt={isLast ? turnStartedAt : undefined}
+                    sessionUsage={isLast ? sessionUsage : undefined}
+                    progressModel={isLast ? progressModel : undefined}
+                    subagentSessionIds={subagentSessionIds}
+                    retrySource={
+                      message.role === "assistant" || (message.role === "system" && message.error)
+                        ? precedingUserAsk(visibleMessages, index)
+                        : null
+                    }
+                    onEditMessage={onEditMessage}
+                    onRetryMessage={onRetryMessage}
+                    onDeleteMessage={onDeleteMessage}
+                    correctionLocked={correctionLocked}
+                    correctionLockedReason={correctionLockedReason}
+                    correctionPendingMessageId={correctionPendingMessageId}
+                    onOpenSettings={onOpenSettings}
+                  />
+                </div>
+              );
+            })}
+
+            {statusMessage ? <div className={s.statusMessage}>{statusMessage}</div> : null}
+            {trailing ? <div className={s.trailingSlot}>{trailing}</div> : null}
+          </div>
         </div>
+        {jumpButton.visible ? (
+          <button
+            type="button"
+            className={s.jumpToBottom}
+            onClick={jumpToBottom}
+            aria-label={jumpLabel}
+            title={jumpLabel}
+          >
+            <ArrowDown size={16} strokeWidth={1.75} aria-hidden="true" />
+            <span>{jumpLabel}</span>
+          </button>
+        ) : null}
       </div>
-      {jumpButton.visible ? (
-        <button
-          type="button"
-          className={s.jumpToBottom}
-          onClick={jumpToBottom}
-          aria-label={jumpLabel}
-          title={jumpLabel}
-        >
-          <ArrowDown size={14} strokeWidth={1.75} aria-hidden="true" />
-          <span>{jumpLabel}</span>
-        </button>
-      ) : null}
-    </div>
+    </ToolRevealContext.Provider>
   );
 }

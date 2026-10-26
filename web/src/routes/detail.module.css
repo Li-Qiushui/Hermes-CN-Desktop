@@ -73,3 +73,73 @@
     padding: 8px 16px 0;
   }
 }
+
+/* 网关掉线横幅：常驻在时间线顶部，恢复后自动消失。 */
+.connectionBanner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 12px 0;
+  padding: 6px 10px;
+  border: 1px solid var(--h-line);
+  background: var(--h-bg-soft);
+  font-family: var(--h-font-cn);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.connectionBanner[data-state="reconnecting"] {
+  border-color: color-mix(in srgb, var(--h-warn) 30%, var(--h-line));
+}
+
+.connectionBanner[data-state="failed"] {
+  border-color: color-mix(in srgb, var(--h-err) 40%, var(--h-line));
+}
+
+.connectionBannerIcon {
+  flex: 0 0 auto;
+  color: var(--h-warn);
+}
+
+.connectionBanner[data-state="failed"] .connectionBannerIcon {
+  color: var(--h-err);
+}
+
+.connectionBannerBody {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  gap: 1px;
+}
+
+.connectionBannerTitle {
+  color: var(--h-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.connectionBannerDetail {
+  color: var(--h-text-2);
+  font-size: 13px;
+}
+
+.connectionBannerRetry {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--h-line);
+  background: transparent;
+  color: var(--h-text);
+  font-family: var(--h-font-cn);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.connectionBannerRetry:hover {
+  background: var(--h-bg-chip);
+}

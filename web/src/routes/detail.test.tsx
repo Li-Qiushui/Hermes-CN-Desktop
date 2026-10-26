@@ -1,13 +1,20 @@
 // @vitest-environment jsdom
-import { describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { HermesUIMessage, MessagesResponse } from "@hermes/protocol";
 import { hermesUIMessagesToChatMessages } from "@/components/chat/message-adapter";
 import type { ChatMessage } from "@/components/chat/chat-types";
 import {
+  GATEWAY_OFFLINE_NOTICE_DELAY_MS,
+  GatewayOfflineBanner,
   correctionTruncateRowId,
+  gatewayOfflineNotice,
   locateStoredCorrectionRowId,
   resolveCorrectionRowId,
+  steerRunningSession,
+  stopShouldApply,
 } from "./detail";
+import { GatewayRpcError } from "@/lib/gateway-result";
 
 function uiMessage(
   id: string,
@@ -133,5 +140,93 @@ describe("correction row id resolution", () => {
     });
 
     expect(result).toEqual({ rowId: null, reloaded: true });
+  });
+});
+
+describe("steerRunningSession", () => {
+  it("calls the real kernel method with session_id + text", async () => {
+    const request = vi.fn().mockResolvedValue({ status: "queued", text: "再想想" });
+
+    const result = await steerRunningSession({ request }, "gw-session-1", "再想想");
+
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledWith("session.steer", {
+      session_id: "gw-session-1",
+      text: "再想想",
+    });
+    expect(result).toEqual({ status: "queued", text: "再想想" });
+  });
+
+  it("normalizes an empty reply so callers always get an object", async () => {
+    const request = vi.fn().mockResolvedValue(null);
+
+    await expect(steerRunningSession({ request }, "gw-1", "hi")).resolves.toEqual({});
+  });
+
+  it("propagates a kernel refusal so the composer can degrade to the queue", async () => {
+    const request = vi
+      .fn()
+      .mockRejectedValue(
+        new GatewayRpcError("agent does not support steer", { method: "session.steer", code: 4010 }),
+      );
+
+    await expect(steerRunningSession({ request }, "gw-1", "hi")).rejects.toBeInstanceOf(GatewayRpcError);
+  });
+});
+
+describe("网关掉线横幅", () => {
+  afterEach(cleanup);
+
+  it("online 时永不出现，非 online 也要等超过 2 秒阈值", () => {
+    expect(gatewayOfflineNotice("open", 60_000)).toBeNull();
+    expect(gatewayOfflineNotice("idle", 60_000)).toBeNull();
+    expect(gatewayOfflineNotice("closed", GATEWAY_OFFLINE_NOTICE_DELAY_MS - 1)).toBeNull();
+    expect(gatewayOfflineNotice("closed", GATEWAY_OFFLINE_NOTICE_DELAY_MS)).toEqual(
+      expect.objectContaining({ tone: "offline" }),
+    );
+  });
+
+  it("三级文案：正在重连 / 已断开 / 重连失败", () => {
+    expect(gatewayOfflineNotice("connecting", 2_000)?.title).toBe("正在重连网关…");
+    expect(gatewayOfflineNotice("closed", 2_000)?.title).toBe("连接已断开");
+    expect(gatewayOfflineNotice("error", 2_000)).toEqual(
+      expect.objectContaining({ tone: "failed", title: "重连失败" }),
+    );
+  });
+
+  it("横幅渲染状态色并让「立即重试」回调一次", () => {
+    const onRetry = vi.fn();
+    const notice = gatewayOfflineNotice("error", 2_000);
+    expect(notice).not.toBeNull();
+    render(<GatewayOfflineBanner notice={notice!} onRetry={onRetry} />);
+
+    expect(screen.getByRole("status").getAttribute("data-state")).toBe("failed");
+    fireEvent.click(screen.getByRole("button", { name: /立即重试/ }));
+    expect(onRetry).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("Esc / 中止响应的落地判定", () => {
+  it("回合还在跑：两种结局都落地", () => {
+    expect(stopShouldApply({ runtimeIsBusy: true, outcome: { kind: "settle" } })).toBe(true);
+    expect(
+      stopShouldApply({
+        runtimeIsBusy: true,
+        outcome: { kind: "restore", userMessageId: "live-user-5", draftText: "再说一遍" },
+      }),
+    ).toBe(true);
+  });
+
+  it("空回合已经被内核跑完：Esc 仍然撤回，别把英文占位留在时间线", () => {
+    expect(
+      stopShouldApply({
+        runtimeIsBusy: false,
+        outcome: { kind: "restore", userMessageId: "live-user-5", draftText: "再说一遍" },
+      }),
+    ).toBe(true);
+  });
+
+  it("已经答完的那一轮：Esc 不落地，不会把提问撤掉", () => {
+    expect(stopShouldApply({ runtimeIsBusy: false, outcome: { kind: "settle" } })).toBe(false);
   });
 });
