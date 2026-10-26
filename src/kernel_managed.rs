@@ -36,6 +36,8 @@ static SESSION_TOKEN_RE: LazyLock<Regex> = LazyLock::new(|| {
 static PROBE_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
     reqwest::Client::builder()
         .timeout(PROBE_TIMEOUT)
+        .no_proxy()
+        .pool_max_idle_per_host(0)
         .build()
         .expect("valid kernel probe client")
 });
@@ -1132,14 +1134,37 @@ fn reuse_candidate(previous_port: u16, idle: bool) -> Option<u16> {
     (previous_port != 0 && idle).then_some(previous_port)
 }
 
-async fn port_is_idle(port: u16) -> bool {
-    tokio::time::timeout(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PortState {
+    Idle,
+    InUse,
+}
+
+fn port_state_from_probe(outcome: Option<Option<String>>) -> PortState {
+    match outcome {
+        Some(Some(_token)) => PortState::InUse,
+        Some(None) | None => PortState::Idle,
+    }
+}
+
+async fn port_state(port: u16) -> PortState {
+    let outcome = tokio::time::timeout(
         FALLBACK_PROBE_TIMEOUT,
         probe_kernel(DEFAULT_KERNEL_HOST, port),
     )
-    .await
-    .map(|token| token.is_none())
-    .unwrap_or(false)
+    .await;
+    if outcome.is_err() {
+        log::debug!(
+            "kernel: port {} probe timed out after {:?}, treating it as idle",
+            port,
+            FALLBACK_PROBE_TIMEOUT
+        );
+    }
+    port_state_from_probe(outcome.ok())
+}
+
+async fn port_is_idle(port: u16) -> bool {
+    port_state(port).await == PortState::Idle
 }
 
 async fn relaunch_owned(
@@ -1152,7 +1177,7 @@ async fn relaunch_owned(
         let idle = port_is_idle(previous_port).await;
         if !idle {
             log::warn!(
-                "kernel: previous port {} still answers, relaunching on an ephemeral port",
+                "kernel: previous port {} still serves a kernel session token, relaunching on an ephemeral port",
                 previous_port
             );
         }
@@ -1820,5 +1845,85 @@ mod tests {
         status.mode = "restarting".to_string();
         set_kernel_status(status);
         assert!(kernel_status().port_fallback);
+    }
+
+    #[test]
+    fn probe_timeout_and_errors_are_idle_but_a_token_is_in_use() {
+        assert_eq!(port_state_from_probe(None), PortState::Idle);
+        assert_eq!(port_state_from_probe(Some(None)), PortState::Idle);
+        assert_eq!(
+            port_state_from_probe(Some(Some("token".to_string()))),
+            PortState::InUse
+        );
+    }
+
+    fn serve_static(status_line: &'static str, body: &'static str) -> u16 {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind test port");
+        let port = listener.local_addr().expect("test addr").port();
+        std::thread::spawn(move || {
+            for incoming in listener.incoming() {
+                let mut stream = match incoming {
+                    Ok(stream) => stream,
+                    Err(_) => break,
+                };
+                let mut buf = [0u8; 2048];
+                let _ = stream.read(&mut buf);
+                let response = format!(
+                    "{}\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    status_line,
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+        port
+    }
+
+    #[tokio::test]
+    async fn dead_port_has_no_listener_and_is_idle() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind test port");
+        let port = listener.local_addr().expect("test addr").port();
+        drop(listener);
+
+        assert_eq!(probe_kernel(DEFAULT_KERNEL_HOST, port).await, None);
+        assert!(port_is_idle(port).await);
+        assert_eq!(port_state(port).await, PortState::Idle);
+    }
+
+    #[tokio::test]
+    async fn live_kernel_port_with_session_token_is_in_use() {
+        let port = serve_static(
+            "HTTP/1.1 200 OK",
+            "<html><script>window.__HERMES_SESSION_TOKEN__ = \"tok-live\";</script></html>",
+        );
+
+        assert_eq!(
+            probe_kernel(DEFAULT_KERNEL_HOST, port).await.as_deref(),
+            Some("tok-live")
+        );
+        assert_eq!(port_state(port).await, PortState::InUse);
+        assert!(!port_is_idle(port).await);
+    }
+
+    #[tokio::test]
+    async fn answering_without_a_token_is_idle() {
+        let port = serve_static("HTTP/1.1 200 OK", "<html><body>not our kernel</body></html>");
+
+        assert_eq!(probe_kernel(DEFAULT_KERNEL_HOST, port).await, None);
+        assert!(port_is_idle(port).await);
+    }
+
+    #[tokio::test]
+    async fn non_success_status_is_idle() {
+        let port = serve_static(
+            "HTTP/1.1 503 Service Unavailable",
+            "<script>window.__HERMES_SESSION_TOKEN__ = \"tok\";</script>",
+        );
+
+        assert_eq!(probe_kernel(DEFAULT_KERNEL_HOST, port).await, None);
+        assert!(port_is_idle(port).await);
     }
 }
