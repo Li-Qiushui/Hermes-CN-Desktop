@@ -97,6 +97,16 @@
   gap: 16px;
 }
 
+.composerAlt {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid color-mix(in srgb, var(--h-line) 60%, transparent);
+}
+
 @media (max-width: 900px) {
   .pageContent {
     padding: 24px 20px 80px;

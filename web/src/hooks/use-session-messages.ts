@@ -240,6 +240,7 @@ export function useSessionMessages(id: string | undefined): UseSessionMessagesRe
   const [isLoadingEarlier, setIsLoadingEarlier] = useState(false);
   const [loadEarlierError, setLoadEarlierError] = useState<Error | null>(null);
   const inFlightRef = useRef(false);
+  const earlierOffsetRef = useRef(0);
 
   const query = useQuery<SessionMessagesData, Error>({
     queryKey: sessionMessagesQueryKey(profile, id),
@@ -257,6 +258,7 @@ export function useSessionMessages(id: string | undefined): UseSessionMessagesRe
 
   useEffect(() => {
     inFlightRef.current = false;
+    earlierOffsetRef.current = 0;
     setIsLoadingEarlier(false);
     setLoadEarlierError(null);
   }, [id, profile]);
@@ -273,11 +275,15 @@ export function useSessionMessages(id: string | undefined): UseSessionMessagesRe
     setIsLoadingEarlier(true);
     setLoadEarlierError(null);
     try {
+      const offset = Math.max(earlierOffsetRef.current, current.messages.length);
       const page = await fetchSessionMessagesPage(id, {
         limit: SESSION_MESSAGES_PAGE_SIZE,
-        offset: current.messages.length,
+        offset,
         order: "latest",
       });
+      earlierOffsetRef.current = page.data.pagination
+        ? page.data.pagination.offset + page.data.pagination.returned
+        : offset + page.returned;
       qc.setQueryData<SessionMessagesData>(key, (previous) =>
         previous ? mergeEarlierMessages(previous, page) : previous,
       );

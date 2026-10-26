@@ -16,7 +16,7 @@
   border: 0;
   cursor: pointer;
   color: var(--h-text-2);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
 }
 
@@ -50,16 +50,103 @@
 
 .row {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
   padding: 8px 8px;
   border-radius: 0;
   background: var(--h-bg-input);
   border: 1px solid transparent;
 }
 
+.rowMain {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.row[data-failed] {
+  border-color: color-mix(in srgb, var(--h-color-danger-fg) 45%, transparent);
+}
+
+.rowError {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--h-color-danger-fg);
+}
+
+.rowError > svg {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  stroke-width: 2;
+}
+
+.errorText {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.retry {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 40px;
+  min-height: 40px;
+  padding: 0 14px;
+  border: 1px solid color-mix(in srgb, var(--h-color-danger-fg) 45%, var(--h-line));
+  background: color-mix(in srgb, var(--h-color-danger-fg) 8%, transparent);
+  color: var(--h-color-danger-fg);
+  font-family: var(--h-font-cn);
+  font-size: 13px;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.retry:hover {
+  background: color-mix(in srgb, var(--h-color-danger-fg) 16%, transparent);
+}
+
+.retry:focus-visible {
+  outline: 1px solid var(--h-color-danger-fg);
+  outline-offset: 1px;
+}
+
+.retry svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 2;
+}
+
 .row[data-editing] {
-  border-color: var(--h-accent, #c2410c);
+  border-color: var(--h-accent);
+}
+
+.row[data-volatile] {
+  border-color: color-mix(in srgb, var(--h-color-danger-fg) 45%, transparent);
+}
+
+.warning {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  font-size: 13px;
+  color: var(--h-color-danger-fg);
+}
+
+.warning svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 2;
 }
 
 .preview {
@@ -76,7 +163,7 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 11px;
+  font-size: 13px;
   color: var(--h-text-2);
 }
 

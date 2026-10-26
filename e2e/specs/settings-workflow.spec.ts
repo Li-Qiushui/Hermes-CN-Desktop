@@ -3,8 +3,8 @@ import { expect, test } from "@playwright/test";
 // End-to-end coverage for the button events that the chat-loop suite does not
 // exercise: the Config page (renders the config editor surface) and the Logs
 // page (filter segments + refresh). These run against the real Core dashboard
-// served by the e2e harness, exactly like guide-layout.spec.ts /
-// voice-settings.spec.ts. In web mode the TS runtime serves /api/config/schema
+// served by the e2e harness, exactly like guide-layout.spec.ts.
+// In web mode the TS runtime serves /api/config/schema
 // in-process (no network request), so the harness's minimal config.yaml yields
 // an empty schema — the config page renders its editor shell with an empty
 // tablist, while the Logs page exposes real filter/refresh buttons to drive.

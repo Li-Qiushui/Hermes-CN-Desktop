@@ -5,7 +5,6 @@ import {
   Clock,
   Ghost,
   Cpu,
-  Mic,
   Puzzle,
   Sparkles,
   SlidersHorizontal,
@@ -29,7 +28,6 @@ interface CapabilityItem {
 
 export const CONFIG_ITEMS: readonly CapabilityItem[] = [
   { label: "模型", path: "/models", icon: Cpu },
-  { label: "语音", path: "/voice", icon: Mic },
   {
     label: "档案",
     path: "/profiles",

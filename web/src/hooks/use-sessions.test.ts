@@ -15,8 +15,10 @@ import {
   searchResultsToSummaries,
   stripSearchHighlight,
   useSessionSearch,
+  removeDeletedSessionsFromCache,
   withoutSearchResults,
   withoutSessions,
+  withoutSessionsInPages,
 } from "./use-sessions";
 
 vi.mock("@/lib/transport", () => ({
@@ -79,6 +81,38 @@ describe("session cache delete helpers", () => {
 
     expect(result?.sessions.map((item) => item.id)).toEqual(["s2"]);
     expect(result?.total).toBe(1);
+  });
+
+  it("passes through the paged (useInfiniteQuery) shape without throwing", () => {
+    const paged = { pages: [sessionsResponse(["s1", "s2"])], pageParams: [0] } as never;
+    expect(withoutSessions(paged, ["s1"])).toBe(paged);
+  });
+
+  it("drops deleted rows from every page of the paged cache", () => {
+    const paged = {
+      pages: [sessionsResponse(["s1", "s2"]), sessionsResponse(["s3"])],
+      pageParams: [0, 2],
+    };
+    const next = withoutSessionsInPages(paged, ["s2"]);
+    expect(next?.pages.map((page) => page.sessions.map((item) => item.id))).toEqual([["s1"], ["s3"]]);
+    expect(next?.pages[0].total).toBe(1);
+  });
+
+  it("removes rows from both flat and paged caches in one pass", () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const flatKey = ["sessions", "default", 50, 0, "active", "", "created"];
+    const pagedKey = ["sessions", "paged", "default", 20, "active", "", ""];
+    qc.setQueryData(flatKey, sessionsResponse(["s1", "s2"]));
+    qc.setQueryData(pagedKey, {
+      pages: [sessionsResponse(["s1", "s2"])],
+      pageParams: [0],
+    });
+
+    removeDeletedSessionsFromCache(qc, ["s1"]);
+
+    expect((qc.getQueryData(flatKey) as SessionsResponse).sessions.map((item) => item.id)).toEqual(["s2"]);
+    const paged = qc.getQueryData(pagedKey) as { pages: SessionsResponse[] };
+    expect(paged.pages[0].sessions.map((item) => item.id)).toEqual(["s2"]);
   });
 
   it("removes matching search results", () => {

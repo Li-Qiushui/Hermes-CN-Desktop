@@ -34,6 +34,32 @@ function readFileAsDataUrl(file: File): Promise<string | undefined> {
   });
 }
 
+export interface CreateEmptySessionOptions {
+  cwd?: string;
+  reasoningEffort?: ReasoningEffort | null;
+}
+
+export function useCreateEmptySession() {
+  const navigate = useNavigate();
+  const { createSession } = useGateway();
+  const setActiveSessionId = useSetAtom(activeSessionIdAtom);
+
+  return useCallback(async (options?: CreateEmptySessionOptions) => {
+    const workspacePath = options?.cwd?.trim() || undefined;
+    const sessionId = await createSession({
+      cwd: workspacePath,
+      ...(options?.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
+    });
+    if (workspacePath) {
+      rememberWorkspaceProject(workspacePath);
+      rememberSessionWorkspace(sessionId, workspacePath);
+    }
+    setActiveSessionId(sessionId);
+    navigate(`/tasks/${sessionId}`);
+    return sessionId;
+  }, [createSession, navigate, setActiveSessionId]);
+}
+
 export function useCreateAndSendSession() {
   const navigate = useNavigate();
   const {

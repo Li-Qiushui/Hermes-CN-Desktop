@@ -10,6 +10,7 @@ import {
   readSessionTitleOverrides,
   subscribeSessionUiStateChanges,
 } from "@/lib/session-ui-state";
+import { NewChatEntries } from "@/components/chat/new-chat-entries";
 import { HealthGrid } from "@/components/panel/health-grid";
 import { PanelComposer } from "@/components/panel/panel-composer";
 import { PanelHero } from "@/components/panel/panel-hero";
@@ -113,6 +114,9 @@ export function PanelRoute() {
 
         <Section num="01" tag="开始" title="新任务">
           <PanelComposer />
+          <div className={s.composerAlt}>
+            <NewChatEntries variant="inline" sessions={recent} />
+          </div>
         </Section>
 
         <Section

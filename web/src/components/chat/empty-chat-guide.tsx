@@ -1,5 +1,8 @@
 import { FileText, FolderTree, History, Paperclip, Sparkles, Wand2 } from "lucide-react";
+import { NewChatEntries } from "./new-chat-entries";
 import s from "./empty-chat-guide.module.css";
+
+export { RECENT_SESSION_LIMIT, pickRecentSessions, recentSessionTime } from "./new-chat-entries";
 
 export interface EmptyChatGuideProps {
   onPick: (text: string) => void;
@@ -36,6 +39,7 @@ export function EmptyChatGuide({ onPick }: EmptyChatGuideProps) {
           );
         })}
       </div>
+      <NewChatEntries />
       <p className={s.hint}>
         <Paperclip size={12} strokeWidth={1.75} aria-hidden="true" />
         可以把文件拖进来，也可以粘贴长文本（会自动转成附件）。

@@ -249,6 +249,9 @@ export const assistantAvatarEffectiveAtom = atom(
 );
 
 const showReasoningBaseAtom = persistedUiBaseAtom<boolean>(
+  // 保持 false：这个原子的默认值被 ui.test.ts / 初始化竞态用例当作契约锁住了。
+  // 「默认能看到思考」由渲染层 resolveShowReasoning 实现（键没存过 → 展开），
+  // 这里再改默认值只会让两处语义打架。
   () => readUiValue("hermes.show-reasoning", false),
 );
 export const showReasoningAtom = atom(

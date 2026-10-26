@@ -15,7 +15,7 @@
   height: calc(var(--h-topbar-h) + var(--h-window-control-safe-top, 0px));
   display: flex;
   align-items: center;
-  padding: var(--h-window-control-safe-top, 0px) 16px 0;
+  padding: var(--h-window-control-safe-top, 0px) 16px 0 var(--h-space-2);
   gap: 12px;
   border-bottom: 1px solid var(--h-line);
   background: var(--h-bg-pane);
@@ -33,7 +33,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  width: calc(var(--h-sidebar-w) - 32px);
+  width: calc(var(--h-sidebar-w) - 24px);
   height: 44px;
   padding: 0 4px 0 4px;
   flex-shrink: 0;
@@ -51,7 +51,7 @@
   flex: 1;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--h-space-2);
   overflow: hidden;
 }
 
@@ -69,7 +69,7 @@
   font-style: normal;
   letter-spacing: -0.02em;
   white-space: nowrap;
-  line-height: 1.18;
+  line-height: normal;
   overflow: hidden;
   text-overflow: ellipsis;
 }

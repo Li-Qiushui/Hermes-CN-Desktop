@@ -44,10 +44,15 @@ import {
 import {
   buildMentionReplacement,
   getActiveMentionToken,
-  getMentionCandidates,
+  loadMentionCandidates,
   type MentionCandidate,
   type MentionKind,
 } from "@/lib/composer-mentions";
+import {
+  pushComposerHistory,
+  readComposerHistory,
+  recallComposerHistory,
+} from "@/lib/composer-drafts";
 import { contextUsageRisk } from "@/lib/context-usage";
 import {
   composerSubmitShortcutHint,
@@ -55,6 +60,7 @@ import {
   type ComposerSubmitShortcut,
 } from "@/lib/composer-submit-shortcut";
 import { composerSubmitShortcutAtom } from "@/stores/ui";
+import { MAX_QUEUED_PER_SESSION } from "@/stores/composer-queue";
 import {
   normalizeWorkspacePath,
   readWorkspacePath,
@@ -157,6 +163,27 @@ export function isComposerComposing({
   return tracked || native;
 }
 
+/**
+ * 附件草稿缓存：文字进 localStorage，附件（File / blob 预览）进不了，只能放内存。
+ * 切换会话会重挂载 GooseComposer，缓存按 draftKey 把附件接回来，避免「切走再回来
+ * 附件全没了」。
+ */
+const draftAttachments = new Map<string, ComposerAttachment[]>();
+
+export function readDraftAttachments(draftKey: string | undefined): ComposerAttachment[] {
+  if (!draftKey) return [];
+  return draftAttachments.get(draftKey) ?? [];
+}
+
+export function writeDraftAttachments(
+  draftKey: string | undefined,
+  attachments: ComposerAttachment[],
+): void {
+  if (!draftKey) return;
+  if (attachments.length === 0) draftAttachments.delete(draftKey);
+  else draftAttachments.set(draftKey, attachments);
+}
+
 interface GooseComposerProps {
   onSend?: (
     payload: ComposerSubmitPayload,
@@ -171,6 +198,9 @@ interface GooseComposerProps {
   initialNonce?: number;
   autoFocus?: boolean;
   disabled?: boolean;
+  /** 连接不可用时的发送禁用理由。设置后发送/入队按钮置灰，并把这段文案放到
+   * 按钮的 title（悬停提示），避免用户在掉线时以为消息已经排上队。 */
+  sendBlockedReason?: string;
   loading?: boolean;
   /** Keep accepting submissions while `loading` is true. The parent is expected to
    * park the payload in its own send queue instead of sending it immediately (the
@@ -200,6 +230,9 @@ interface GooseComposerProps {
   mentionPicker?: ComposerMentionPickerProps;
   contextUsage?: ComposerContextUsage | null;
   onDraftChange?: (text: string) => void;
+  /** 草稿槽标识（一般是 sessionId）。附件不像文字那样能存 localStorage，
+   *  这个 key 让组件重挂载（切会话 / 换 draft 槽）后把附件接回来。 */
+  draftKey?: string;
   /** Hide `/compress` affordances when the composer is not bound to an existing session. */
   showCompressCommand?: boolean;
   initialWorkspacePath?: string;
@@ -207,6 +240,33 @@ interface GooseComposerProps {
 
 function messageFromError(error: unknown): string {
   return error instanceof Error ? error.message : String(error || "发送失败");
+}
+
+export function formatAttachmentBytes(bytes: number): string {
+  if (bytes >= 1024 ** 3) return `${Number((bytes / 1024 ** 3).toFixed(1))} GB`;
+  if (bytes >= 1024 ** 2) return `${Math.max(1, Math.round(bytes / 1024 ** 2))} MB`;
+  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+
+export function oversizedAttachmentNotice(
+  files: readonly { name?: string; size: number }[],
+  limit: number = MAX_ATTACHMENT_BYTES,
+): string {
+  const oversized = files.filter((file) => file.size > limit);
+  if (!oversized.length) return "";
+  const limitLabel = formatAttachmentBytes(limit);
+  if (oversized.length === 1) {
+    const file = oversized[0]!;
+    return `「${file.name || "未命名文件"}」有 ${formatAttachmentBytes(file.size)}，超过单个附件上限 ${limitLabel}，没有添加`;
+  }
+  const names = oversized.slice(0, 2).map((file) => `「${file.name || "未命名文件"}」`).join("、");
+  return `${names} 等 ${oversized.length} 个文件超过单个附件上限 ${limitLabel}，没有添加`;
+}
+
+function emptyAttachmentNotice(files: readonly { name?: string }[]): string {
+  if (!files.length) return "";
+  const names = files.slice(0, 2).map((file) => file.name || "未命名文件").join("、");
+  return `${names} 是空文件，没有添加`;
 }
 
 function MentionIcon({ kind }: { kind: MentionKind }) {
@@ -243,6 +303,7 @@ export function GooseComposer({
   initialNonce = 0,
   autoFocus = false,
   disabled = false,
+  sendBlockedReason,
   loading = false,
   queueWhileLoading = true,
   queuedCount = 0,
@@ -260,6 +321,7 @@ export function GooseComposer({
   mentionPicker,
   contextUsage,
   onDraftChange,
+  draftKey,
   showCompressCommand = true,
   initialWorkspacePath = "",
 }: GooseComposerProps) {
@@ -269,13 +331,25 @@ export function GooseComposer({
   const submitHint = composerSubmitShortcutHint(effectiveSubmitShortcut);
   const isBig = variant === "big";
   const [value, setValue] = useState(initial);
-  const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
+  const [attachments, setAttachments] = useState<ComposerAttachment[]>(
+    () => readDraftAttachments(draftKey),
+  );
   const [selectionStart, setSelectionStart] = useState(initial.length);
   const [selectionEnd, setSelectionEnd] = useState(initial.length);
   const [workspacePath, setWorkspacePath] = useState(
     () => normalizeWorkspacePath(initialWorkspacePath) || readWorkspacePath(),
   );
   const [submitError, setSubmitError] = useState("");
+  // 发送被连接状态拦下时写进 submitError 的那句话是「当时的连接状态」的快照，
+  // 连接恢复后必须撤掉，否则会出现「网关未连接」一直挂着、而发送其实已经能点。
+  // 只记我们写过的那句，真正来自发送失败的错误不受影响。
+  const blockedSubmitErrorRef = useRef<string | null>(null);
+  useEffect(() => {
+    const stale = blockedSubmitErrorRef.current;
+    blockedSubmitErrorRef.current = sendBlockedReason ?? null;
+    if (!stale || stale === sendBlockedReason) return;
+    setSubmitError((previous) => (previous === stale ? "" : previous));
+  }, [sendBlockedReason]);
   const [pasteNotice, setPasteNotice] = useState("");
   const [steerNotice, setSteerNotice] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
   const [steerBusy, setSteerBusy] = useState(false);
@@ -309,10 +383,14 @@ export function GooseComposer({
   const [mentionCandidates, setMentionCandidates] = useState<MentionCandidate[]>([]);
   const [mentionActiveIndex, setMentionActiveIndex] = useState(0);
   const [mentionLoading, setMentionLoading] = useState(false);
+  const [mentionError, setMentionError] = useState("");
+  const [mentionRetryNonce, setMentionRetryNonce] = useState(0);
   const [dismissedMentionToken, setDismissedMentionToken] = useState("");
+  const [attachmentNotice, setAttachmentNotice] = useState("");
   const [urlDialog, setUrlDialog] = useState<{ url: string; start: number; end: number } | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const mentionReqIdRef = useRef(0);
+  const historyIndexRef = useRef(-1);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);
   const valueRef = useRef(initial);
@@ -333,9 +411,17 @@ export function GooseComposer({
   // detail route always does); a bare `loading` from a new-task submit must keep
   // the single-button behaviour.
   const queueMode = loading && queueWhileLoading && !disabled && Boolean(onStop);
-  // 运行中默认走「引导」：把这句并入当前轮，不打断。内核第一次报不支持
-  // （4010 / unknown method）就降级回入队，之后不再每轮重试。
+  // 运行中提交默认「入队」，不打断当前轮；想纠偏走显式的「立即引导」
+  // （Ctrl+Enter 或旁边那颗引导按钮）。内核第一次报不支持（4010 /
+  // unknown method）就把引导入口收掉，之后不再每轮重试。
   const steerMode = queueMode && !steerUnsupported;
+  const queueFull = queueMode && queuedCount >= MAX_QUEUED_PER_SESSION;
+  const steerBlockedReason =
+    attachments.length > 0
+      ? "附件不能随插话发送"
+      : selectedSkill
+        ? "Skill 命令不能随插话发送"
+        : null;
   const queuedBuiltinCommand = useMemo(
     () => (queueMode ? parseBuiltinComposerCommand(value) : null),
     [queueMode, value],
@@ -347,11 +433,20 @@ export function GooseComposer({
   const canSend =
     (submitText.length > 0 || attachments.length > 0) &&
     !disabled &&
+    !sendBlockedReason &&
     !hasProcessingAttachment &&
     (!loading || queueMode) &&
-    !queuedBuiltinCommand;
-  const showQueueHint =
-    queueMode && (value.trim().length > 0 || queuedCount > 0);
+    !queuedBuiltinCommand &&
+    !queueFull;
+  const canSteerNow =
+    (submitText.length > 0 || attachments.length > 0) &&
+    !disabled &&
+    !sendBlockedReason &&
+    !hasProcessingAttachment &&
+    !queuedBuiltinCommand &&
+    steerMode &&
+    !steerBlockedReason;
+  const showQueueHint = queueMode;
   // Two-tier slash palette: typing "/" lists top-level commands (/skill,
   // /compress) via slashToken (command mode); typing "/skill <name>" lists the
   // skill catalog via skillToken (skill mode). The two tokens are disjoint by
@@ -418,7 +513,7 @@ export function GooseComposer({
     mentionToken &&
     !controlsDisabled &&
     dismissedMentionToken !== mentionTokenKey &&
-    (mentionCandidates.length > 0 || mentionLoading),
+    (mentionCandidates.length > 0 || mentionLoading || Boolean(mentionError)),
   );
 
   const resolvedPlaceholder = selectedSkill
@@ -446,6 +541,22 @@ export function GooseComposer({
     setSelectionEnd(next.cursor);
     setDismissedMentionToken("");
     focusTextareaAt(next.cursor);
+  }, [focusTextareaAt]);
+
+  const retryMentionLoad = useCallback(() => {
+    setMentionError("");
+    setDismissedMentionToken("");
+    setMentionRetryNonce((current) => current + 1);
+  }, []);
+
+  const applyHistoryRecall = useCallback((text: string, caret: number) => {
+    valueRef.current = text;
+    setValue(text);
+    setSelectionStart(caret);
+    setSelectionEnd(caret);
+    setDismissedSlashToken("");
+    setDismissedMentionToken("");
+    focusTextareaAt(caret);
   }, [focusTextareaAt]);
 
   const insertDroppedText = useCallback((raw: string) => {
@@ -530,7 +641,8 @@ export function GooseComposer({
 
   useEffect(() => {
     attachmentsRef.current = attachments;
-  }, [attachments]);
+    writeDraftAttachments(draftKey, attachments);
+  }, [attachments, draftKey]);
 
   useEffect(() => {
     selectedModelRef.current = modelPicker?.selected ?? null;
@@ -538,9 +650,11 @@ export function GooseComposer({
 
   useEffect(() => {
     return () => {
+      // 有草稿槽时附件留在缓存里等下次挂载复用，预览 URL 不能提前撤掉。
+      if (draftKey) return;
       attachmentsRef.current.forEach(revokeAttachmentPreview);
     };
-  }, []);
+  }, [draftKey]);
 
   useEffect(() => {
     if (!controlsDisabled) return;
@@ -551,6 +665,25 @@ export function GooseComposer({
     setDragActive(false);
     dragDepthRef.current = 0;
   }, [controlsDisabled]);
+
+  useEffect(() => {
+    historyIndexRef.current = -1;
+  }, [draftKey]);
+
+  useEffect(() => {
+    if (!loading || !onStop) return;
+    const handleWindowEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented || event.isComposing) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('[role="dialog"]')) return;
+      const field = target?.closest("input, textarea, [contenteditable='true']");
+      if (field && field !== textareaRef.current) return;
+      event.preventDefault();
+      void onStop();
+    };
+    window.addEventListener("keydown", handleWindowEscape);
+    return () => window.removeEventListener("keydown", handleWindowEscape);
+  }, [loading, onStop]);
 
   useEffect(() => {
     setSkillActiveIndex(0);
@@ -571,10 +704,12 @@ export function GooseComposer({
     if (!mentionTokenKey || !picker || picker.disabled) {
       setMentionCandidates([]);
       setMentionLoading(false);
+      setMentionError("");
       return;
     }
     const reqId = (mentionReqIdRef.current += 1);
     setMentionLoading(true);
+    setMentionError("");
     // mentionTokenKey is `${start}:${query}`; the query may itself contain ":".
     const query = mentionTokenKey.slice(mentionTokenKey.indexOf(":") + 1);
     const source = {
@@ -582,15 +717,31 @@ export function GooseComposer({
       sessions: picker.sessions,
       profile: picker.profile,
     };
+    let cancelled = false;
     const timer = setTimeout(() => {
-      void getMentionCandidates(query, source).then((candidates) => {
-        if (mentionReqIdRef.current !== reqId) return;
-        setMentionCandidates(candidates);
-        setMentionLoading(false);
-      });
+      void loadMentionCandidates(query, source)
+        .then((result) => {
+          if (cancelled || mentionReqIdRef.current !== reqId) return;
+          setMentionCandidates(result.candidates);
+          setMentionError(result.error);
+          setMentionLoading(false);
+        })
+        .catch((error: unknown) => {
+          if (cancelled || mentionReqIdRef.current !== reqId) return;
+          setMentionCandidates([]);
+          setMentionError(
+            error instanceof Error && error.message.trim()
+              ? `引用检索失败：${error.message.trim()}`
+              : "引用检索失败",
+          );
+          setMentionLoading(false);
+        });
     }, 120);
-    return () => clearTimeout(timer);
-  }, [mentionTokenKey]);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [mentionRetryNonce, mentionTokenKey]);
 
   // Picker now groups candidates internally (configured / recent / MoA)
   // from the catalog + usage log. Composer just hands it the raw
@@ -618,29 +769,29 @@ export function GooseComposer({
     const nextPaths = uniquePaths(paths);
     if (!nextPaths.length) return;
     setSubmitError("");
+    setAttachmentNotice("");
     appendAttachmentDrafts(nextPaths.map((path, index) => createPathAttachment(path, index)));
   }, [appendAttachmentDrafts]);
 
   const addBrowserFiles = useCallback((files: File[] | FileList) => {
+    const all = Array.from(files);
     const accepted: File[] = [];
-    const rejected: string[] = [];
-    for (const file of Array.from(files)) {
+    const empty: File[] = [];
+    for (const file of all) {
       if (file.size === 0) {
-        rejected.push(`${file.name || "未命名文件"} 为空文件`);
+        empty.push(file);
         continue;
       }
-      if (file.size > MAX_ATTACHMENT_BYTES) {
-        rejected.push(`${file.name || "未命名文件"} 超过 50 MB`);
-        continue;
-      }
+      if (file.size > MAX_ATTACHMENT_BYTES) continue;
       accepted.push(file);
     }
 
-    if (rejected.length) {
-      setSubmitError(rejected.slice(0, 2).join("；"));
-    } else {
-      setSubmitError("");
-    }
+    const notice = [oversizedAttachmentNotice(all), emptyAttachmentNotice(empty)]
+      .filter(Boolean)
+      .join("；");
+    if (notice) setAttachmentNotice(notice);
+    else setAttachmentNotice("");
+    setSubmitError("");
     appendAttachmentDrafts(accepted.map((file, index) => createFileAttachment(file, index)));
   }, [appendAttachmentDrafts]);
 
@@ -949,6 +1100,8 @@ export function GooseComposer({
     markAttachmentsProcessing();
     try {
       await onSend?.(payload, { updateAttachment });
+      pushComposerHistory(draftKey, payload.text);
+      historyIndexRef.current = -1;
       resetAfterSubmit();
       setSteerNotice({ kind: "ok", text: notice });
     } catch (error) {
@@ -971,20 +1124,27 @@ export function GooseComposer({
       setSubmitError(`Agent 运行中，/${queuedBuiltinCommand.name} 需等当前回合结束再执行`);
       return;
     }
-    if (!canSend) return;
+    if (steerBlockedReason) {
+      setSubmitError("");
+      setSteerNotice({
+        kind: "error",
+        text: `${steerBlockedReason}，按回车入队；内容仍留在输入框`,
+      });
+      return;
+    }
+    if (!canSteerNow) return;
     const text = submitText.trim();
     if (!text) {
       setSteerNotice({ kind: "error", text: "引导内容不能为空" });
       return;
     }
     const payload = composerPayload();
-    // 附件和 Skill 命令没法塞进「引导」这一句纯文本，直接走排队更诚实。
-    if (selectedSkill || attachments.length > 0) {
-      await parkInQueue(payload, "附件 / Skill 不能随引导发送，已改为排队");
-      return;
-    }
     if (!onSteer && !gwSessionId) {
-      await parkInQueue(payload, "还没拿到内核会话 id，已改为排队");
+      setSubmitError("");
+      setSteerNotice({
+        kind: "error",
+        text: "还没拿到内核会话 id，暂时不能插话，按回车入队；内容仍留在输入框",
+      });
       return;
     }
     setSubmitError("");
@@ -1001,6 +1161,8 @@ export function GooseComposer({
         kind: "ok",
         text: status === "redirected" ? "已改为当前轮的新指令" : "已并入当前轮",
       });
+      pushComposerHistory(draftKey, text);
+      historyIndexRef.current = -1;
       resetAfterSubmit();
     } catch (error) {
       const info = classifyGatewayError(error);
@@ -1020,6 +1182,10 @@ export function GooseComposer({
   };
 
   const send = async () => {
+    if (sendBlockedReason) {
+      setSubmitError(sendBlockedReason);
+      return;
+    }
     if (queuedBuiltinCommand) {
       setSubmitError(`Agent 运行中，/${queuedBuiltinCommand.name} 需等当前回合结束再执行`);
       return;
@@ -1031,13 +1197,15 @@ export function GooseComposer({
     markAttachmentsProcessing();
     try {
       await onSend?.(payload, { updateAttachment });
+      pushComposerHistory(draftKey, payload.text);
+      historyIndexRef.current = -1;
       resetAfterSubmit();
     } catch (error) {
       restoreAttachmentState(error);
     }
   };
 
-  const submitAction = () => (steerMode ? steer() : send());
+  const submitAction = () => send();
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     const isComposing = isComposerComposing({
@@ -1116,6 +1284,55 @@ export function GooseComposer({
         }
         return;
       }
+    }
+
+    if (event.key === "Escape") {
+      if (modelOpen) {
+        event.preventDefault();
+        setModelOpen(false);
+        return;
+      }
+      if (urlDialog) {
+        event.preventDefault();
+        setUrlDialog(null);
+        return;
+      }
+      if (loading && onStop) {
+        event.preventDefault();
+        void onStop();
+        return;
+      }
+      return;
+    }
+
+    if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+      const recall = recallComposerHistory({
+        direction: event.key === "ArrowUp" ? "prev" : "next",
+        history: readComposerHistory(draftKey),
+        index: historyIndexRef.current,
+        value,
+        selectionStart,
+        selectionEnd,
+      });
+      if (recall) {
+        event.preventDefault();
+        historyIndexRef.current = recall.index;
+        applyHistoryRecall(recall.text, recall.caret);
+        return;
+      }
+    }
+
+    // 运行中：Ctrl/Cmd+Enter 是显式的「立即引导」，普通回车仍按提交键入队。
+    if (
+      steerMode &&
+      event.key === "Enter" &&
+      (event.ctrlKey || event.metaKey) &&
+      !event.altKey &&
+      !event.shiftKey
+    ) {
+      event.preventDefault();
+      void steer();
+      return;
     }
 
     const shouldSubmit = shouldSubmitComposerKey({
@@ -1244,15 +1461,25 @@ export function GooseComposer({
 
     const droppedFiles = Array.from(event.dataTransfer.files);
     if (droppedFiles.length) {
+      const oversized = oversizedAttachmentNotice(droppedFiles);
+      if (oversized) setAttachmentNotice(oversized);
+      const usable = droppedFiles.filter(
+        (file) => file.size > 0 && file.size <= MAX_ATTACHMENT_BYTES,
+      );
+      if (!usable.length) {
+        if (!oversized) setAttachmentNotice(emptyAttachmentNotice(droppedFiles));
+        return;
+      }
+      if (!oversized) setAttachmentNotice("");
       const paths: string[] = [];
-      for (const file of droppedFiles) {
+      for (const file of usable) {
         const path = (file as File & { path?: string }).path;
         if (path) paths.push(path);
       }
-      if (paths.length === droppedFiles.length) {
+      if (paths.length === usable.length) {
         addPathAttachments(paths);
       } else {
-        addBrowserFiles(droppedFiles);
+        appendAttachmentDrafts(usable.map((file, index) => createFileAttachment(file, index)));
       }
       return;
     }
@@ -1431,12 +1658,25 @@ export function GooseComposer({
             <span>Agent 运行中，/{queuedBuiltinCommand.name} 需等当前回合结束再执行</span>
           </div>
         ) : showQueueHint ? (
-          <div className={s.queueHint} role="status">
+          <div
+            className={s.queueHint}
+            role="status"
+            data-mode={
+              queueFull
+                ? "full"
+                : steerMode && !steerBlockedReason
+                  ? "queue-steer"
+                  : "queue"
+            }
+          >
             <span>
-              {steerMode
-                ? "Agent 运行中，发送会并入当前轮，Alt 点击改为排队"
-                : "Agent 运行中，发送的内容会排队，本轮结束后自动发送"}
+              {steerBlockedReason
+                ? `Agent 运行中：回车入队（等本轮结束），${steerBlockedReason}，只能用回车排队`
+                : steerMode
+                  ? "Agent 运行中：回车入队（等本轮结束），Ctrl+Enter 立即引导（并入这一轮）"
+                  : "Agent 运行中：回车入队，本轮结束后自动发送"}
               {queuedCount > 0 ? ` · 已排队 ${queuedCount} 条` : ""}
+              {queueFull ? ` · 队列已满（上限 ${MAX_QUEUED_PER_SESSION} 条），先发走一条` : ""}
             </span>
           </div>
         ) : null}
@@ -1450,6 +1690,7 @@ export function GooseComposer({
             setSelectionEnd(event.target.selectionEnd);
             setDismissedSlashToken("");
             setDismissedMentionToken("");
+            historyIndexRef.current = -1;
           }}
           onKeyDown={handleKeyDown}
           onKeyUp={syncTextareaSelection}
@@ -1462,7 +1703,7 @@ export function GooseComposer({
             loading
               ? (loadingPlaceholder ||
                   (steerMode
-                    ? "Agent 运行中，可继续输入，发送会并入当前轮"
+                    ? "Agent 运行中，回车入队，Ctrl+Enter 立即引导"
                     : queueMode
                       ? "Agent 运行中，可继续输入，发送会加入队列"
                       : "Hermes 正在响应..."))
@@ -1561,6 +1802,18 @@ export function GooseComposer({
             </div>
             {mentionLoading && mentionCandidates.length === 0 ? (
               <LoadingState className={s.skillPanelState} variant="inline" label="正在检索…" />
+            ) : mentionError ? (
+              <div className={s.mentionErrorRow} role="alert">
+                <span>{mentionError}</span>
+                <button
+                  type="button"
+                  className={s.mentionRetry}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={retryMentionLoad}
+                >
+                  重试
+                </button>
+              </div>
             ) : mentionCandidates.length === 0 ? (
               <div className={s.skillPanelState}>没有匹配的引用</div>
             ) : (
@@ -1602,6 +1855,12 @@ export function GooseComposer({
                 {hint.label}
               </span>
             ))}
+          </div>
+        ) : null}
+
+        {attachmentNotice ? (
+          <div className={s.attachmentNotice} role="alert">
+            <span>{attachmentNotice}</span>
           </div>
         ) : null}
 
@@ -1725,6 +1984,7 @@ export function GooseComposer({
                 onClick={() => void onStop()}
                 disabled={disabled}
                 aria-label="中止响应"
+                aria-keyshortcuts="Escape"
                 title="中止响应"
               >
                 <StopIcon />
@@ -1736,38 +1996,45 @@ export function GooseComposer({
                 type="button"
                 data-ready={canSend}
                 data-queue={queueMode ? "true" : undefined}
-                data-steer={steerMode ? "true" : undefined}
-                onClick={(event) => {
-                  if (steerMode && !event.altKey) {
-                    void steer();
-                    return;
-                  }
-                  void send();
-                }}
+                data-blocked={sendBlockedReason ? "true" : undefined}
+                onClick={() => void send()}
                 disabled={!canSend || steerBusy}
                 aria-label={
-                  steerMode
-                    ? "引导（运行中，并入当前轮；Alt 点击改为排队）"
+                  sendBlockedReason
+                    ? `无法发送：${sendBlockedReason}`
                     : queueMode
                       ? "发送（运行中，将加入队列）"
                       : "发送消息"
                 }
                 title={
-                  steerMode
-                    ? "引导（不打断当前轮，并入这一轮；Alt 点击改为排队）"
-                    : queueMode
-                      ? "发送（运行中，将加入队列）"
-                      : `发送消息（${submitHint}）`
+                  sendBlockedReason ??
+                  (queueMode
+                    ? "发送（运行中，将加入队列）"
+                    : `发送消息（${submitHint}）`)
                 }
               >
-                {steerMode ? (
-                  <Sparkles className={s.sendIcon} aria-hidden="true" />
-                ) : (
-                  <SendIcon />
-                )}
-                <span>{steerMode ? "引导" : queueMode ? "入队" : "发送"}</span>
+                <SendIcon />
+                <span>{queueMode ? "入队" : "发送"}</span>
               </button>
             )}
+            {steerMode ? (
+              <button
+                className={s.steerButton}
+                type="button"
+                data-ready={canSteerNow}
+                onClick={() => void steer()}
+                disabled={!canSteerNow || steerBusy}
+                aria-label="立即引导"
+                title={
+                  steerBlockedReason
+                    ? `${steerBlockedReason}，只能用回车入队`
+                    : "立即引导（不打断当前轮，并入这一轮；Ctrl+Enter）"
+                }
+              >
+                <Sparkles className={s.sendIcon} aria-hidden="true" />
+                <span>引导</span>
+              </button>
+            ) : null}
           </div>
         </div>
       </div>

@@ -688,6 +688,37 @@
   color: var(--h-err);
 }
 
+.mentionErrorRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  color: var(--h-err);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.mentionErrorRow span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.mentionRetry {
+  flex: none;
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid color-mix(in srgb, var(--h-err) 40%, var(--h-line));
+  background: color-mix(in srgb, var(--h-err) 8%, var(--h-bg-input));
+  color: var(--h-text);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.mentionRetry:hover {
+  background: color-mix(in srgb, var(--h-err) 14%, var(--h-bg-input));
+}
+
 .box[data-variant="big"] .toolbar {
   padding: 12px 16px 12px;
   border-top: 1px solid var(--h-line-soft);
@@ -708,6 +739,7 @@
 }
 
 .box[data-variant="big"] .steerNotice,
+.box[data-variant="big"] .attachmentNotice,
 .box[data-variant="big"] .pasteNotice {
   margin-left: 20px;
   margin-right: 20px;
@@ -783,6 +815,26 @@
   overflow: hidden;
 }
 
+.attachmentNotice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  border: 1px solid color-mix(in srgb, var(--h-err) 38%, var(--h-line));
+  border-left: 2px solid var(--h-err);
+  border-radius: 0;
+  background: color-mix(in srgb, var(--h-err) 8%, var(--h-bg-input));
+  color: var(--h-err);
+  font-size: 13px;
+  line-height: 1.45;
+  padding: 7px 9px;
+}
+
+.attachmentNotice span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .contextWarning[data-risk="danger"] {
   border-color: color-mix(in srgb, var(--h-err) 45%, var(--h-line));
   background: color-mix(in srgb, var(--h-err) 11%, var(--h-bg-input));
@@ -798,7 +850,7 @@
   gap: 8px;
   margin: 0 4px 6px;
   color: var(--h-text-3);
-  font-size: 12.5px;
+  font-size: 13px;
   line-height: 1.4;
 }
 
@@ -1804,7 +1856,6 @@
   height: var(--composer-action-height);
   gap: 8px;
   border: 1px solid var(--composer-send-accent);
-  border-radius: 0;
   background: var(--composer-send-accent);
   color: var(--h-accent-contrast, #fff);
   box-shadow: none;
@@ -1827,6 +1878,39 @@
   --composer-send-accent: color-mix(in srgb, var(--h-accent) 74%, var(--h-text));
 }
 
+.steerButton {
+  flex: 0 0 auto;
+  min-width: 72px;
+  height: var(--composer-action-height);
+  gap: 6px;
+  border: 1px solid var(--h-line);
+  background: var(--h-bg-soft);
+  color: var(--h-text-2);
+  font-family: var(--h-font-cn);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1;
+  padding: 0 12px;
+  cursor: pointer;
+  transition:
+    border-color 0.15s,
+    background 0.15s,
+    color 0.15s;
+}
+
+.steerButton:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--h-accent) 60%, var(--h-line));
+  background: var(--h-bg-chip);
+  color: var(--h-text);
+}
+
+.steerButton:disabled,
+.steerButton[data-ready="false"] {
+  cursor: not-allowed;
+  color: var(--h-text-3);
+  opacity: 1;
+}
+
 .sendButton:disabled,
 .sendButton[data-ready="false"] {
   cursor: not-allowed;
@@ -1842,10 +1926,9 @@
   height: var(--composer-action-height);
   gap: 6px;
   border: 1px solid var(--h-line);
-  border-radius: 0;
   background: var(--h-bg-chip);
   color: var(--h-text-2);
-  font-size: 12.5px;
+  font-size: 13px;
   font-weight: 500;
   padding: 0 12px;
   transition:

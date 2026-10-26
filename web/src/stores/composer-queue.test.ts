@@ -1,14 +1,20 @@
 import { describe, expect, it } from "vitest";
 import type { ComposerAttachment } from "@/components/chat/composer-types";
 import {
+  MAX_QUEUED_PER_SESSION,
   deserializeQueue,
   enqueue,
+  enqueueQueuedPrompt,
   entriesFor,
+  entryHasVolatileAttachments,
   hasNonSerializableAttachments,
+  isQueueFull,
+  markEntryFailed,
   removeEntry,
   serializeQueue,
   shouldAutoDrainOnSettle,
   updateEntry,
+  type QueueState,
   type QueuedPromptEntry,
 } from "./composer-queue";
 
@@ -161,5 +167,112 @@ describe("hasNonSerializableAttachments", () => {
     const state = { s1: [{ id: "q1", text: "hi", attachments: [null, undefined, "x" as any], queuedAt: 1 }] };
     expect(() => hasNonSerializableAttachments(state)).not.toThrow();
     expect(hasNonSerializableAttachments(state)).toBe(false);
+  });
+});
+
+describe("lost attachment bookkeeping", () => {
+  const browserAttachment = {
+    id: "b1",
+    source: "browser",
+    name: "img.png",
+    kind: "image",
+    status: "ready",
+  } as ComposerAttachment;
+
+  it("counts what the restore dropped instead of dropping it silently", () => {
+    const state = enqueue({}, "s1", entry({ text: "带图", attachments: [browserAttachment] }));
+
+    const restored = deserializeQueue(serializeQueue(state));
+    const queued = entriesFor(restored, "s1")[0]!;
+
+    expect(queued.attachments).toHaveLength(0);
+    expect(queued.lostAttachments).toBe(1);
+    expect(entryHasVolatileAttachments(queued)).toBe(true);
+  });
+
+  it("keeps the marker across another restart without double counting", () => {
+    const state = enqueue({}, "s1", entry({ text: "带图", attachments: [browserAttachment] }));
+
+    const once = deserializeQueue(serializeQueue(state));
+    const twice = deserializeQueue(serializeQueue(once));
+    const queued = entriesFor(twice, "s1")[0]!;
+
+    expect(queued.lostAttachments).toBe(1);
+  });
+
+  it("leaves path / uploaded attachments unmarked", () => {
+    const state = enqueue({}, "s1", entry({
+      attachments: [
+        { source: "path", path: "/a/b.txt", name: "b.txt", kind: "file", status: "ready" } as ComposerAttachment,
+      ],
+    }));
+
+    const queued = entriesFor(deserializeQueue(serializeQueue(state)), "s1")[0]!;
+
+    expect(queued.attachments).toHaveLength(1);
+    expect(queued.lostAttachments).toBeUndefined();
+    expect(entryHasVolatileAttachments(queued)).toBe(false);
+  });
+
+  it("flags entries that still hold in-memory browser files", () => {
+    expect(entryHasVolatileAttachments(entry({ attachments: [browserAttachment] }))).toBe(true);
+    expect(entryHasVolatileAttachments(entry({}))).toBe(false);
+  });
+});
+
+describe("per-session queue limits", () => {
+  it("counts a session as full at MAX_QUEUED_PER_SESSION", () => {
+    expect(MAX_QUEUED_PER_SESSION).toBe(8);
+    let state: QueueState = {};
+    for (let i = 0; i < MAX_QUEUED_PER_SESSION - 1; i += 1) {
+      state = enqueue(state, "s1", entry({ id: `e${i}` }));
+    }
+    expect(isQueueFull(state, "s1")).toBe(false);
+    state = enqueue(state, "s1", entry({ id: "last" }));
+    expect(isQueueFull(state, "s1")).toBe(true);
+    expect(isQueueFull(state, "s2")).toBe(false);
+    expect(isQueueFull(state, null)).toBe(false);
+  });
+
+  it("refuses the ninth live enqueue instead of dropping the prompt silently", () => {
+    const key = "limit-session";
+    for (let i = 0; i < MAX_QUEUED_PER_SESSION; i += 1) {
+      expect(enqueueQueuedPrompt(key, { text: `p${i}`, attachments: [] }, i)).not.toBeNull();
+    }
+    expect(enqueueQueuedPrompt(key, { text: "one too many", attachments: [] }, 99)).toBeNull();
+    expect(enqueueQueuedPrompt("other-session", { text: "fine", attachments: [] }, 100)).not.toBeNull();
+  });
+});
+
+describe("delivery failures stay visible", () => {
+  it("keeps the entry and attaches the failure reason", () => {
+    const state = enqueue({}, "s1", entry({ id: "a" }));
+    const next = markEntryFailed(state, "s1", "a", "连接断开了");
+    expect(entriesFor(next, "s1")).toHaveLength(1);
+    expect(entriesFor(next, "s1")[0]!.error).toBe("连接断开了");
+  });
+
+  it("ignores unknown entries and sessions", () => {
+    const state = enqueue({}, "s1", entry({ id: "a" }));
+    expect(markEntryFailed(state, "s1", "gone", "x")).toBe(state);
+    expect(markEntryFailed(state, "s2", "a", "x")).toBe(state);
+  });
+
+  it("does not persist the transient error across a reload", () => {
+    const failed = markEntryFailed(enqueue({}, "s1", entry({ id: "a" })), "s1", "a", "boom");
+    const restored = deserializeQueue(serializeQueue(failed));
+    expect(entriesFor(restored, "s1")[0]!.error).toBeUndefined();
+  });
+
+  it("drops persisted entries whose error field is not a string", () => {
+    const raw = JSON.stringify({
+      s1: [
+        { id: "bad", text: "x", attachments: [], queuedAt: 1, error: { nope: 1 } },
+        { id: "ok", text: "y", attachments: [], queuedAt: 2, error: "kept" },
+      ],
+    });
+    const entries = entriesFor(deserializeQueue(raw), "s1");
+    expect(entries.map((e) => e.id)).toEqual(["ok"]);
+    expect(entries[0]!.error).toBe("kept");
   });
 });

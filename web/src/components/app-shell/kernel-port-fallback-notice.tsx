@@ -9,6 +9,30 @@ import {
 import s from "./kernel-port-fallback-notice.module.css";
 
 const DISMISS_KEY = "hermes.kernelPortFallback.dismissed";
+const HEALTH_TIMEOUT_MS = 2500;
+const RECHECK_FAST_MS = 2000;
+const RECHECK_SLOW_MS = 6000;
+
+export async function kernelEndpointAnswers(
+  baseUrl: string,
+  timeoutMs = HEALTH_TIMEOUT_MS,
+): Promise<boolean> {
+  const target = baseUrl.trim().replace(/\/+$/, "");
+  if (!target || typeof fetch !== "function") return false;
+  const controller = typeof AbortController === "function" ? new AbortController() : null;
+  const timer = controller ? window.setTimeout(() => controller.abort(), timeoutMs) : null;
+  try {
+    const response = await fetch(`${target}/api/health`, {
+      signal: controller?.signal,
+      cache: "no-store",
+    });
+    return response.ok;
+  } catch {
+    return false;
+  } finally {
+    if (timer !== null) window.clearTimeout(timer);
+  }
+}
 
 function readDismissed(): string | null {
   try {
@@ -31,15 +55,19 @@ function writeDismissed(value: string | null) {
 
 export function KernelPortFallbackNotice({
   status,
+  checkEndpoint = kernelEndpointAnswers,
 }: {
   status: KernelStatusView | null | undefined;
+  checkEndpoint?: (baseUrl: string) => Promise<boolean>;
 }) {
   const [copied, setCopied] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const [retryNote, setRetryNote] = useState<string | null>(null);
   const [dismissed, setDismissed] = useState<string | null>(() => readDismissed());
+  const [health, setHealth] = useState<{ endpoint: string; ok: boolean } | null>(null);
 
   const fallback = isKernelPortFallback(status);
+  const baseUrl = (status?.baseUrl ?? "").trim();
 
   useEffect(() => {
     if (fallback) return;
@@ -47,9 +75,36 @@ export function KernelPortFallbackNotice({
     setDismissed(null);
   }, [fallback]);
 
+  useEffect(() => {
+    if (!fallback || !baseUrl) {
+      setHealth(null);
+      return;
+    }
+    let cancelled = false;
+    let timer = 0;
+    let attempts = 0;
+    const check = async () => {
+      const ok = await checkEndpoint(baseUrl);
+      if (cancelled) return;
+      setHealth({ endpoint: baseUrl, ok });
+      if (ok) return;
+      attempts += 1;
+      timer = window.setTimeout(
+        () => void check(),
+        attempts < 3 ? RECHECK_FAST_MS : RECHECK_SLOW_MS,
+      );
+    };
+    void check();
+    return () => {
+      cancelled = true;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [baseUrl, checkEndpoint, fallback]);
+
   if (!fallback) return null;
 
-  const baseUrl = (status?.baseUrl ?? "").trim();
+  const reachable = health && health.endpoint === baseUrl ? health.ok : null;
+  if (reachable === true) return null;
   if (dismissed !== null && dismissed === baseUrl) return null;
 
   const endpoint = kernelEndpoint(status);
@@ -77,25 +132,32 @@ export function KernelPortFallbackNotice({
     setRetryNote(null);
     try {
       const next = await retryKernel();
-      setRetryNote(
-        next && !isKernelPortFallback(next)
-          ? "已重新连上内核"
-          : "还是连不上，重启桌面端才能恢复",
-      );
+      if (next && isKernelPortFallback(next)) {
+        setRetryNote("还是连不上，重启桌面端才能恢复");
+        return;
+      }
+      setRetryNote("已重新连上内核");
+      setHealth({ endpoint: baseUrl, ok: true });
     } finally {
       setRetrying(false);
     }
   };
 
+  const failed = reachable === false;
+
   return (
     <div className={s.notice} role="alert" data-testid="kernel-port-fallback-notice">
       <AlertTriangle size={16} aria-hidden="true" />
       <div className={s.copy}>
-        <div className={s.heading}>内核已换到新端口</div>
+        <div className={s.heading}>
+          {failed ? "内核换了端口，还没连上" : "内核换了端口，已自动重连"}
+        </div>
         <div className={s.detail}>
-          网络通道需要重启桌面端才能恢复。刚才重启内核时旧端口没抢回来，内核现在跑在
+          {failed ? "桌面端已把接口地址切到" : "桌面端已按新地址"}
           <code>{endpoint}</code>
-          ，消息收发会一直连不上。
+          {failed
+            ? "，正在重试；一直连不上的话再重启桌面端。"
+            : "重新建立连接，连上后这条提示会自动消失。"}
         </div>
         {retryNote ? <div className={s.note}>{retryNote}</div> : null}
       </div>

@@ -1,5 +1,12 @@
 import { useEffect, useState } from "react";
-import { useQuery, useInfiniteQuery, useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import {
+  useQuery,
+  useInfiniteQuery,
+  useMutation,
+  useQueryClient,
+  type InfiniteData,
+  type QueryClient,
+} from "@tanstack/react-query";
 import { fetchJSON, deleteJSON, patchJSON, postJSON } from "@/lib/transport";
 import { useActiveProfileName } from "@/hooks/use-profiles";
 import { unpinSessions } from "@/lib/session-ui-state";
@@ -443,11 +450,19 @@ export async function deleteSessionsInBatches(
   };
 }
 
+export type SessionsInfiniteData = InfiniteData<SessionsResponse>;
+
+// 侧栏列表用 useInfiniteQuery 缓存成 { pages, pageParams }，不是 SessionsResponse。
+// 删除、归档都以 ["sessions"] 前缀扫全部缓存，形状没判就直接取 .sessions 会抛 TypeError。
+export function isInfiniteSessionsData(value: unknown): value is SessionsInfiniteData {
+  return !!value && typeof value === "object" && Array.isArray((value as { pages?: unknown }).pages);
+}
+
 export function withoutSessions(
   sessions: SessionsResponse | undefined,
   ids: Iterable<string>,
 ): SessionsResponse | undefined {
-  if (!sessions) return sessions;
+  if (!sessions || !Array.isArray(sessions.sessions)) return sessions;
   const idSet = new Set(normalizeSessionIds(ids));
   if (idSet.size === 0) return sessions;
   const nextSessions = sessions.sessions.filter((session) => !idSet.has(session.id));
@@ -463,18 +478,35 @@ export function withoutSearchResults(
   results: { results: SearchResult[] } | undefined,
   ids: Iterable<string>,
 ): { results: SearchResult[] } | undefined {
-  if (!results) return results;
+  if (!results || !Array.isArray(results.results)) return results;
   const idSet = new Set(normalizeSessionIds(ids));
   if (idSet.size === 0) return results;
   const nextResults = results.results.filter((result) => !idSet.has(result.session_id));
   return nextResults.length === results.results.length ? results : { ...results, results: nextResults };
 }
 
-function removeDeletedSessionsFromCache(qc: QueryClient, ids: Iterable<string>): void {
+/** 分页缓存（useInfiniteQuery）里逐页删掉同样有效的行，返回新对象只有在真删掉时才换引用。 */
+export function withoutSessionsInPages(
+  data: SessionsInfiniteData | undefined,
+  ids: Iterable<string>,
+): SessionsInfiniteData | undefined {
+  if (!data) return data;
+  const idSet = new Set(normalizeSessionIds(ids));
+  if (idSet.size === 0) return data;
+  let changed = false;
+  const pages = data.pages.map((page) => {
+    const next = withoutSessions(page, idSet);
+    if (next !== page) changed = true;
+    return next ?? page;
+  });
+  return changed ? { ...data, pages } : data;
+}
+
+export function removeDeletedSessionsFromCache(qc: QueryClient, ids: Iterable<string>): void {
   const cleanIds = normalizeSessionIds(ids);
   if (cleanIds.length === 0) return;
-  qc.setQueriesData<SessionsResponse>({ queryKey: ["sessions"] }, (data) =>
-    withoutSessions(data, cleanIds),
+  qc.setQueriesData<SessionsResponse | SessionsInfiniteData>({ queryKey: ["sessions"] }, (data) =>
+    isInfiniteSessionsData(data) ? withoutSessionsInPages(data, cleanIds) : withoutSessions(data, cleanIds),
   );
   qc.setQueriesData<{ results: SearchResult[] }>({ queryKey: ["sessions-search"] }, (data) =>
     withoutSearchResults(data, cleanIds),
@@ -687,7 +719,7 @@ export function useSetSessionFlags() {
         unpinSessions(result.succeededIds);
       }
       qc.setQueriesData<SessionsResponse>({ queryKey: ["sessions"] }, (data) => {
-        if (!data) return data;
+        if (!data || !Array.isArray(data.sessions)) return data;
         const targets = new Set(result.succeededIds);
         if (targets.size === 0) return data;
         const sessions = data.sessions.map((session) =>

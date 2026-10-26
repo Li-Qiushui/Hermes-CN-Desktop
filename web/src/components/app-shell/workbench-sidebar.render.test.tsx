@@ -12,6 +12,7 @@ import {
   readSidebarSort,
   readSidebarStatusFilter,
   writePinnedSessionIds,
+  writeSidebarGrouping,
   writeSidebarSort,
   writeSidebarStatusFilter,
 } from "@/lib/session-ui-state";
@@ -191,7 +192,7 @@ describe("WorkbenchSidebar 首屏状态", () => {
 });
 
 describe("WorkbenchSidebar 会话分组", () => {
-  it("置顶的进行中会话只出现在置顶里，不重复进进行中分组", () => {
+  it("置顶的进行中会话不再重复进最近分组", () => {
     const base = Math.floor(Date.now() / 1000);
     const pinnedRunning = summary({
       id: "pinned-running",
@@ -215,8 +216,29 @@ describe("WorkbenchSidebar 会话分组", () => {
 
     renderSidebar();
 
-    expect(rowIds('[data-section="active"]')).toEqual(["running-1"]);
+    expect(document.querySelector('[data-section="active"]')).toBeNull();
+    expect(rowIds("[data-day-group]")).toEqual(["running-1", "done-1"]);
     expect(document.querySelectorAll('[data-session-row="pinned-running"]')).toHaveLength(0);
+  });
+
+  it("不再渲染「进行中」小节，进行中的会话只落在按天分组里", () => {
+    const base = Math.floor(Date.now() / 1000);
+    const running = summary({
+      id: "running-only",
+      title: "正在跑",
+      started_at: base - 30,
+      ended_at: null,
+      is_active: true,
+      message_count: 4,
+    });
+    const done = summary({ id: "done-x", title: "早先的对话", started_at: base - 4000, ended_at: base - 3000 });
+    vi.mocked(usePagedSessions).mockReturnValue(pagedWith([running, done]));
+
+    renderSidebar();
+
+    expect(document.querySelector('[data-section="active"]')).toBeNull();
+    expect(screen.queryByText("进行中")).toBeNull();
+    expect(rowIds("[data-day-group]")).toEqual(["running-only", "done-x"]);
   });
 
   it("无标题会话用 preview 也能被搜到", async () => {
@@ -244,14 +266,13 @@ describe("WorkbenchSidebar 请求参数", () => {
   });
 });
 
-describe("WorkbenchSidebar 状态点七态", () => {
-  it("后端 watermark 未读的会话画未读点，点击「全部已读」清掉并写回后端", async () => {
+describe("WorkbenchSidebar 会话行状态", () => {
+  it("后端 watermark 未读的会话标成未读，点击「全部已读」清掉并写回后端", async () => {
     const unread = summary({ id: "u1", title: "有未读", unread: true });
     vi.mocked(usePagedSessions).mockReturnValue(pagedWith([unread]));
 
     renderSidebar();
 
-    expect(document.querySelector('[data-session-row="u1"]')?.getAttribute("data-dot-state")).toBe("unread");
     expect(document.querySelector('[data-session-row="u1"]')?.getAttribute("data-unread")).toBe("true");
 
     await openListTools();
@@ -263,7 +284,7 @@ describe("WorkbenchSidebar 状态点七态", () => {
     expect(setFlagsMock).toHaveBeenCalledWith({ ids: ["u1"], unread: false });
   });
 
-  it("有未答审批时画 needs-input（压过 running / unread）", () => {
+  it("有未答审批时归进「需处理」分组（压过 running / unread）", () => {
     const runtime = createEmptyChatRuntime(1);
     runtime.streamStatus = "streaming";
     runtime.pendingPrompts = [
@@ -282,15 +303,17 @@ describe("WorkbenchSidebar 状态点七态", () => {
     vi.mocked(usePagedSessions).mockReturnValue(
       pagedWith([summary({ id: "busy", ended_at: null, unread: true })]),
     );
+    writeSidebarGrouping("status");
 
     renderSidebar();
 
-    expect(document.querySelector('[data-session-row="busy"]')?.getAttribute("data-dot-state")).toBe(
-      "needs-input",
-    );
+    expect(
+      document.querySelector('[data-group-key="needs-input"] [data-session-row="busy"]'),
+    ).not.toBeNull();
+    expect(document.querySelector('[data-group-key="working"] [data-session-row="busy"]')).toBeNull();
   });
 
-  it("运行中的会话画 working，静置的会话画 idle", () => {
+  it("运行中的会话时间列走计时，静置的会话显示日期", () => {
     const runtime = createEmptyChatRuntime(1);
     runtime.streamStatus = "streaming";
     runtime.lastActivityAt = Date.now();
@@ -304,8 +327,22 @@ describe("WorkbenchSidebar 状态点七态", () => {
 
     renderSidebar();
 
-    expect(document.querySelector('[data-session-row="run"]')?.getAttribute("data-dot-state")).toBe("working");
-    expect(document.querySelector('[data-session-row="quiet"]')?.getAttribute("data-dot-state")).toBe("idle");
+    const runTime = document.querySelector('[data-session-row="run"] [class*="rowTime"]')?.textContent ?? "";
+    const quietTime = document.querySelector('[data-session-row="quiet"] [class*="rowTime"]')?.textContent ?? "";
+    expect(runTime).toMatch(/^\d+m \d{2}s$/);
+    expect(quietTime).toMatch(/^\d{2}:\d{2}$/);
+  });
+
+  it("会话行不再渲染状态圆点", () => {
+    vi.mocked(usePagedSessions).mockReturnValue(pagedWith([summary({ id: "no-dot", unread: true })]));
+
+    renderSidebar();
+
+    const row = document.querySelector('[data-session-row="no-dot"]');
+    expect(row).not.toBeNull();
+    expect(row?.querySelector('[class*="rowDot"]')).toBeNull();
+    expect(row?.querySelector('[role="status"]')).toBeNull();
+    expect(row?.getAttribute("data-dot-state")).toBeNull();
   });
 });
 

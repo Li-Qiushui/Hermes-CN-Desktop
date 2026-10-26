@@ -299,54 +299,6 @@
   white-space: nowrap;
 }
 
-.rowDot {
-  flex: 0 0 auto;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  border: 1px solid transparent;
-  box-sizing: border-box;
-  transition: opacity 0.12s ease;
-}
-
-.rowDot[data-state="needs-input"] {
-  background: var(--h-warn);
-  border-color: var(--h-warn);
-}
-
-.rowDot[data-state="working"] {
-  background: var(--h-accent);
-  border-color: var(--h-accent);
-}
-
-.rowDot[data-state="stalled"] {
-  background: transparent;
-  border-color: var(--h-accent);
-}
-
-.rowDot[data-state="background"] {
-  background: transparent;
-  border-color: var(--h-text-3);
-}
-
-.rowDot[data-state="unread"] {
-  background: var(--h-ok);
-  border-color: var(--h-ok);
-}
-
-.rowDot[data-state="draft"] {
-  background: transparent;
-  border-color: var(--h-text-4);
-}
-
-.rowDot[data-state="idle"] {
-  width: 4px;
-  height: 4px;
-  background: var(--h-text-4);
-  border-color: transparent;
-  opacity: 0.6;
-}
-
 .filterDot {
   flex: 0 0 auto;
   width: 6px;
@@ -472,12 +424,6 @@
 
 .ttlText[data-unread="true"] {
   font-weight: 600;
-}
-
-.sessionRow:hover .rowDot,
-.sessionRow:focus-within .rowDot,
-.sessionRow[data-active="true"] .rowDot {
-  opacity: 0;
 }
 
 .rowBottom {
@@ -623,7 +569,6 @@
 
 .skeletonRow {
   height: 32px;
-  border-radius: 8px;
   background: var(--h-bg-chip);
   animation: sidebarSkeletonPulse 1.4s ease-in-out infinite;
 }
@@ -647,7 +592,6 @@
   height: 26px;
   padding: 0 12px;
   border: 1px solid var(--h-line);
-  border-radius: 8px;
   background: transparent;
   color: var(--h-text-2);
   font-family: var(--h-font-cn);
@@ -929,7 +873,6 @@
   align-items: center;
   justify-content: center;
   border: 1px solid var(--h-line);
-  border-radius: 8px;
   background: transparent;
   color: var(--h-accent);
   opacity: 0.45;
@@ -968,7 +911,6 @@
   margin: 0 12px 12px;
   padding: 8px;
   border: 1px solid var(--h-line);
-  border-radius: 8px;
   background: var(--h-bg-pane);
 }
 
@@ -989,7 +931,6 @@
 .bulkAction {
   height: 26px;
   border: 1px solid var(--h-line);
-  border-radius: 8px;
   background: transparent;
   color: var(--h-text-2);
   font-family: var(--h-font-cn);

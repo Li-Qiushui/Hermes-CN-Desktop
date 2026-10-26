@@ -7,6 +7,7 @@ import {
   filterSessionMentions,
   getActiveMentionToken,
   getMentionCandidates,
+  loadMentionCandidates,
   MENTION_STARTERS,
 } from "./composer-mentions";
 
@@ -144,5 +145,32 @@ describe("getMentionCandidates", () => {
   it("falls back to starters when the backend errors", async () => {
     const completePath = vi.fn().mockRejectedValue(new Error("offline"));
     expect(await getMentionCandidates("file:x", { completePath })).toEqual([...MENTION_STARTERS]);
+  });
+});
+
+describe("loadMentionCandidates", () => {
+  it("reports an error instead of silently falling back", async () => {
+    const completePath = vi.fn().mockRejectedValue(new Error("gateway offline"));
+    const result = await loadMentionCandidates("file:app", { completePath });
+
+    expect(result.candidates).toEqual([]);
+    expect(result.error).toContain("引用检索失败");
+    expect(result.error).toContain("gateway offline");
+  });
+
+  it("times out a hanging completion request", async () => {
+    const completePath = vi.fn().mockReturnValue(new Promise(() => {}));
+    const result = await loadMentionCandidates("file:app", { completePath }, { timeoutMs: 10 });
+
+    expect(result.candidates).toEqual([]);
+    expect(result.error).toBe("引用检索超时（10ms）");
+  });
+
+  it("still returns starters for a bare @ without calling the backend", async () => {
+    const completePath = vi.fn();
+    const result = await loadMentionCandidates("", { completePath });
+
+    expect(result).toEqual({ candidates: [...MENTION_STARTERS], error: "" });
+    expect(completePath).not.toHaveBeenCalled();
   });
 });

@@ -142,6 +142,82 @@ export async function getMentionCandidates(
   }
 }
 
+export const MENTION_FETCH_TIMEOUT_MS = 8000;
+
+export interface MentionLoadResult {
+  candidates: MentionCandidate[];
+  error: string;
+}
+
+export function mentionErrorText(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  const trimmed = message.trim();
+  if (!trimmed) return "引用检索失败";
+  const brief = trimmed.length > 80 ? `${trimmed.slice(0, 80)}…` : trimmed;
+  return `引用检索失败：${brief}`;
+}
+
+function mentionTimeoutText(timeoutMs: number): string {
+  const label = timeoutMs >= 1000 ? `${Math.round(timeoutMs / 1000)}s` : `${timeoutMs}ms`;
+  return `引用检索超时（${label}）`;
+}
+
+export class MentionFetchTimeoutError extends Error {
+  constructor() {
+    super("mention fetch timeout");
+    this.name = "MentionFetchTimeoutError";
+  }
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(new MentionFetchTimeoutError());
+    }, timeoutMs);
+    promise.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+export async function loadMentionCandidates(
+  query: string,
+  source: MentionFetchSource,
+  options: { timeoutMs?: number } = {},
+): Promise<MentionLoadResult> {
+  if (!query) return { candidates: [...MENTION_STARTERS], error: "" };
+  if (/^session:?/i.test(query)) {
+    return { candidates: filterSessionMentions(source.sessions, query, source.profile), error: "" };
+  }
+  const timeoutMs = options.timeoutMs ?? MENTION_FETCH_TIMEOUT_MS;
+  try {
+    const result = await withTimeout(source.completePath(buildCompletePathWord(query)), timeoutMs);
+    const mapped = (result.items ?? []).map(classifyMention);
+    return { candidates: mapped.length ? mapped : [...MENTION_STARTERS], error: "" };
+  } catch (error) {
+    return {
+      candidates: [],
+      error: error instanceof MentionFetchTimeoutError
+        ? mentionTimeoutText(timeoutMs)
+        : mentionErrorText(error),
+    };
+  }
+}
+
 /** Replace the active `@…` token with the chosen candidate's text. */
 export function buildMentionReplacement(
   text: string,

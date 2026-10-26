@@ -227,6 +227,37 @@ describe("useSessionMessages 分页", () => {
     expect(mockFetchJSON).toHaveBeenCalledTimes(3);
   });
 
+  it("重复页也能推进 offset，不会原地打转", async () => {
+    respond((path) => {
+      if (path.includes("offset=0")) return rawPage("s1", ids(101, 100), 100, 0);
+      if (path.includes("offset=100")) return rawPage("s1", ids(101, 100), 100, 100);
+      if (path.includes("offset=200")) return rawPage("s1", ids(1, 20), 100, 200);
+      throw new Error(`unexpected ${path}`);
+    });
+    const { wrapper } = setup();
+
+    const { result } = renderHook(() => useSessionMessages("s1"), { wrapper });
+    await waitFor(() => expect(result.current.data?.messages).toHaveLength(100));
+
+    await act(async () => {
+      await result.current.loadEarlier();
+    });
+
+    expect(mockFetchJSON.mock.calls[1]?.[0]).toBe(
+      "/api/sessions/s1/messages?limit=100&offset=100&order=latest",
+    );
+    expect(result.current.data?.messages).toHaveLength(100);
+    expect(result.current.hasMore).toBe(true);
+
+    await act(async () => {
+      await result.current.loadEarlier();
+    });
+
+    expect(mockFetchJSON.mock.calls[2]?.[0]).toBe(
+      "/api/sessions/s1/messages?limit=100&offset=200&order=latest",
+    );
+  });
+
   it("短会话首屏即到底，hasMore 为 false", async () => {
     respond(() => rawPage("s1", ids(1, 42), 100, 0));
     const { wrapper } = setup();

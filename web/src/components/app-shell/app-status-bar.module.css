@@ -230,7 +230,6 @@
   max-width: 42ch;
   padding: 2px 6px;
   border: 1px solid var(--h-color-warning-border);
-  border-radius: 8px;
   background: var(--h-color-warning-bg);
   color: var(--h-color-warning-fg);
   font: inherit;
@@ -269,7 +268,6 @@
   width: min(560px, 80vw);
   padding: 10px 12px;
   border: 1px solid var(--h-color-warning-border);
-  border-radius: 8px;
   background: var(--h-bg-pane);
   box-shadow: 0 8px 24px color-mix(in srgb, var(--h-line) 60%, transparent);
 }
@@ -294,7 +292,6 @@
   gap: 4px;
   padding: 4px 8px;
   border: 1px solid var(--h-line);
-  border-radius: 8px;
   background: var(--h-bg-chip);
   color: var(--h-text-2);
   font: inherit;

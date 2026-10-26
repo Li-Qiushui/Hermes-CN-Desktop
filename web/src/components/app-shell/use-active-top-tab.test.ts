@@ -25,11 +25,6 @@ describe("TOP_TABS", () => {
     expect(tabFor("/about")).toBe("advanced");
   });
 
-  it("keeps voice setup under the 02 config tab and sidebar section", () => {
-    expect(tabFor("/voice")).toBe("skills");
-    expect(CONFIG_ITEMS.some((item) => item.label === "语音" && item.path === "/voice")).toBe(true);
-  });
-
   it("keeps soul under the 02 config tab and sidebar section", () => {
     expect(tabFor("/soul")).toBe("skills");
     expect(tabFor("/soul/edit")).toBe("skills");

@@ -182,31 +182,8 @@ function KanbanQuickIcon() {
   );
 }
 
-const DOT_LABELS: Record<SessionDotState, string> = {
-  "needs-input": "等待回答",
-  working: "运行中",
-  stalled: "无响应",
-  background: "后台任务进行中",
-  unread: "未读",
-  draft: "草稿",
-  idle: "闲置",
-};
-
-function SessionStatusMark({ state }: { state: SessionDotState }) {
-  return (
-    <span
-      className={s.rowDot}
-      data-state={state}
-      role="status"
-      aria-label={DOT_LABELS[state]}
-      title={DOT_LABELS[state]}
-    />
-  );
-}
-
 interface SessionRowProps {
   session: SessionSummary;
-  state: SessionDotState;
   active: boolean;
   selected: boolean;
   time: string;
@@ -226,7 +203,6 @@ interface SessionRowProps {
 
 function SessionRow({
   session,
-  state,
   active,
   selected,
   time,
@@ -255,7 +231,6 @@ function SessionRow({
       data-selected={selected ? "true" : undefined}
       data-unread={unread ? "true" : undefined}
       data-search-hit={searchHit ? "true" : undefined}
-      data-dot-state={state}
       role="button"
       tabIndex={0}
       onClick={(event) => {
@@ -293,7 +268,6 @@ function SessionRow({
         <div className={s.rowTop}>
           <span className={s.ttlText} data-unread={unread ? "true" : undefined}>{title}</span>
           {pinned ? <span className={s.rowPinnedFlag}>置顶</span> : null}
-          <SessionStatusMark state={state} />
         </div>
         <div className={s.rowBottom}>
           {source ? <span className={s.sourceChip}>{source}</span> : null}
@@ -1000,13 +974,10 @@ export function WorkbenchSidebar() {
     clearSelection();
   }, [clearSelection, rowActions, selectedSessions]);
 
-  const rowState = (sess: SessionSummary): SessionDotState => dotStateOf(sess);
-
   const renderRow = (sess: SessionSummary, menuDisabled = false, snippet?: string) => (
     <SessionRow
       key={sess.id}
       session={sess}
-      state={rowState(sess)}
       active={sessionIdMatches(sess.id, activeSessionId)}
       selected={selectedIds.has(sess.id)}
       time={sessionTimes.get(sess.id) ?? timeFor(sess)}
@@ -1177,16 +1148,6 @@ export function WorkbenchSidebar() {
       <div className={s.scrollY} data-view={view}>
         {view === "recent" ? (
           <>
-            {activeSessions.length > 0 ? (
-              <section className={s.section} data-section="active">
-                <div className={s.label}>
-                  <span>进行中</span>
-                  <span className={s.labelCount}>{activeSessions.length}</span>
-                </div>
-                {activeSessions.map((sess) => renderRow(sess, true))}
-              </section>
-            ) : null}
-
             {recentPending ? (
               listLoading
             ) : recentFailed ? (

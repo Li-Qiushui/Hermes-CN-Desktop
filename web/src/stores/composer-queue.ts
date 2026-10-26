@@ -10,9 +10,17 @@ export interface QueuedPromptEntry {
   text: string;
   attachments: ComposerAttachment[];
   queuedAt: number;
+  /** 重载后被丢掉的附件数（浏览器 File / blob 无法持久化）。>0 时 UI 标红，
+   *  避免附件在重启后静默消失。 */
+  lostAttachments?: number;
+  /** 上一次投递失败的原因。条目留在队列里，UI 行内显示并把按钮变成「重试」。 */
+  error?: string;
 }
 
 export type QueueState = Record<string, QueuedPromptEntry[]>;
+
+/** 每会话排队上限，对齐 RACP 的 maxQueuedTurnsPerSession。 */
+export const MAX_QUEUED_PER_SESSION = 8;
 
 const STORAGE_KEY = "hermes.desktop.composerQueue.v1";
 const EMPTY: readonly QueuedPromptEntry[] = [];
@@ -56,6 +64,26 @@ export function updateEntry(
   };
 }
 
+export function isQueueFull(state: QueueState, key: string | null | undefined): boolean {
+  if (!key) return false;
+  return (state[key]?.length ?? 0) >= MAX_QUEUED_PER_SESSION;
+}
+
+/** 给一条排队消息挂上投递失败原因；条目本身保留，供用户就地重试。 */
+export function markEntryFailed(
+  state: QueueState,
+  key: string,
+  id: string,
+  message: string,
+): QueueState {
+  const queue = state[key];
+  if (!queue?.some((entry) => entry.id === id)) return state;
+  return {
+    ...state,
+    [key]: queue.map((entry) => (entry.id === id ? { ...entry, error: message } : entry)),
+  };
+}
+
 export interface AutoDrainSettleInput {
   isBusy: boolean;
   wasBusy: boolean;
@@ -85,10 +113,13 @@ function attachmentForStorage(attachment: ComposerAttachment): ComposerAttachmen
 export function serializeQueue(state: QueueState): string {
   const cleaned: QueueState = {};
   for (const [key, entries] of Object.entries(state)) {
-    cleaned[key] = entries.map((entry) => ({
-      ...entry,
-      attachments: entry.attachments.map(attachmentForStorage),
-    }));
+    cleaned[key] = entries.map((entry) => {
+      const { error: _error, ...rest } = entry;
+      return {
+        ...rest,
+        attachments: rest.attachments.map(attachmentForStorage),
+      };
+    });
   }
   return JSON.stringify(cleaned);
 }
@@ -100,21 +131,29 @@ function isQueuedEntry(value: unknown): value is QueuedPromptEntry {
     typeof e.id === "string" &&
     typeof e.text === "string" &&
     typeof e.queuedAt === "number" &&
-    Array.isArray(e.attachments)
+    Array.isArray(e.attachments) &&
+    (e.lostAttachments === undefined || typeof e.lostAttachments === "number") &&
+    (e.error === undefined || typeof e.error === "string")
   );
 }
 
 /** Drop attachments that can't survive a reload (browser File objects lose
  *  their data); path-based and already-uploaded attachments keep working.
- *  Tolerates malformed elements (null / non-objects) without throwing. */
-function sanitizeAttachments(attachments: ComposerAttachment[]): ComposerAttachment[] {
-  return attachments.filter(
+ *  Tolerates malformed elements (null / non-objects) without throwing.
+ *  `dropped` counts what was thrown away so the restore path can flag the
+ *  entry instead of letting the attachments vanish silently. */
+function sanitizeAttachments(attachments: ComposerAttachment[]): {
+  kept: ComposerAttachment[];
+  dropped: number;
+} {
+  const kept = attachments.filter(
     (a): a is ComposerAttachment =>
       Boolean(a) && typeof a === "object" && (
         (a.source === "path" && Boolean(a.path)) ||
         (a.source === "uploaded" && Boolean(a.uploadedPath))
       ),
   );
+  return { kept, dropped: Math.max(0, attachments.length - kept.length) };
 }
 
 /**
@@ -125,11 +164,19 @@ function sanitizeAttachments(attachments: ComposerAttachment[]): ComposerAttachm
 export function hasNonSerializableAttachments(state: QueueState): boolean {
   for (const entries of Object.values(state)) {
     for (const entry of entries) {
-      for (const att of entry.attachments) {
-        if (att && typeof att === "object" && att.source !== "path" && att.source !== "uploaded") {
-          return true;
-        }
-      }
+      if (entryHasVolatileAttachments(entry)) return true;
+    }
+  }
+  return false;
+}
+
+/** 这条排队消息的附件是否有丢的风险：还在内存里的浏览器附件，或重载时
+ *  已经被丢掉、只剩计数的那种。UI 用它决定标不标红。 */
+export function entryHasVolatileAttachments(entry: QueuedPromptEntry): boolean {
+  if (typeof entry.lostAttachments === "number" && entry.lostAttachments > 0) return true;
+  for (const att of entry.attachments) {
+    if (att && typeof att === "object" && att.source !== "path" && att.source !== "uploaded") {
+      return true;
     }
   }
   return false;
@@ -152,7 +199,14 @@ export function deserializeQueue(raw: string | null): QueueState {
       if (!Array.isArray(entries)) continue;
       const valid = entries
         .filter(isQueuedEntry)
-        .map((entry) => ({ ...entry, attachments: sanitizeAttachments(entry.attachments) }));
+        .map((entry) => {
+          const { kept, dropped } = sanitizeAttachments(entry.attachments);
+          const lost = dropped + (entry.lostAttachments ?? 0);
+          const restored: QueuedPromptEntry = { ...entry, attachments: kept };
+          if (lost > 0) restored.lostAttachments = lost;
+          else delete restored.lostAttachments;
+          return restored;
+        });
       if (valid.length > 0) clean[key] = valid;
     }
     return clean;
@@ -219,6 +273,7 @@ export function enqueueQueuedPrompt(
 ): QueuedPromptEntry | null {
   if (!key) return null;
   if (!input.text.trim() && input.attachments.length === 0) return null;
+  if (isQueueFull(liveState, key)) return null;
   const entry: QueuedPromptEntry = {
     id: `queued-${now}-${(idCounter += 1)}`,
     text: input.text,
@@ -227,6 +282,16 @@ export function enqueueQueuedPrompt(
   };
   commit(enqueue(liveState, key, entry));
   return entry;
+}
+
+/** 投递失败：条目留在队列里，挂上原因让 UI 行内提示并给重试入口。 */
+export function markQueuedPromptFailed(
+  key: string | null | undefined,
+  id: string,
+  message: string,
+): void {
+  if (!key) return;
+  commit(markEntryFailed(liveState, key, id, message));
 }
 
 export function removeQueuedPrompt(key: string | null | undefined, id: string): void {

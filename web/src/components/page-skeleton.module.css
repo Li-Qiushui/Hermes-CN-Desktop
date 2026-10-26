@@ -12,7 +12,6 @@
 .boardHead,
 .boardCard {
   border: 1px solid var(--h-line-soft);
-  border-radius: 8px;
   background: var(--h-bg-pane);
   animation: pageSkeletonPulse 1.6s ease-in-out infinite;
 }
