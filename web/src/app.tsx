@@ -41,7 +41,6 @@ const KanbanRoute = lazy(() => import("@/routes/kanban").then((m) => ({ default:
 const CapabilitiesRoute = lazy(() => import("@/routes/capabilities").then((m) => ({ default: m.CapabilitiesRoute })));
 const SkillsRoute = lazy(() => import("@/routes/skills").then((m) => ({ default: m.SkillsRoute })));
 const ModelsRoute = lazy(() => import("@/routes/models").then((m) => ({ default: m.ModelsRoute })));
-const VoiceRoute = lazy(() => import("@/routes/voice").then((m) => ({ default: m.VoiceRoute })));
 const McpRoute = lazy(() => import("@/routes/mcp").then((m) => ({ default: m.McpRoute })));
 const ProfilesRoute = lazy(() => import("@/routes/profiles").then((m) => ({ default: m.ProfilesRoute })));
 const ProfileBuilderRoute = lazy(() => import("@/routes/profile-builder").then((m) => ({ default: m.ProfileBuilderRoute })));
@@ -120,7 +119,6 @@ function BackendApp() {
             <Route path="/capabilities" element={withBoundary(<CapabilitiesRoute />)} />
             <Route path="/skills" element={withBoundary(<SkillsRoute />)} />
             <Route path="/models" element={withBoundary(<ModelsRoute />)} />
-            <Route path="/voice" element={withBoundary(<VoiceRoute />)} />
             <Route path="/mcp" element={withBoundary(<McpRoute />)} />
             <Route path="/profiles" element={withBoundary(<ProfilesRoute />)} />
             <Route path="/profiles/new" element={withBoundary(<ProfileBuilderRoute />)} />

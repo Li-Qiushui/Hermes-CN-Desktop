@@ -31,7 +31,6 @@ export const APP_PAGE_ROUTES: readonly AppRouteEntry[] = [
   route("/capabilities", "能力总览", "/capabilities · 工具集与能力面板", ["capabilities", "toolsets", "tool", "能力", "工具集"], "config"),
   route("/skills", "Skills 管理", "/skills · 启用、禁用和查看 Skill", ["skills", "skill", "技能"], "skill"),
   route("/models", "模型配置", "/models · Provider、模型与上下文", ["models", "provider", "llm", "模型"], "models"),
-  route("/voice", "语音", "/voice · 语音输入与发音人", ["voice", "tts", "speech", "语音", "发音"], "config"),
   route("/mcp", "MCP 服务", "/mcp · 管理工具服务", ["mcp", "server", "工具服务"], "mcp"),
   route("/profiles", "档案 Profiles", "/profiles · 切换独立配置环境", ["profiles", "profile", "档案"], "profiles"),
   route("/profiles/new", "新建档案", "/profiles/new · 从模板起一个隔离环境", ["profile", "create", "new", "新建档案", "画像"], "profiles"),

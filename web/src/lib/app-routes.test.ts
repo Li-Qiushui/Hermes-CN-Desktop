@@ -66,7 +66,6 @@ describe("⌘K 覆盖 app.tsx 路由表", () => {
 
     expect(pagePaths).not.toContain("/history");
     expect(pagePaths).not.toContain("/models");
-    expect(pagePaths).toContain("/voice");
     expect(pagePaths).toContain("/profiles/new");
     expect(new Set(pagePaths).size).toBe(pagePaths.length);
   });
@@ -118,10 +117,10 @@ describe("⌘K 设置条目实时搜索", () => {
 
   it("搜页面名能命中对应页面条目", () => {
     const items = buildCommandPaletteItems({});
-    const labels = filterCommandPaletteGroups(items, "语音", { maxPerGroup: 20 }).flatMap((group) =>
+    const labels = filterCommandPaletteGroups(items, "看板", { maxPerGroup: 20 }).flatMap((group) =>
       group.items.map((item) => item.label),
     );
 
-    expect(labels).toContain("语音");
+    expect(labels).toContain("看板 Kanban");
   });
 });
