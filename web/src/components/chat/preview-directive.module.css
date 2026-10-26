@@ -1,0 +1,121 @@
+.frame {
+  position: relative;
+  box-sizing: border-box;
+  width: 100%;
+  margin: 8px 0;
+  border: 1px solid color-mix(in srgb, var(--h-border) 40%, transparent);
+  background: var(--h-bg-soft);
+  overflow: hidden;
+}
+
+.iframe {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: transparent;
+}
+
+.toolbar {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  z-index: 1;
+}
+
+.iconButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  box-sizing: border-box;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid color-mix(in srgb, var(--h-border) 40%, transparent);
+  background: color-mix(in srgb, var(--h-bg-pane) 84%, transparent);
+  color: var(--h-text-2);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.iconButton:hover {
+  color: var(--h-text);
+  background: color-mix(in srgb, var(--h-bg-pane) 96%, transparent);
+}
+
+.skeleton {
+  box-sizing: border-box;
+  width: 100%;
+  margin: 8px 0;
+  border: 1px solid color-mix(in srgb, var(--h-border) 40%, transparent);
+  background: color-mix(in srgb, var(--h-text) 4%, transparent);
+  animation: previewPulse 1.2s ease-in-out infinite;
+}
+
+@keyframes previewPulse {
+  0%,
+  100% {
+    opacity: 0.5;
+  }
+
+  50% {
+    opacity: 1;
+  }
+}
+
+.card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  box-sizing: border-box;
+  width: 100%;
+  margin: 8px 0;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--h-border) 40%, transparent);
+  background: var(--h-bg-soft);
+  font-size: 13px;
+}
+
+.cardIcon {
+  flex: 0 0 auto;
+  color: var(--h-text-3);
+}
+
+.errorIcon {
+  flex: 0 0 auto;
+  color: var(--h-warning, var(--h-accent));
+}
+
+.cardBody {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.cardName {
+  color: var(--h-text);
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cardPath {
+  color: var(--h-text-3);
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cardNote {
+  color: var(--h-text-3);
+  font-size: 13px;
+}

@@ -1,3 +1,7 @@
+.segments {
+  display: contents;
+}
+
 .markdownRoot {
   max-width: 100%;
 }

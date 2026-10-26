@@ -5,7 +5,11 @@ import {
   createContext,
   memo,
   useContext,
+  useEffect,
+  useLayoutEffect,
   useMemo,
+  useRef,
+  useState,
   type CSSProperties,
   type ComponentProps,
   type MouseEvent,
@@ -17,7 +21,10 @@ import { Streamdown, parseMarkdownIntoBlocks, type DiagramPlugin } from "streamd
 import type { MermaidConfig } from "mermaid";
 import "katex/dist/katex.min.css";
 import { MessageImage } from "./message-image";
+import { PreviewDirective } from "./preview-directive";
 import { isImageReference } from "@/lib/message-images";
+import { splitPreviewDirectives } from "@/lib/preview-directive";
+import { createTailThrottle, type TailThrottle } from "@/lib/stream-throttle";
 import s from "./markdown-renderer.module.css";
 
 interface MarkdownTextProps {
@@ -46,6 +53,10 @@ type CodeThemePair = CodeHighlightOptions["themes"];
 
 const CODE_THEMES = ["github-light", "github-dark"] as unknown as CodeThemePair;
 const CODE_THROTTLE_MS = 120;
+// 流式期间对 shiki 做 120ms 合并有意义（同一段代码每个 token 都变），但流一结束这层
+// 延迟就只剩副作用：上游文本节流已经 60ms 一次，最后一把代码还要再等 120ms 才着色，
+// 用户看到的是「已经停止输出了，代码还是白板」。所以非流式时把窗口压到 0，直接着色。
+let codeHighlightEager = false;
 const CODE_BLOCK_KEY_CHARS = 64;
 const CODE_MAX_HIGHLIGHT_CHARS = 120_000;
 const CODE_CACHE_MAX_ENTRIES = 192;
@@ -156,6 +167,19 @@ function runCodeHighlight(
   }
 }
 
+function releaseDeferredCodeHighlights(): void {
+  const plugin = loadedCodePlugin;
+  for (const [key, pending] of Array.from(pendingCodeHighlights.entries())) {
+    if (pending.timer !== null) {
+      clearTimeout(pending.timer);
+      pending.timer = null;
+    }
+    if (plugin) runCodeHighlight(plugin, key, pending.options, pending.callback);
+    const released = pendingCodeHighlights.get(key);
+    if (released) released.at = Number.NEGATIVE_INFINITY;
+  }
+}
+
 function flushPendingCodeHighlight(key: string): void {
   const pending = pendingCodeHighlights.get(key);
   const plugin = loadedCodePlugin;
@@ -193,11 +217,12 @@ const codeHighlightPlugin: CodeHighlighterPlugin = {
 
     const key = codeBlockKey(options);
     const pending = pendingCodeHighlights.get(key);
-    if (pending && code.startsWith(pending.code) && Date.now() - pending.at < CODE_THROTTLE_MS) {
+    const deferMs = codeHighlightEager ? 0 : CODE_THROTTLE_MS;
+    if (deferMs > 0 && pending && code.startsWith(pending.code) && Date.now() - pending.at < deferMs) {
       pending.code = code;
       pending.options = options;
       pending.callback = callback;
-      pending.timer ??= setTimeout(() => flushPendingCodeHighlight(key), CODE_THROTTLE_MS);
+      pending.timer ??= setTimeout(() => flushPendingCodeHighlight(key), deferMs);
       return null;
     }
 
@@ -932,7 +957,7 @@ const streamdownComponents = {
 
 // memo：Markdown 解析（streamdown + KaTeX + mermaid）是重量级渲染，父组件
 // 与正文无关的 state 变化（编辑器字符计数、保存状态等）不应触发整篇重解析。
-export const MarkdownText = memo(function MarkdownText({
+const MarkdownSource = memo(function MarkdownSource({
   text,
   streaming = false,
 }: MarkdownTextProps) {
@@ -958,5 +983,62 @@ export const MarkdownText = memo(function MarkdownText({
     >
       {normalizedText}
     </Streamdown>
+  );
+});
+
+const STREAM_RENDER_THROTTLE_MS = 60;
+
+function useStreamThrottledText(text: string, streaming: boolean): string {
+  const [rendered, setRendered] = useState(text);
+  const throttleRef = useRef<TailThrottle<string> | null>(null);
+  if (throttleRef.current === null) {
+    throttleRef.current = createTailThrottle<string>(setRendered, STREAM_RENDER_THROTTLE_MS);
+  }
+  const throttle = throttleRef.current;
+
+  useLayoutEffect(() => {
+    if (!streaming) {
+      throttle.cancel();
+      releaseDeferredCodeHighlights();
+      setRendered(text);
+      return;
+    }
+    throttle.push(text);
+  }, [throttle, text, streaming]);
+
+  useEffect(() => () => throttle.cancel(), [throttle]);
+
+  return rendered;
+}
+
+export const MarkdownText = memo(function MarkdownText({
+  text,
+  streaming = false,
+}: MarkdownTextProps) {
+  const renderedText = useStreamThrottledText(text, streaming);
+  // 在渲染前定档：Streamdown 内部渲染代码块时会立刻调用 highlight()，
+  // 放进 effect 就晚了一步，最后一把代码仍会落进 120ms 窗口。
+  codeHighlightEager = !streaming;
+  const segments = useMemo(() => splitPreviewDirectives(renderedText), [renderedText]);
+  const hasPreview = segments.some((segment) => segment.kind === "preview");
+
+  if (!hasPreview) {
+    return <MarkdownSource text={renderedText} streaming={streaming} />;
+  }
+
+  return (
+    <div className={s.segments}>
+      {segments.map((segment, index) =>
+        segment.kind === "preview" ? (
+          <PreviewDirective
+            file={segment.file}
+            key={`preview-${index}-${segment.file}`}
+            streaming={streaming}
+          />
+        ) : (
+          <MarkdownSource key={`prose-${index}`} streaming={streaming} text={segment.text} />
+        ),
+      )}
+    </div>
   );
 });
