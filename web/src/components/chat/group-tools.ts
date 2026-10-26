@@ -4,12 +4,14 @@ export type ToolDisplayEntry =
   | { kind: "single"; tool: ChatToolItem }
   | { kind: "group"; key: string; tools: ChatToolItem[] };
 
+export type ToolGroupStatus = ChatToolItem["status"];
+
 function normalizeContext(context: string | undefined): string {
   return (context ?? "").replace(/\s+/g, " ").trim();
 }
 
-function canMerge(tool: ChatToolItem): boolean {
-  return tool.status === "done";
+function sameSignature(left: ChatToolItem, right: ChatToolItem): boolean {
+  return left.name === right.name && normalizeContext(left.context) === normalizeContext(right.context);
 }
 
 export function groupConsecutiveTools(
@@ -19,29 +21,18 @@ export function groupConsecutiveTools(
   let i = 0;
   while (i < tools.length) {
     const head = tools[i];
-    if (!canMerge(head)) {
-      result.push({ kind: "single", tool: head });
-      i += 1;
-      continue;
-    }
-
-    const ctx = normalizeContext(head.context);
+    const run: ChatToolItem[] = [head];
     let j = i + 1;
-    while (
-      j < tools.length &&
-      canMerge(tools[j]) &&
-      tools[j].name === head.name &&
-      normalizeContext(tools[j].context) === ctx
-    ) {
+    while (j < tools.length && sameSignature(head, tools[j])) {
+      run.push(tools[j]);
       j += 1;
     }
 
-    if (j - i >= 2) {
-      const slice = tools.slice(i, j);
+    if (run.length >= 2) {
       result.push({
         kind: "group",
-        key: `${head.name}|${ctx}|${slice[0].tool_id}|${slice.length}`,
-        tools: slice,
+        key: `${head.name}|${normalizeContext(head.context)}|${head.tool_id}|${run.length}`,
+        tools: run,
       });
     } else {
       result.push({ kind: "single", tool: head });
@@ -49,6 +40,12 @@ export function groupConsecutiveTools(
     i = j;
   }
   return result;
+}
+
+export function groupStatus(tools: readonly ChatToolItem[]): ToolGroupStatus {
+  if (tools.some((tool) => tool.status === "error")) return "error";
+  if (tools.some((tool) => tool.status === "running")) return "running";
+  return "done";
 }
 
 export function groupElapsedMs(tools: readonly ChatToolItem[]): number | undefined {

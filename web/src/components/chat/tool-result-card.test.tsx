@@ -132,6 +132,27 @@ describe("ToolResultCard", () => {
     expect(screen.getByLabelText("在工具卡内查找")).toBeTruthy();
   });
 
+  it("pages long output instead of building every line at once", () => {
+    const lines = Array.from({ length: 520 }, (_, index) => `row-${index}`);
+    const summary = JSON.stringify({ output: lines.join("\n"), exit_code: 0 });
+    const { container } = render(
+      <ToolResultCard tool={tool({ name: "terminal", arguments: { command: "seq 520" } })} body={summary} />,
+    );
+
+    fireEvent.click(screen.getByText("… 省略 490 行，点击展开"));
+
+    expect(container.textContent).toContain("row-199");
+    expect(container.textContent).not.toContain("row-200");
+    expect(container.textContent).toContain("载入后续 200 行（还剩 320 行，共 520 行）");
+    expect(container.textContent).toContain("已渲染前 200 行");
+
+    fireEvent.click(screen.getByText("载入后续 200 行（还剩 320 行，共 520 行）"));
+
+    expect(container.textContent).toContain("row-399");
+    expect(container.textContent).not.toContain("row-400");
+    expect(container.textContent).toContain("还剩 120 行");
+  });
+
   it("copies the whole output even when the view is folded", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", {

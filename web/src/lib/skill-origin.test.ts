@@ -17,8 +17,16 @@ describe("skill origin", () => {
     ["bundled", "builtin"],
     ["agent", "user"],
     ["hub", "external"],
+    ["external", "external"],
   ] as const)("maps Core provenance %s to %s", (provenance, expected) => {
     expect(resolveSkillOrigin(skill({ provenance }))).toBe(expected);
+  });
+
+  it("treats a skill mounted from an external directory as a project skill", () => {
+    const mounted = skill({ provenance: "external", origin: "builtin" });
+
+    expect(resolveSkillOrigin(mounted)).toBe("external");
+    expect(isUserSkill(mounted)).toBe(true);
   });
 
   it("lets canonical provenance override a legacy origin", () => {

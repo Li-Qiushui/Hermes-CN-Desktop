@@ -11,6 +11,7 @@ export function resolveSkillOrigin(skill: SkillInfo): SkillOrigin {
   if (skill.provenance === "bundled") return "builtin";
   if (skill.provenance === "agent") return "user";
   if (skill.provenance === "hub") return "external";
+  if (skill.provenance === "external") return "external";
   return skill.origin ?? (skill.name.startsWith("user/") ? "user" : "builtin");
 }
 

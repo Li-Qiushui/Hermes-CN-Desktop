@@ -260,6 +260,28 @@ describe("Skills API schemas", () => {
     expect(agent?.provenance).toBe("agent");
   });
 
+  it("accepts the external provenance tier used by skills.external_dirs mounts", () => {
+    const [external, hub] = SkillsResponse.parse([
+      {
+        name: "host-hub",
+        description: "Project skill mounted from an external directory.",
+        category: "projects",
+        enabled: true,
+        provenance: "external",
+      },
+      {
+        name: "hub-skill",
+        description: "Skill installed from the hub.",
+        category: "devops",
+        enabled: true,
+        provenance: "hub",
+      },
+    ]);
+
+    expect(external?.provenance).toBe("external");
+    expect(hub?.provenance).toBe("hub");
+  });
+
   it("parses skill content returned by the connected Core", () => {
     const parsed = SkillContentResponse.parse({
       name: "memory-eval-harness",

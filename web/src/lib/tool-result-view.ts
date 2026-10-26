@@ -56,6 +56,7 @@ export interface ToolResultInput {
 
 export const MAX_STRUCTURED_DIFF_LINES = 2000;
 export const MAX_RENDERED_DIFF_ROWS = 500;
+export const TOOL_OUTPUT_PAGE_LINES = 200;
 
 const TERMINAL_NAMES = new Set([
   "terminal",

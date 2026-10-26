@@ -379,6 +379,7 @@ const HermesToolMessagePart = z
     state: z.enum(["running", "done", "error"]),
     input: z.unknown().optional(),
     preview: z.string().optional(),
+    tail: z.string().optional(),
     output: z.unknown().optional(),
     errorText: z.string().optional(),
     startedAt: z.number().optional(),
@@ -719,7 +720,7 @@ export const SkillInfo = z.object({
   description: z.string(),
   category: z.string().nullable(),
   enabled: z.boolean(),
-  provenance: z.enum(["bundled", "hub", "agent"]).optional(),
+  provenance: z.enum(["bundled", "hub", "agent", "external"]).optional(),
   usage: z.number().int().nonnegative().optional(),
   // Legacy CN Desktop fields. Current Core reports provenance and exposes
   // the authenticated /api/skills/content endpoint for source + markdown.
@@ -1682,6 +1683,12 @@ export const GatewayKnownEvent = z.discriminatedUnion("type", [
       error: z.string().optional(),
       duration_s: z.number().optional(),
       inline_diff: z.string().optional(),
+      // 官方内核 _tool_complete_payload 的真实字段：result 是结果文本（可能被截断），
+      // result_text 只在 /verbose 下才有全文，is_error 是执行器判定。
+      result: z.unknown().optional(),
+      result_text: z.string().optional(),
+      is_error: z.boolean().optional(),
+      output: z.unknown().optional(),
     }).passthrough().optional(),
   }).passthrough(),
   z.object({

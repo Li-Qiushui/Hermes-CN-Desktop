@@ -5,6 +5,7 @@ import { CopyButton } from "@/components/ui/copy-button";
 import type { ChatToolItem } from "./chat-types";
 import {
   buildToolResultView,
+  TOOL_OUTPUT_PAGE_LINES,
   type DiffFileView,
   type DiffRow,
   type FileChangeView,
@@ -244,6 +245,7 @@ function TextSurface({
   dataError?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [loadedPages, setLoadedPages] = useState(1);
   const lines = useMemo(() => splitTextLines(text), [text]);
   const byBlock = search.index.byBlock[blockIndex];
   const activeMatch = search.active >= 0 ? search.index.matches[search.active] : undefined;
@@ -259,12 +261,24 @@ function TextSurface({
   const foldable = lines.length > FOLD_LINE_THRESHOLD;
   const hiddenLines = Math.max(0, lines.length - FOLD_HEAD_LINES - FOLD_TAIL_LINES);
   const tailStart = lines.length - FOLD_TAIL_LINES;
+  const loadedLines = Math.min(lines.length, loadedPages * TOOL_OUTPUT_PAGE_LINES);
+  const remainingLines = Math.max(0, lines.length - loadedLines);
+
+  useEffect(() => {
+    setLoadedPages(1);
+  }, [text]);
 
   useEffect(() => {
     if (!foldable || expanded) return;
     if (!activeMatch || activeMatch.block !== blockIndex) return;
     if (activeMatch.line >= FOLD_HEAD_LINES && activeMatch.line < tailStart) setExpanded(true);
   }, [activeMatch, blockIndex, expanded, foldable, tailStart]);
+
+  useEffect(() => {
+    if (!activeMatch || activeMatch.block !== blockIndex) return;
+    const needed = Math.max(1, Math.ceil((activeMatch.line + 1) / TOOL_OUTPUT_PAGE_LINES));
+    setLoadedPages((current) => (needed > current ? needed : current));
+  }, [activeMatch, blockIndex]);
 
   const renderLines = (from: number, to: number): ReactNode[] => {
     const nodes: ReactNode[] = [];
@@ -284,11 +298,29 @@ function TextSurface({
   if (!foldable || expanded) {
     return (
       <>
-        <pre {...preProps}>{renderLines(0, lines.length - 1)}</pre>
-        {foldable ? (
-          <button type="button" className={s.foldToggle} onClick={() => setExpanded(false)}>
-            收起，只看头尾
-          </button>
+        <pre {...preProps}>
+          {renderLines(0, loadedLines - 1)}
+          {"\n"}
+          {remainingLines > 0 ? (
+            <button
+              type="button"
+              className={s.foldToggle}
+              onClick={() => setLoadedPages((current) => current + 1)}
+              data-remaining-lines={remainingLines}
+            >
+              载入后续 {Math.min(TOOL_OUTPUT_PAGE_LINES, remainingLines)} 行（还剩 {remainingLines} 行，共{" "}
+              {lines.length} 行）
+            </button>
+          ) : foldable ? (
+            <button type="button" className={s.foldToggle} onClick={() => setExpanded(false)}>
+              收起，只看头尾
+            </button>
+          ) : null}
+        </pre>
+        {remainingLines > 0 ? (
+          <div className={s.pageNote} data-paged-lines={loadedLines}>
+            输出较长，已渲染前 {loadedLines} 行，共 {lines.length} 行；复制拿到的是完整内容
+          </div>
         ) : null}
       </>
     );
