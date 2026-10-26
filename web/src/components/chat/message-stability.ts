@@ -20,7 +20,7 @@ const SCALAR_KEYS = [
   "error",
 ] as const;
 
-const LIST_KEYS = ["images", "tools", "blocks"] as const;
+const LIST_KEYS = ["images", "media", "tools", "blocks"] as const;
 
 function statsEqual(
   a: ChatMessage["stats"],

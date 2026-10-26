@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import {
   HermesUIMessage as HermesUIMessageSchema,
   MessagesResponse,
@@ -15,8 +16,12 @@ import {
   messagesResponseToHermesUIMessages,
   storedMessageToChatMessage,
   storedMessagesToChatMessages,
+  TOOL_OUTPUT_SUMMARY_LIMIT,
+  truncateForDisplay,
 } from "./message-adapter";
 import { stableTextHash } from "@/lib/ui-store";
+import { AUTO_CONTINUED_NOTICE_TEXT } from "@/lib/auto-continue-frame";
+import { messageRoundMarkdown } from "./message-copy";
 
 function sessionMessage(overrides: Partial<SessionMessage>): SessionMessage {
   return {
@@ -501,6 +506,55 @@ describe("message adapter", () => {
     ]);
   });
 
+  it("truncates oversized tool output and marks where it stopped", () => {
+    const huge = "x".repeat(TOOL_OUTPUT_SUMMARY_LIMIT + 4096);
+    const chat = hermesUIMessageToChatMessage(uiMessage({
+      parts: [
+        {
+          type: "tool",
+          toolCallId: "big-1",
+          name: "terminal",
+          state: "done",
+          input: { command: "cat big.log" },
+          output: huge,
+          startedAt: 100,
+          completedAt: 300,
+        },
+      ],
+    }));
+
+    const summary = chat?.tools?.[0]?.summary ?? "";
+    expect(summary.length).toBeLessThan(huge.length);
+    expect(summary.length).toBeLessThan(TOOL_OUTPUT_SUMMARY_LIMIT + 200);
+    expect(summary).toContain("[已截断]");
+    expect(summary).toContain("原始输出");
+    expect(truncateForDisplay("短短一行")).toBe("短短一行");
+  });
+
+  it("keeps oversized terminal JSON parseable so the card still renders", () => {
+    const huge = "y".repeat(TOOL_OUTPUT_SUMMARY_LIMIT + 1024);
+    const chat = hermesUIMessageToChatMessage(uiMessage({
+      parts: [
+        {
+          type: "tool",
+          toolCallId: "big-2",
+          name: "terminal",
+          state: "done",
+          input: { command: "cat big.log" },
+          output: { output: huge, exit_code: 0 },
+          startedAt: 100,
+          completedAt: 300,
+        },
+      ],
+    }));
+
+    const summary = chat?.tools?.[0]?.summary ?? "";
+    const parsed = JSON.parse(summary) as { output: string; exit_code: number };
+    expect(parsed.exit_code).toBe(0);
+    expect(parsed.output).toContain("[已截断]");
+    expect(summary.length).toBeLessThan(TOOL_OUTPUT_SUMMARY_LIMIT + 500);
+  });
+
   it("canonical conversion preserves stats, tool cards, reasoning, and copyable text blocks", () => {
     const chat = hermesUIMessageToChatMessage(uiMessage({
       id: "live-assistant-1",
@@ -761,7 +815,8 @@ describe("message adapter", () => {
     expect(merged).toHaveLength(1);
     expect(merged[0]?.id).toBe("live-interrupted-turn");
     expect(chat).toHaveLength(1);
-    expect(chat[0]?.text).toContain("Operation interrupted");
+    expect(chat[0]?.text).toContain("已中断（等待模型响应 1.7 秒）");
+    expect(chat[0]?.text).not.toContain("Operation interrupted");
     expect(chat[0]?.stats?.finishReason).toBe("interrupted");
   });
 
@@ -1378,5 +1433,279 @@ describe("流式增量的引用复用", () => {
   it("同一条 HermesUIMessage 重复转换复用同一 ChatMessage 对象", () => {
     const message = uiMessage({ id: "same-source", parts: [{ type: "text", text: "同一份" }] });
     expect(hermesUIMessageToChatMessage(message)).toBe(hermesUIMessageToChatMessage(message));
+  });
+});
+
+const AUTO_CONTINUE_FRAME =
+  "[System note: Your previous turn was interrupted mid-run (attempt 1). Resume from where you left off.]";
+
+describe("内核自动续跑帧", () => {
+  it("存库的英文帧折成中文系统灰卡，不出现在用户气泡里", () => {
+    const [chat] = storedMessagesToChatMessages([
+      sessionMessage({ role: "user", content: AUTO_CONTINUE_FRAME, timestamp: 100 }),
+    ]);
+
+    expect(chat).toBeDefined();
+    expect(chat!.role).toBe("system");
+    expect(chat!.text).toBe(AUTO_CONTINUED_NOTICE_TEXT);
+    expect(chat!.text).not.toContain("[System note");
+  });
+
+  it("容忍前后空白与大小写差异", () => {
+    const variants = [
+      `\n  ${AUTO_CONTINUE_FRAME}  \n`,
+      "[system NOTE: your previous turn was interrupted mid-run]",
+      "[  System note : Your previous turn was interrupted mid-run.]",
+    ];
+    variants.forEach((content) => {
+      const [chat] = storedMessagesToChatMessages([sessionMessage({ role: "user", content })]);
+      expect(chat?.role).toBe("system");
+      expect(chat?.text).toBe(AUTO_CONTINUED_NOTICE_TEXT);
+    });
+  });
+
+  it("与 resume 补的续跑提示同时存在时只留一条", () => {
+    const frame = uiMessage({
+      id: "stored-auto-continue",
+      role: "user",
+      createdAt: 1_000,
+      parts: [{ type: "text", text: AUTO_CONTINUE_FRAME }],
+    });
+    const resumedNotice = uiMessage({
+      id: "resumed-notice",
+      role: "system",
+      createdAt: 2_000,
+      parts: [{ type: "notice", level: "info", text: AUTO_CONTINUED_NOTICE_TEXT }],
+    });
+
+    const chat = hermesUIMessagesToChatMessages([frame, resumedNotice]);
+    expect(chat.filter((message) => message.text === AUTO_CONTINUED_NOTICE_TEXT)).toHaveLength(1);
+    expect(chat.every((message) => message.role !== "user")).toBe(true);
+  });
+
+  it("复制整轮内容只出现中文提示，不含英文帧原文", () => {
+    const [chat] = storedMessagesToChatMessages([
+      sessionMessage({ role: "user", content: AUTO_CONTINUE_FRAME, timestamp: 100 }),
+    ]);
+    const markdown = messageRoundMarkdown(chat!);
+
+    expect(markdown).not.toContain("[System note");
+    expect(markdown).not.toContain("interrupted mid-run");
+    expect(markdown.split(AUTO_CONTINUED_NOTICE_TEXT)).toHaveLength(2);
+  });
+
+  it("文案与 stores/chat.ts 里的续跑提示常量一致", () => {
+    const source = readFileSync(new URL("../../stores/chat.ts", import.meta.url), "utf8");
+    expect(source).toContain(`"${AUTO_CONTINUED_NOTICE_TEXT}"`);
+  });
+});
+
+describe("切走再切回：旧回合遗留的 running 工具卡在展示层收敛", () => {
+  const OLD_CALL = "call_00_mAFaqGTmOCrBQVmH2ieq1706";
+  const NEW_CALL = "call_00_iPd5rAaBDoPG1BQdYIkQ5271";
+  const INTERRUPTED_TOOL_TEXT = "已中断，未拿到执行结果";
+
+  function killedRunRows(): SessionMessage[] {
+    return [
+      sessionMessage({
+        id: 102756,
+        role: "user",
+        content: "用 terminal 跑 sleep 60 然后 echo cont4-done，然后一句话总结",
+        timestamp: 1792824948.2491586,
+      }),
+      sessionMessage({
+        id: 102761,
+        role: "assistant",
+        content: "",
+        timestamp: 1792824954.9144626,
+        tool_calls: [
+          {
+            id: OLD_CALL,
+            type: "function",
+            function: {
+              name: "terminal",
+              arguments: JSON.stringify({ command: "sleep 60 && echo cont4-done", timeout: 120 }),
+            },
+          },
+        ],
+      }),
+      sessionMessage({
+        id: 102773,
+        role: "user",
+        content: "[System note: Your previous turn was interrupted mid-run. Continue where you left off.]",
+        timestamp: 1792825006.3300993,
+        display_kind: "auto_continue",
+      }),
+      sessionMessage({
+        id: 102774,
+        role: "assistant",
+        content: "",
+        timestamp: 1792825009.6805277,
+        tool_calls: [
+          {
+            id: NEW_CALL,
+            type: "function",
+            function: {
+              name: "terminal",
+              arguments: JSON.stringify({ command: "sleep 60; echo cont4-done", timeout: 120 }),
+            },
+          },
+        ],
+      }),
+      sessionMessage({
+        id: 102785,
+        role: "tool",
+        content: JSON.stringify({ output: "cont4-done", exit_code: 0 }),
+        timestamp: 1792825071.1028082,
+        tool_call_id: NEW_CALL,
+        tool_name: "terminal",
+      }),
+      sessionMessage({
+        id: 102786,
+        role: "assistant",
+        content: "sleep 60 跑完，输出了 cont4-done，退出码 0",
+        timestamp: 1792825074.0039487,
+      }),
+    ];
+  }
+
+  function toolPartsOf(messages: HermesUIMessage[]) {
+    return messages.flatMap((message) =>
+      message.parts.filter(
+        (part): part is Extract<HermesUIMessage["parts"][number], { type: "tool" }> => part.type === "tool",
+      ),
+    );
+  }
+
+  it("旧 call 没有结果行：不在当前回合的 running 卡标成中断，新 call 保持完成", () => {
+    const stored = legacySessionMessagesToHermesUIMessages(killedRunRows());
+    const merged = mergeHermesUIMessages(stored, []);
+
+    const [oldPart, newPart] = toolPartsOf(merged);
+    expect(oldPart).toMatchObject({
+      toolCallId: OLD_CALL,
+      state: "error",
+      errorText: INTERRUPTED_TOOL_TEXT,
+    });
+    expect(oldPart!.completedAt).toBe(1792825006330.0994);
+    expect(newPart).toMatchObject({ toolCallId: NEW_CALL, state: "done" });
+  });
+
+  it("展示模型把该卡渲染成中断态：文案 + 冻结的耗时，不再是进行中", () => {
+    const merged = mergeHermesUIMessages(
+      legacySessionMessagesToHermesUIMessages(killedRunRows()),
+      [],
+    );
+    const chat = hermesUIMessagesToChatMessages(merged);
+    const tools = chat.flatMap((message) => message.tools ?? []);
+    const oldTool = tools.find((tool) => tool.tool_id === OLD_CALL);
+    expect(oldTool).toMatchObject({
+      status: "error",
+      error: INTERRUPTED_TOOL_TEXT,
+    });
+    expect(oldTool!.startedAt).toBe(1792824954914.4626);
+    expect(oldTool!.completedAt).toBe(1792825006330.0994);
+  });
+
+  it("回合仍在跑且工具属于该回合时不动它", () => {
+    const merged = mergeHermesUIMessages(
+      legacySessionMessagesToHermesUIMessages(killedRunRows()),
+      [],
+      {
+        turnActive: true,
+        turnStartedAt: 1792825006330,
+      },
+    );
+    const [oldPart, newPart] = toolPartsOf(merged);
+    expect(oldPart).toMatchObject({ toolCallId: OLD_CALL, state: "error" });
+    expect(newPart).toMatchObject({ toolCallId: NEW_CALL, state: "done" });
+
+    const liveTurn: HermesUIMessage[] = [
+      {
+        id: "live-assistant",
+        sessionId: "s1",
+        role: "assistant",
+        createdAt: 1792825006330,
+        status: "streaming",
+        parts: [
+          {
+            type: "tool",
+            toolCallId: "call-live",
+            name: "terminal",
+            state: "running",
+            startedAt: 1792825009350,
+          },
+        ],
+      },
+    ];
+    const active = mergeHermesUIMessages([], liveTurn, {
+      turnActive: true,
+      turnStartedAt: 1792825006330,
+    });
+    expect(toolPartsOf(active)[0]).toMatchObject({ toolCallId: "call-live", state: "running" });
+  });
+});
+
+describe("内核中断文案在展示层中文化", () => {
+  const INTERRUPT_WAIT = "Operation interrupted: waiting for model response (0.6s elapsed).";
+  const NOT_PROCESSED =
+    "Your request was not processed. Send it again if you still want me to carry it out.";
+
+  it("整条就是中断句：不显示英文，工具卡补「已中断」", () => {
+    const [chat] = hermesUIMessagesToChatMessages([
+      uiMessage({
+        id: "stored-107206",
+        parts: [
+          {
+            type: "tool",
+            toolCallId: "call-1",
+            name: "write_file",
+            state: "done",
+            output: "written",
+            startedAt: 10,
+            completedAt: 20,
+          },
+          {
+            type: "tool",
+            toolCallId: "call-2",
+            name: "terminal",
+            state: "done",
+            output: "done",
+            startedAt: 30,
+            completedAt: 900,
+          },
+          { type: "text", text: INTERRUPT_WAIT },
+        ],
+      }),
+    ]);
+
+    expect(chat!.text).toBe("已中断（等待模型响应 0.6 秒）。");
+    expect(chat!.text).not.toContain("Operation interrupted");
+    expect(chat!.tools).toHaveLength(2);
+    for (const tool of chat!.tools!) {
+      expect(tool.status).toBe("error");
+      expect(tool.error).toBe("已中断，未拿到执行结果");
+    }
+  });
+
+  it("正文后面拖一句中断：只换尾部，正文保留", () => {
+    const [chat] = hermesUIMessagesToChatMessages([
+      uiMessage({
+        parts: [{ type: "text", text: `快排整体最快。\n\n${INTERRUPT_WAIT}` }],
+      }),
+    ]);
+
+    expect(chat!.text).toContain("快排整体最快。");
+    expect(chat!.text).toContain("已中断（等待模型响应 0.6 秒）。");
+    expect(chat!.text).not.toContain("Operation interrupted");
+  });
+
+  it("空回合的「请求未被执行」也翻成中文", () => {
+    const [chat] = hermesUIMessagesToChatMessages([
+      uiMessage({ id: "stored-107206", parts: [{ type: "text", text: NOT_PROCESSED }] }),
+    ]);
+
+    expect(chat!.text).toBe("本次请求未被执行，如果还需要，请重新发送。");
+    expect(chat!.text).not.toContain("Your request was not processed");
   });
 });

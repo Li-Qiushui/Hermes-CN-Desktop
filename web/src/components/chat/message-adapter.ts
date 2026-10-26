@@ -19,12 +19,23 @@ import {
   extractImagePartsFromUnknown,
   imagePartFromSource,
 } from "@/lib/message-images";
+import { settleStaleRunningToolParts, INTERRUPTED_TOOL_ERROR_TEXT, type TurnScope } from "@/lib/stale-tool-parts";
+import { splitKernelSystemTail, translateKernelSystemMessage } from "@/lib/system-message-i18n";
 import { stableTextHash, type UiTurnStats } from "@/lib/ui-store";
 import { isSkillInvocationText } from "@/lib/skill-invocation";
 import { isKernelInjectedNotice } from "@/lib/kernel-notice";
+import { extractMediaTags, stripMediaTags } from "@/lib/media-tags";
+import { autoContinueFrameNoticeText, isAutoContinuedNoticeText } from "@/lib/auto-continue-frame";
 import { reconcileAssistantTimeline } from "@/lib/chat-messages-reconciliation";
 import type { AssistantTurnBlock } from "@/stores/chat";
-import type { AssistantMessageStats, ChatImageItem, ChatMessage, ChatToolItem } from "./chat-types";
+import type {
+  AssistantMessageStats,
+  ChatImageItem,
+  ChatMediaItem,
+  ChatMessage,
+  ChatToolItem,
+  ChatTurnBlock,
+} from "./chat-types";
 
 type HermesToolPart = Extract<HermesMessagePart, { type: "tool" }>;
 type HermesImagePart = Extract<HermesMessagePart, { type: "image" }>;
@@ -56,13 +67,58 @@ function normalizeContent(value: string | null | undefined): string | undefined 
   return text ? text : undefined;
 }
 
-function displayUnknown(value: unknown): string | undefined {
-  if (typeof value === "string") return normalizeContent(value);
+export const TOOL_OUTPUT_SUMMARY_LIMIT = 32 * 1024;
+export const NO_TRUNCATION = Number.POSITIVE_INFINITY;
+
+function formatByteSize(chars: number): string {
+  if (chars >= 1024 * 1024) return `${(chars / (1024 * 1024)).toFixed(1)} MB`;
+  if (chars >= 1024) return `${Math.round(chars / 1024)} KB`;
+  return `${chars} 字符`;
+}
+
+export function truncateForDisplay(text: string, limit: number = TOOL_OUTPUT_SUMMARY_LIMIT): string {
+  if (!Number.isFinite(limit) || text.length <= limit) return text;
+  return `${text.slice(0, limit)}\n…\n[已截断] 原始输出 ${formatByteSize(text.length)}，这里只保留前 ${formatByteSize(limit)}`;
+}
+
+function truncateJsonRecord(text: string, limit: number): string | undefined {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("{")) return undefined;
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+    const record = parsed as Record<string, unknown>;
+    let key: string | undefined;
+    let size = 0;
+    for (const [name, value] of Object.entries(record)) {
+      if (typeof value === "string" && value.length > size) {
+        key = name;
+        size = value.length;
+      }
+    }
+    if (!key || size <= limit) return undefined;
+    record[key] = truncateForDisplay(record[key] as string, limit);
+    return JSON.stringify(record, null, 2);
+  } catch {
+    return undefined;
+  }
+}
+
+export function truncateToolOutput(text: string, limit: number = TOOL_OUTPUT_SUMMARY_LIMIT): string {
+  if (!Number.isFinite(limit) || text.length <= limit) return text;
+  return truncateJsonRecord(text, limit) ?? truncateForDisplay(text, limit);
+}
+
+function displayUnknown(value: unknown, limit: number = TOOL_OUTPUT_SUMMARY_LIMIT): string | undefined {
+  if (typeof value === "string") {
+    const text = normalizeContent(value);
+    return text === undefined ? undefined : truncateToolOutput(text, limit);
+  }
   if (value == null) return undefined;
   try {
-    return JSON.stringify(value, null, 2);
+    return truncateToolOutput(JSON.stringify(value, null, 2), limit);
   } catch {
-    return String(value);
+    return truncateForDisplay(String(value), limit);
   }
 }
 
@@ -212,12 +268,12 @@ function textAndImagesFromStructuredContent(content: string | null | undefined):
 }
 
 function normalizeAssistantBlocks(
-  blocks: AssistantTurnBlock[] | undefined,
+  blocks: ChatTurnBlock[] | undefined,
   options: { includeProgress?: boolean } = {},
-): AssistantTurnBlock[] | undefined {
+): ChatTurnBlock[] | undefined {
   if (!blocks?.length) return undefined;
 
-  const normalized: AssistantTurnBlock[] = [];
+  const normalized: ChatTurnBlock[] = [];
   for (const block of blocks) {
     if (block.type === "progress") {
       if (options.includeProgress) normalized.push(block);
@@ -502,17 +558,25 @@ export function messagesResponseToHermesUIMessages(response: MessagesResponse | 
   return legacySessionMessagesToHermesUIMessages(response.messages);
 }
 
-function toolPartToToolEntry(part: HermesToolPart, message: HermesUIMessage): ChatToolItem {
+function toolPartToToolEntry(
+  part: HermesToolPart,
+  message: HermesUIMessage,
+  interruptedTurn = false,
+): ChatToolItem {
   const input = parseToolInput(part.input);
   const images = extractImagePartsFromUnknown(part.output).map(imagePartToEntry);
+  // 被掐断的那一轮里，已经跑完的工具同样是「被打断」的：只给 running 打标记，
+  // 时间线上那几张卡看起来就跟正常收尾一样。结果保留，只补中断标记。
+  const interrupted = interruptedTurn && part.state !== "running";
   return {
     tool_id: part.toolCallId,
     name: part.name,
-    status: part.state,
+    status: interrupted ? "error" : part.state,
     context: input.context,
     preview: part.preview,
+    tail: part.tail,
     summary: displayUnknown(part.output),
-    error: part.errorText,
+    error: interrupted ? part.errorText ?? INTERRUPTED_TOOL_ERROR_TEXT : part.errorText,
     startedAt: part.startedAt ?? message.createdAt,
     completedAt: part.completedAt,
     arguments: input.arguments,
@@ -522,13 +586,15 @@ function toolPartToToolEntry(part: HermesToolPart, message: HermesUIMessage): Ch
 
 function partsToBlocks(
   message: HermesUIMessage,
-  options: { includeProgress?: boolean } = {},
-): AssistantTurnBlock[] | undefined {
-  const blocks: AssistantTurnBlock[] = [];
+  options: { includeProgress?: boolean; interruptedTurn?: boolean } = {},
+): ChatTurnBlock[] | undefined {
+  const blocks: ChatTurnBlock[] = [];
   for (const part of message.parts) {
     if (part.type === "text") {
-      const text = normalizeContent(part.text);
+      const extracted = extractMediaTags(part.text);
+      const text = normalizeContent(extracted.text);
       if (text) blocks.push({ type: "text", text });
+      if (extracted.items.length) blocks.push({ type: "media", items: extracted.items });
       continue;
     }
     if (part.type === "reasoning") {
@@ -558,7 +624,14 @@ function partsToBlocks(
       continue;
     }
     if (part.type === "tool") {
-      blocks.push({ type: "tool", tool: toolPartToToolEntry(part, message) });
+      blocks.push({
+        type: "tool",
+        tool: toolPartToToolEntry(
+          part,
+          message,
+          options.interruptedTurn === true,
+        ),
+      });
     }
   }
 
@@ -570,7 +643,7 @@ function textFromParts(parts: HermesMessagePart[]): string | undefined {
     .filter((part): part is Extract<HermesMessagePart, { type: "text" }> => part.type === "text")
     .map((part) => part.text)
     .join("");
-  return normalizeContent(text);
+  return normalizeContent(stripMediaTags(text));
 }
 
 function reasoningFromParts(parts: HermesMessagePart[]): string | undefined {
@@ -589,6 +662,21 @@ function noticeTextFromParts(parts: HermesMessagePart[]): string | undefined {
   return normalizeContent(text);
 }
 
+function mediaFromParts(parts: HermesMessagePart[]): ChatMediaItem[] | undefined {
+  const items: ChatMediaItem[] = [];
+  const seen = new Set<string>();
+  for (const part of parts) {
+    if (part.type !== "text") continue;
+    for (const item of extractMediaTags(part.text).items) {
+      const key = item.path.trim().replace(/\\/g, "/");
+      if (seen.has(key)) continue;
+      seen.add(key);
+      items.push(item);
+    }
+  }
+  return items.length ? items : undefined;
+}
+
 function imagesFromParts(parts: HermesMessagePart[]): ChatImageItem[] | undefined {
   const images = parts
     .filter((part): part is HermesImagePart => part.type === "image")
@@ -603,7 +691,7 @@ function messageHasErrorNotice(message: HermesUIMessage): boolean {
 function statsHashFromMessage(message: HermesUIMessage): string | undefined {
   const toolText = message.parts
     .filter((part): part is HermesToolPart => part.type === "tool")
-    .map((tool) => `${tool.name}\n${displayUnknown(tool.output) ?? ""}`)
+    .map((tool) => `${tool.name}\n${displayUnknown(tool.output, NO_TRUNCATION) ?? ""}`)
     .join("\n");
   return stableTextHash([
     textFromParts(message.parts),
@@ -859,33 +947,53 @@ export function hermesUIMessageToChatMessage(msg: HermesUIMessage): ChatMessage 
 
 function buildChatMessage(msg: HermesUIMessage): ChatMessage | null {
   const includeProgress = msg.status === "streaming";
-  const text = msg.role === "system"
+  const rawText = msg.role === "system"
     ? noticeTextFromParts(msg.parts) ?? textFromParts(msg.parts)
     : textFromParts(msg.parts);
+  // 内核的中断 / 空回合系统文案不进气泡正文：整条就是系统文案时换成中文短句，
+  // 正文后面拖着一句时只换尾部。同一回合里的工具卡据此补「已中断」标记。
+  const systemCopy = msg.role === "assistant" && rawText
+    ? translateKernelSystemMessage(rawText)
+    : null;
+  const systemTail = msg.role === "assistant" && rawText && !systemCopy
+    ? splitKernelSystemTail(rawText)
+    : null;
+  const interruptedTurn = Boolean(systemCopy || systemTail);
+  const text = systemCopy
+    ? systemCopy.text
+    : systemTail
+      ? (systemTail.head ? `${systemTail.head}\n\n${systemTail.tail.text}` : systemTail.tail.text)
+      : rawText;
   // Core 把 Skill 指令作为 user 上下文注入模型，但它不是用户在聊天框发送的
   // 内容。进入展示模型时归一为 system，避免污染用户气泡、轮次导航和动作栏。
   // 异步子代理完成回报（[ASYNC DELEGATION …]）同属内核注入，同样归一。
-  const displayRole = msg.role === "user" && (isSkillInvocationText(text) || isKernelInjectedNotice(text))
+  // 内核自动续跑的 `[System note: …]` 帧换成中文灰卡文案，正文不再落进气泡/复制/搜索。
+  const autoContinueNotice = msg.role === "user" ? autoContinueFrameNoticeText(text) : null;
+  const displayRole = autoContinueNotice !== null
     ? "system"
-    : msg.role;
+    : msg.role === "user" && (isSkillInvocationText(text) || isKernelInjectedNotice(text))
+      ? "system"
+      : msg.role;
   const reasoning = reasoningFromParts(msg.parts);
   const images = imagesFromParts(msg.parts);
+  const media = mediaFromParts(msg.parts);
   const blocks = msg.role === "assistant"
-    ? partsToBlocks(msg, { includeProgress })
+    ? partsToBlocks(msg, { includeProgress, interruptedTurn })
     : undefined;
   const tools = blocks
     ?.filter((block): block is Extract<AssistantTurnBlock, { type: "tool" }> => block.type === "tool")
     .map((block) => block.tool);
 
-  if (!text && !reasoning && !images?.length && !tools?.length && !blocks?.length) return null;
+  if (!text && !reasoning && !images?.length && !media?.length && !tools?.length && !blocks?.length) return null;
 
   return {
     id: msg.id,
     role: displayRole,
     createdAt: msg.createdAt,
-    text,
+    text: autoContinueNotice ?? text,
     reasoning,
     images,
+    media,
     tools: tools?.length ? tools : undefined,
     blocks,
     status: msg.status,
@@ -895,9 +1003,20 @@ function buildChatMessage(msg: HermesUIMessage): ChatMessage | null {
 }
 
 export function hermesUIMessagesToChatMessages(messages: HermesUIMessage[]): ChatMessage[] {
-  return messages
-    .map(hermesUIMessageToChatMessage)
-    .filter((message): message is ChatMessage => message !== null);
+  let seenAutoContinued = false;
+  const result: ChatMessage[] = [];
+  for (const message of messages) {
+    const chat = hermesUIMessageToChatMessage(message);
+    if (!chat) continue;
+    // 自动续跑提示按文案全局去重：存库的英文帧（已折成中文灰卡）与 resume 补的
+    // 那条同文案，任何一个先到都只留第一条，避免同一屏并肩两条。
+    if (chat.role === "system" && isAutoContinuedNoticeText(chat.text)) {
+      if (seenAutoContinued) continue;
+      seenAutoContinued = true;
+    }
+    result.push(chat);
+  }
+  return result;
 }
 
 function comparableText(value: string | undefined): string {
@@ -937,6 +1056,14 @@ function canonicalImagesOf(message: HermesUIMessage): string {
   );
 }
 
+function canonicalMediaOf(message: HermesUIMessage): string {
+  return comparableText(
+    mediaFromParts(message.parts)
+      ?.map((item) => item.path.trim().replace(/\\/g, "/").toLowerCase())
+      .join("\n"),
+  );
+}
+
 function canonicalToolComparableOf(message: HermesUIMessage): string {
   return message.parts
     .filter((part): part is HermesToolPart => part.type === "tool")
@@ -946,7 +1073,7 @@ function canonicalToolComparableOf(message: HermesUIMessage): string {
         tool.name,
         tool.state,
         comparableText(parseToolInput(tool.input).context),
-        comparableText(displayUnknown(tool.output)),
+        comparableText(displayUnknown(tool.output, NO_TRUNCATION)),
         comparableText(tool.errorText),
       ].join(":"),
     )
@@ -969,6 +1096,7 @@ type CanonicalFacts = {
   looseText: string;
   reasoning: string;
   images: string;
+  media: string;
   toolComparable: string;
   toolIdentity: string;
 };
@@ -999,6 +1127,7 @@ function buildCanonicalFacts(message: HermesUIMessage): CanonicalFacts {
     looseText: looseComparableText(text),
     reasoning,
     images,
+    media: canonicalMediaOf(message),
     toolComparable: canonicalToolComparableOf(message),
     toolIdentity: canonicalToolIdentityOf(message),
   };
@@ -1036,6 +1165,17 @@ function canonicalReasoning(message: HermesUIMessage): string {
 
 function canonicalImages(message: HermesUIMessage): string {
   return canonicalFacts(message).images;
+}
+
+function canonicalMedia(message: HermesUIMessage): string {
+  return canonicalFacts(message).media;
+}
+
+function hasSameMediaTurn(stored: HermesUIMessage, live: HermesUIMessage): boolean {
+  const storedMedia = canonicalMedia(stored);
+  const liveMedia = canonicalMedia(live);
+  if (!storedMedia && !liveMedia) return false;
+  return storedMedia === liveMedia;
 }
 
 function canonicalToolComparable(message: HermesUIMessage): string {
@@ -1323,6 +1463,9 @@ function computeSameCanonicalMessage(stored: HermesUIMessage, live: HermesUIMess
 
       return false;
     }
+
+    if (hasSameMediaTurn(stored, live)) return true;
+
     if (storedImages || liveImages) return storedImages === liveImages;
     return canonicalToolComparable(stored) !== "" &&
       canonicalToolComparable(stored) === canonicalToolComparable(live);
@@ -1408,9 +1551,10 @@ function computeMatchedMessage(storedMessage: HermesUIMessage, liveMessage: Herm
 export function mergeHermesUIMessages(
   stored: HermesUIMessage[],
   live: HermesUIMessage[],
+  scope: TurnScope = {},
 ): HermesUIMessage[] {
-  if (live.length === 0) return stored;
-  if (stored.length === 0) return live;
+  if (live.length === 0) return settleStaleRunningToolParts(stored, scope);
+  if (stored.length === 0) return settleStaleRunningToolParts(live, scope);
 
   const consolidatedLive = consolidateAssistantMessages(live);
   // 回合完成后重拉持久化消息：以 stored 行为基准，把本地 live 行的耗时、首 token
@@ -1452,7 +1596,7 @@ export function mergeHermesUIMessages(
   // reply completes. The sort is stable: on an exact createdAt tie (startPrompt
   // stamps the optimistic user + assistant with the same `now`) the user is
   // floated before the assistant, otherwise the original order is preserved.
-  return merged
+  const ordered = merged
     .map((message, index) => ({ message, index }))
     .sort((a, b) => {
       if (a.message.createdAt !== b.message.createdAt) {
@@ -1464,6 +1608,11 @@ export function mergeHermesUIMessages(
       return a.index - b.index;
     })
     .map((entry) => entry.message);
+
+  return settleStaleRunningToolParts(ordered, {
+    turnActive: scope.turnActive ?? consolidatedLive.some((message) => message.status === "streaming"),
+    turnStartedAt: scope.turnStartedAt,
+  });
 }
 
 export function storedMessageToChatMessage(msg: SessionMessage): ChatMessage | null {

@@ -1,3 +1,4 @@
+import type { MediaItem } from "@/lib/media-tags";
 import type { AssistantTurnBlock, ImageEntry, ToolEntry } from "@/stores/chat";
 
 export type ChatRole = "user" | "assistant" | "system" | "tool";
@@ -8,6 +9,15 @@ export interface ChatToolItem extends ToolEntry {
 }
 
 export type ChatImageItem = ImageEntry;
+
+export type ChatMediaItem = MediaItem;
+
+export interface ChatMediaBlock {
+  type: "media";
+  items: ChatMediaItem[];
+}
+
+export type ChatTurnBlock = AssistantTurnBlock | ChatMediaBlock;
 
 export interface AssistantMessageStats {
   ttftMs?: number;
@@ -32,8 +42,9 @@ export interface ChatMessage {
   text?: string;
   reasoning?: string;
   images?: ChatImageItem[];
+  media?: ChatMediaItem[];
   tools?: ChatToolItem[];
-  blocks?: AssistantTurnBlock[];
+  blocks?: ChatTurnBlock[];
   status?: "streaming" | "complete" | "error";
   title?: string;
   error?: boolean;

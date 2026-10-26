@@ -1,0 +1,200 @@
+.mediaList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0;
+  min-width: 0;
+}
+
+.mediaItem {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.playerCard,
+.fileCard,
+.fallback,
+.skeleton {
+  border: 1px solid var(--h-line-soft);
+  background: var(--h-bg-pane);
+  color: var(--h-text-2);
+  min-width: 0;
+  max-width: min(100%, 520px);
+}
+
+.playerCard {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px 12px;
+}
+
+.playerHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.kindIcon {
+  flex: 0 0 auto;
+  color: var(--h-text-3);
+}
+
+.fileName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  color: var(--h-text-2);
+}
+
+.extension {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border: 1px solid color-mix(in srgb, var(--h-line) 80%, transparent);
+  background: color-mix(in srgb, var(--h-bg-soft) 80%, transparent);
+  color: var(--h-text-3);
+  font-size: 13px;
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+
+.audio {
+  width: 100%;
+  max-width: 100%;
+  height: 36px;
+}
+
+.video {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  max-height: 360px;
+  background: var(--h-bg-code);
+}
+
+.inlineImage {
+  display: block;
+  max-width: min(100%, 520px);
+  max-height: 360px;
+  border: 1px solid var(--h-line-soft);
+  background: var(--h-bg-pane);
+  object-fit: contain;
+}
+
+.filePath {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--h-font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  color: var(--h-text-3);
+}
+
+.skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  min-height: 56px;
+  justify-content: center;
+}
+
+.skeletonLine {
+  display: block;
+  height: 10px;
+  width: 100%;
+  background: color-mix(in srgb, var(--h-text-4) 26%, transparent);
+  animation: mediaPulse 1.2s ease-in-out infinite;
+}
+
+.skeletonLine[data-short="true"] {
+  width: 46%;
+}
+
+@keyframes mediaPulse {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 0.9;
+  }
+}
+
+.fallback {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+}
+
+.fallbackIcon {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  color: var(--h-warn);
+}
+
+.fallbackBody {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  font-size: 13px;
+}
+
+.fallbackTitle {
+  font-size: 13px;
+  color: var(--h-text-2);
+}
+
+.fileCard {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  font-size: 13px;
+}
+
+.fileBody {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.fileMeta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.fileKind {
+  font-size: 13px;
+  color: var(--h-text-3);
+}
+
+.copyPath {
+  flex: 0 0 auto;
+  font-size: 13px;
+  color: var(--h-text-3);
+}
+
+.copyPath:hover {
+  color: var(--h-text);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeletonLine {
+    animation: none;
+  }
+}
